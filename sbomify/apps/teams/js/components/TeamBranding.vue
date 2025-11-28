@@ -251,6 +251,23 @@ const hasUnsavedChanges = computed(() => {
   );
 });
 
+const loadBrandingInfo = async () => {
+  const response = await $axios.get(`/api/v1/workspaces/${props.teamKey}/branding`);
+  if (response.data) {
+    Object.assign(brandingInfo.value, response.data);
+  }
+};
+
+const loadInitialBrandingValues = async () => {
+  Object.assign(localBrandingInfo.value, {
+    ...brandingInfo.value,
+    icon: null,
+    logo: null,
+    icon_pending_deletion: false,
+    logo_pending_deletion: false,
+  });
+};
+
 
 
 const handleColorPickerChange = (event: Event, field: string) => {
@@ -376,18 +393,8 @@ const saveAllChanges = async () => {
 
 onMounted(async () => {
   try {
-    const response = await $axios.get(`/api/v1/workspaces/${props.teamKey}/branding`);
-    if (response.data) {
-      Object.assign(brandingInfo.value, response.data);
-      // Initialize local state with server data (no defaults)
-      Object.assign(localBrandingInfo.value, {
-        ...response.data,
-        icon: null,
-        logo: null,
-        icon_pending_deletion: false,
-        logo_pending_deletion: false,
-      });
-    }
+    await loadBrandingInfo();
+    await loadInitialBrandingValues();
   } catch (error) {
     console.error('Error loading branding info:', error);
     if (isAxiosError(error)) {

@@ -91,6 +91,7 @@ class TeamAdmin(admin.ModelAdmin):
         "key",
         "billing_plan_display",
         "member_count",
+        "is_public",
         "has_completed_wizard",
         "created_at",
         "billing_status_display",
@@ -99,6 +100,7 @@ class TeamAdmin(admin.ModelAdmin):
     list_filter = (
         "billing_plan",
         "has_completed_wizard",
+        "is_public",
         "created_at",
     )
 
@@ -125,6 +127,7 @@ class TeamAdmin(admin.ModelAdmin):
                     "name",
                     "key",
                     "has_completed_wizard",
+                    "is_public",
                     "created_at",
                 )
             },
