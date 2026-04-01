@@ -525,6 +525,7 @@ def enqueue_assessments_for_sbom(
     queue_name="plugins",
     max_retries=1,
     time_limit=600000,  # 10 minutes for large teams
+    store_results=True,
 )
 @retry(
     retry=retry_if_exception_type((OperationalError, DatabaseError)),
