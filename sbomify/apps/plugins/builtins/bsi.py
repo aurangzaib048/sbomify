@@ -1180,19 +1180,21 @@ class BSICompliancePlugin(AssessmentPlugin):
                         return u
             elif isinstance(url, str) and _is_valid_url(url):
                 return url
-            for contact in source.get("contact", []):
+            contacts = source.get("contact") or []
+            for contact in contacts if isinstance(contacts, list) else []:
                 if not isinstance(contact, dict):
                     continue
-                email: str = contact.get("email", "")
-                if _is_valid_email(email):
+                email: str = contact.get("email") or ""
+                if isinstance(email, str) and _is_valid_email(email):
                     return email
 
         # Check authors
-        for author in metadata.get("authors", []):
+        authors = metadata.get("authors") or []
+        for author in authors if isinstance(authors, list) else []:
             if not isinstance(author, dict):
                 continue
-            email = author.get("email", "")
-            if _is_valid_email(email):
+            email = author.get("email") or ""
+            if isinstance(email, str) and _is_valid_email(email):
                 return email
 
         return None

@@ -899,7 +899,8 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         properties using the cdx:lifecycle:milestone:* taxonomy. This serves
         as a fallback when per-component cdx:cle:* properties are absent.
         """
-        for prop in metadata.get("properties", []):
+        properties = metadata.get("properties") or []
+        for prop in properties if isinstance(properties, list) else []:
             if not isinstance(prop, dict):
                 continue
             if prop.get("name") == property_name:

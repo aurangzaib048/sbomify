@@ -367,6 +367,7 @@ class TestCycloneDXLifecycleFallback:
 
         # Both CLE checks should pass via metadata fallback
         cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
         assert all(f.status == "pass" for f in cle_findings), (
             f"CLE findings should pass with metadata lifecycle: {[(f.id, f.status) for f in cle_findings]}"
         )
@@ -393,6 +394,7 @@ class TestCycloneDXLifecycleFallback:
         result = self._assess_sbom(sbom_data)
 
         cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
         assert all(f.status == "fail" for f in cle_findings)
 
 
