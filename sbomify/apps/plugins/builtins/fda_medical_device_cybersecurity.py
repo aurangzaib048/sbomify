@@ -761,8 +761,10 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
             # === FDA CLE Elements ===
 
             # 8. Support status (from component or metadata properties)
-            # Check both cdx:cle:* (per-component) and cdx:lifecycle:milestone:*
-            # (metadata-level, written by sbomify-action augmentation)
+            # Check per-component cdx:cle:supportStatus first. Fall back to
+            # metadata-level cdx:lifecycle:milestone:endOfSupport — having an
+            # end-of-support date implies the software is actively supported
+            # (until that date), satisfying the "support level" requirement.
             has_support_status = self._cyclonedx_has_cle_property(
                 component, "cdx:cle:supportStatus"
             ) or self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")

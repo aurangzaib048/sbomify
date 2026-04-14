@@ -1177,9 +1177,9 @@ class BSICompliancePlugin(AssessmentPlugin):
             if isinstance(url, list):
                 for u in url:
                     if _is_valid_url(u):
-                        return u
+                        return str(u)
             elif _is_valid_url(url):
-                return url
+                return str(url)
             for contact in source.get("contact", []):
                 email: str = contact.get("email", "")
                 if _is_valid_email(email):
