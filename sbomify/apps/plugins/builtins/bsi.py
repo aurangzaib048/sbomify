@@ -1162,17 +1162,32 @@ class BSICompliancePlugin(AssessmentPlugin):
     # === Helper methods ===
 
     def _get_cyclonedx_sbom_creator(self, metadata: dict[str, Any]) -> str | None:
-        """Extract SBOM creator email or URL from CycloneDX metadata."""
-        manufacturer = metadata.get("manufacturer", {})
+        """Extract SBOM creator email or URL from CycloneDX metadata.
 
-        # Check for URL
-        url: str = manufacturer.get("url", "")
-        if _is_valid_url(url):
-            return url
+        Checks manufacturer, supplier, and authors — the augmentation may
+        populate any of these depending on the data source.
+        """
+        # Check manufacturer (primary BSI expectation)
+        for source_key in ("manufacturer", "supplier"):
+            source = metadata.get(source_key, {})
+            if not source:
+                continue
+            url = source.get("url", "")
+            # url can be a string or list
+            if isinstance(url, list):
+                for u in url:
+                    if _is_valid_url(u):
+                        return u
+            elif _is_valid_url(url):
+                return url
+            for contact in source.get("contact", []):
+                email: str = contact.get("email", "")
+                if _is_valid_email(email):
+                    return email
 
-        # Check for email in contacts
-        for contact in manufacturer.get("contact", []):
-            email: str = contact.get("email", "")
+        # Check authors
+        for author in metadata.get("authors", []):
+            email = author.get("email", "")
             if _is_valid_email(email):
                 return email
 

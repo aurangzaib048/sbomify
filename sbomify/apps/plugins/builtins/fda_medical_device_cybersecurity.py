@@ -760,13 +760,19 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
-            # 8. Support status (from properties cdx:cle:supportStatus)
-            has_support_status = self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus")
+            # 8. Support status (from component or metadata properties)
+            # Check both cdx:cle:* (per-component) and cdx:lifecycle:milestone:*
+            # (metadata-level, written by sbomify-action augmentation)
+            has_support_status = self._cyclonedx_has_cle_property(
+                component, "cdx:cle:supportStatus"
+            ) or self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
             if not has_support_status:
                 support_status_failures.append(component_name)
 
-            # 9. End of support date (from properties cdx:cle:endOfSupport)
-            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport")
+            # 9. End of support date
+            has_end_of_support = self._cyclonedx_has_cle_property(
+                component, "cdx:cle:endOfSupport"
+            ) or self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
             if not has_end_of_support:
                 end_of_support_failures.append(component_name)
 
@@ -883,6 +889,18 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         )
 
         return findings
+
+    def _cyclonedx_has_lifecycle_property(self, metadata: dict[str, Any], property_name: str) -> bool:
+        """Check if CycloneDX metadata has a lifecycle milestone property.
+
+        The sbomify-action augmentation writes support dates as metadata-level
+        properties using the cdx:lifecycle:milestone:* taxonomy. This serves
+        as a fallback when per-component cdx:cle:* properties are absent.
+        """
+        for prop in metadata.get("properties", []):
+            if prop.get("name") == property_name and prop.get("value", "").strip():
+                return True
+        return False
 
     def _cyclonedx_has_cle_property(self, component: dict[str, Any], property_name: str) -> bool:
         """Check if a CycloneDX component has a specific CLE property.
