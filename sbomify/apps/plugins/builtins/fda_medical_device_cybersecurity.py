@@ -730,6 +730,12 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         support_status_failures: list[str] = []
         end_of_support_failures: list[str] = []
 
+        # Hoist metadata-level lifecycle check out of the per-component loop.
+        # Having an end-of-support date implies active support (until that date),
+        # satisfying the FDA "support level" requirement as a fallback when
+        # per-component cdx:cle:supportStatus is absent.
+        metadata_has_eos = self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+
         # Check each component for required elements
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
@@ -760,21 +766,15 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
-            # 8. Support status (from component or metadata properties)
-            # Check per-component cdx:cle:supportStatus first. Fall back to
-            # metadata-level cdx:lifecycle:milestone:endOfSupport — having an
-            # end-of-support date implies the software is actively supported
-            # (until that date), satisfying the "support level" requirement.
-            has_support_status = self._cyclonedx_has_cle_property(
-                component, "cdx:cle:supportStatus"
-            ) or self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+            # 8. Support status
+            has_support_status = (
+                self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus") or metadata_has_eos
+            )
             if not has_support_status:
                 support_status_failures.append(component_name)
 
             # 9. End of support date
-            has_end_of_support = self._cyclonedx_has_cle_property(
-                component, "cdx:cle:endOfSupport"
-            ) or self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport") or metadata_has_eos
             if not has_end_of_support:
                 end_of_support_failures.append(component_name)
 
@@ -900,8 +900,12 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         as a fallback when per-component cdx:cle:* properties are absent.
         """
         for prop in metadata.get("properties", []):
-            if prop.get("name") == property_name and prop.get("value", "").strip():
-                return True
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("name") == property_name:
+                value = prop.get("value", "")
+                if isinstance(value, str) and value.strip():
+                    return True
         return False
 
     def _cyclonedx_has_cle_property(self, component: dict[str, Any], property_name: str) -> bool:
