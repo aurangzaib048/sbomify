@@ -291,7 +291,8 @@ class OSVPlugin(AssessmentPlugin):
         scan_command = [
             scanner_path,
             "scan",
-            "--sbom",
+            "source",
+            "--lockfile",
             str(absolute_path),
             "--format",
             "json",
