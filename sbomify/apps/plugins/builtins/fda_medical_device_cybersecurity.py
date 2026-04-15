@@ -296,21 +296,23 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                 version_failures.append(package_name)
 
             # 4. Unique identifiers (PURL, CPE, SWID via externalRefs)
-            # Only accept externalRefs with valid identifier types
-            # Note: checksums are for "Component Hash" (RECOMMENDED), not "Unique Identifiers" (MINIMUM)
-            valid_identifier_types = {"purl", "cpe22Type", "cpe23Type", "swid"}
-            purl = package.get("purl")
-            external_refs = package.get("externalRefs")
-            if not isinstance(external_refs, list):
-                external_refs = []
-            has_unique_id = (isinstance(purl, str) and bool(purl)) or any(
-                isinstance(ref, dict)
-                and isinstance(ref.get("referenceType"), str)
-                and ref["referenceType"] in valid_identifier_types
-                for ref in external_refs
-            )
-            if not has_unique_id:
-                unique_id_failures.append(package_name)
+            # Skip file-type packages (e.g., lockfiles) — not software packages.
+            spdx_id = str(package.get("SPDXID") or "")
+            is_file_entry = "-File-" in spdx_id
+            if not is_file_entry:
+                valid_identifier_types = {"purl", "cpe22Type", "cpe23Type", "swid"}
+                purl = package.get("purl")
+                external_refs = package.get("externalRefs")
+                if not isinstance(external_refs, list):
+                    external_refs = []
+                has_unique_id = (isinstance(purl, str) and bool(purl)) or any(
+                    isinstance(ref, dict)
+                    and isinstance(ref.get("referenceType"), str)
+                    and ref["referenceType"] in valid_identifier_types
+                    for ref in external_refs
+                )
+                if not has_unique_id:
+                    unique_id_failures.append(package_name)
 
             # === FDA CLE Elements ===
 
@@ -760,9 +762,11 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # 4. Unique identifiers (PURL, CPE, SWID)
             # Note: hashes are for "Component Hash" (RECOMMENDED), not "Unique Identifiers" (MINIMUM)
-            has_unique_id = component.get("purl") or component.get("cpe") or component.get("swid")
-            if not has_unique_id:
-                unique_id_failures.append(component_name)
+            # Skip type=file components (e.g., lockfiles) — not software packages.
+            if component.get("type") != "file":
+                has_unique_id = component.get("purl") or component.get("cpe") or component.get("swid")
+                if not has_unique_id:
+                    unique_id_failures.append(component_name)
 
             # === FDA CLE Elements ===
 
