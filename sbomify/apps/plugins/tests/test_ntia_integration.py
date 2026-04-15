@@ -397,3 +397,106 @@ class TestNTIAPluginAPIIntegration(TestCase):
 
         assert response.overall_status == "has_failures"
         assert response.failing_count == 1
+
+
+class TestFileTypeComponentSkipped:
+    """File-type components should be skipped in unique-identifier checks."""
+
+    def test_cyclonedx_file_type_skipped_in_purl_check(self):
+        """CycloneDX type=file components should not fail unique-identifiers."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.2.3",
+                    "type": "library",
+                    "purl": "pkg:pypi/django@5.2.3",
+                    "publisher": "Django",
+                },
+                {
+                    "name": "uv.lock",
+                    "type": "file",
+                    "hashes": [{"alg": "SHA-256", "content": "abc123"}],
+                },
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        uid_finding = next((f for f in result.findings if f.id == "ntia-2021:unique-identifiers"), None)
+        assert uid_finding is not None
+        assert uid_finding.status == "pass", f"uv.lock (type=file) should be skipped: {uid_finding.description}"
+
+    def test_spdx_file_entry_skipped_in_purl_check(self):
+        """SPDX packages with -File- in SPDXID should not fail unique-identifiers."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: test"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.2.3",
+                        }
+                    ],
+                },
+                {
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": False,
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".spdx.json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        uid_finding = next((f for f in result.findings if f.id == "ntia-2021:unique-identifiers"), None)
+        assert uid_finding is not None
+        assert uid_finding.status == "pass", f"uv.lock (File entry) should be skipped: {uid_finding.description}"

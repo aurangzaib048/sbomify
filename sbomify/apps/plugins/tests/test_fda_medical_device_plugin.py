@@ -1048,3 +1048,95 @@ class TestSPDX3Validation:
             json.dump(sbom_data, f)
             f.flush()
             return plugin.assess("test-sbom-id", Path(f.name))
+
+
+class TestFileTypeComponentSkipped:
+    """File-type components should be skipped in unique-identifier checks."""
+
+    def _assess_sbom(self, sbom_data: dict) -> "AssessmentResult":
+        plugin = FDAMedicalDevicePlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            return plugin.assess("test-sbom-id", Path(f.name))
+
+    def test_cyclonedx_file_type_skipped(self) -> None:
+        """CycloneDX type=file should not fail unique-identifiers."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.2.3",
+                    "type": "library",
+                    "publisher": "Django",
+                    "purl": "pkg:pypi/django@5.2.3",
+                    "properties": [
+                        {"name": "cdx:cle:supportStatus", "value": "active"},
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                },
+                {
+                    "name": "uv.lock",
+                    "type": "file",
+                },
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        uid_finding = next((f for f in result.findings if f.id == "fda-2025:ntia:unique-identifiers"), None)
+        assert uid_finding is not None
+        assert uid_finding.status == "pass", f"type=file should be skipped: {uid_finding.description}"
+
+    def test_spdx_file_entry_skipped(self) -> None:
+        """SPDX -File- packages should not fail unique-identifiers."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: test"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.2.3",
+                        }
+                    ],
+                },
+                {
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        uid_finding = next((f for f in result.findings if f.id == "fda-2025:ntia:unique-identifiers"), None)
+        assert uid_finding is not None
+        assert uid_finding.status == "pass", f"File entry should be skipped: {uid_finding.description}"
