@@ -763,7 +763,7 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
             # 4. Unique identifiers (PURL, CPE, SWID)
             # Note: hashes are for "Component Hash" (RECOMMENDED), not "Unique Identifiers" (MINIMUM)
             # Skip type=file components (e.g., lockfiles) — not software packages.
-            if component.get("type") != "file":
+            if str(component.get("type", "")).lower() != "file":
                 has_unique_id = component.get("purl") or component.get("cpe") or component.get("swid")
                 if not has_unique_id:
                     unique_id_failures.append(component_name)
