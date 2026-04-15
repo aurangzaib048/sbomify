@@ -357,6 +357,43 @@ class TestSBOMLevelValidation:
         assert finding is not None
         assert finding.status == "fail"
 
+    def test_sbom_creator_from_authors_email_passes(self):
+        """SBOM creator found via metadata.authors[].email should pass."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["metadata"]["manufacturer"] = {"name": "No Contact"}
+        sbom["metadata"]["authors"] = [{"name": "Dev", "email": "dev@example.com"}]
+        result = assess_sbom(sbom)
+
+        finding = get_finding(result, "bsi-tr03183:sbom-creator")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_sbom_creator_from_supplier_url_passes(self):
+        """SBOM creator found via metadata.supplier.url should pass."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["metadata"]["manufacturer"] = {"name": "No Contact"}
+        sbom["metadata"]["supplier"] = {
+            "name": "Supplier Corp",
+            "url": ["https://supplier.example.com"],
+        }
+        result = assess_sbom(sbom)
+
+        finding = get_finding(result, "bsi-tr03183:sbom-creator")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_sbom_creator_no_email_no_url_anywhere_fails(self):
+        """No email or URL in manufacturer, supplier, or authors should fail."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["metadata"]["manufacturer"] = {"name": "No Contact"}
+        sbom["metadata"]["supplier"] = {"name": "No URL"}
+        sbom["metadata"]["authors"] = [{"name": "No Email"}]
+        result = assess_sbom(sbom)
+
+        finding = get_finding(result, "bsi-tr03183:sbom-creator")
+        assert finding is not None
+        assert finding.status == "fail"
+
     def test_timestamp_valid_passes(self):
         """Valid ISO-8601 timestamp should pass."""
         sbom = create_base_cyclonedx_sbom()

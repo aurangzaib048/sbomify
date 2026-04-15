@@ -1162,18 +1162,39 @@ class BSICompliancePlugin(AssessmentPlugin):
     # === Helper methods ===
 
     def _get_cyclonedx_sbom_creator(self, metadata: dict[str, Any]) -> str | None:
-        """Extract SBOM creator email or URL from CycloneDX metadata."""
-        manufacturer = metadata.get("manufacturer", {})
+        """Extract SBOM creator email or URL from CycloneDX metadata.
 
-        # Check for URL
-        url: str = manufacturer.get("url", "")
-        if _is_valid_url(url):
-            return url
+        Checks manufacturer, supplier, and authors — the augmentation may
+        populate any of these depending on the data source.
+        """
+        # Check manufacturer (primary BSI expectation)
+        for source_key in ("manufacturer", "supplier"):
+            source = metadata.get(source_key, {})
+            if not source:
+                continue
+            url = source.get("url", "")
+            # url can be a string or list
+            if isinstance(url, list):
+                for u in url:
+                    if isinstance(u, str) and _is_valid_url(u):
+                        return u
+            elif isinstance(url, str) and _is_valid_url(url):
+                return url
+            contacts = source.get("contact") or []
+            for contact in contacts if isinstance(contacts, list) else []:
+                if not isinstance(contact, dict):
+                    continue
+                email: str = contact.get("email") or ""
+                if isinstance(email, str) and _is_valid_email(email):
+                    return email
 
-        # Check for email in contacts
-        for contact in manufacturer.get("contact", []):
-            email: str = contact.get("email", "")
-            if _is_valid_email(email):
+        # Check authors
+        authors = metadata.get("authors") or []
+        for author in authors if isinstance(authors, list) else []:
+            if not isinstance(author, dict):
+                continue
+            email = author.get("email") or ""
+            if isinstance(email, str) and _is_valid_email(email):
                 return email
 
         return None

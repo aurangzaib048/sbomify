@@ -331,6 +331,73 @@ class TestCycloneDXValidation:
             return plugin.assess("test-sbom-id", Path(f.name))
 
 
+class TestCycloneDXLifecycleFallback:
+    """Tests for metadata-level lifecycle property fallback."""
+
+    def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
+        plugin = FDAMedicalDevicePlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            return plugin.assess("test-sbom-id", Path(f.name))
+
+    def test_metadata_lifecycle_satisfies_cle_support_status(self) -> None:
+        """Metadata-level cdx:lifecycle:milestone:endOfSupport should satisfy support status."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+                "properties": [
+                    {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
+                ],
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        # Both CLE checks should pass via metadata fallback
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"CLE findings should pass with metadata lifecycle: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
+    def test_no_lifecycle_anywhere_fails_cle(self) -> None:
+        """Without any lifecycle data, CLE checks should fail."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
+        assert all(f.status == "fail" for f in cle_findings)
+
+
 class TestSPDXValidation:
     """Tests for SPDX SBOM validation."""
 

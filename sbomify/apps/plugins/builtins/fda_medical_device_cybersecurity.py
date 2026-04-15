@@ -730,6 +730,12 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         support_status_failures: list[str] = []
         end_of_support_failures: list[str] = []
 
+        # Hoist metadata-level lifecycle check out of the per-component loop.
+        # Having an end-of-support date implies active support (until that date),
+        # satisfying the FDA "support level" requirement as a fallback when
+        # per-component cdx:cle:supportStatus is absent.
+        metadata_has_eos = self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+
         # Check each component for required elements
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
@@ -760,13 +766,15 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
-            # 8. Support status (from properties cdx:cle:supportStatus)
-            has_support_status = self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus")
+            # 8. Support status
+            has_support_status = (
+                self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus") or metadata_has_eos
+            )
             if not has_support_status:
                 support_status_failures.append(component_name)
 
-            # 9. End of support date (from properties cdx:cle:endOfSupport)
-            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport")
+            # 9. End of support date
+            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport") or metadata_has_eos
             if not has_end_of_support:
                 end_of_support_failures.append(component_name)
 
@@ -883,6 +891,23 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         )
 
         return findings
+
+    def _cyclonedx_has_lifecycle_property(self, metadata: dict[str, Any], property_name: str) -> bool:
+        """Check if CycloneDX metadata has a lifecycle milestone property.
+
+        The sbomify-action augmentation writes support dates as metadata-level
+        properties using the cdx:lifecycle:milestone:* taxonomy. This serves
+        as a fallback when per-component cdx:cle:* properties are absent.
+        """
+        properties = metadata.get("properties") or []
+        for prop in properties if isinstance(properties, list) else []:
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("name") == property_name:
+                value = prop.get("value", "")
+                if isinstance(value, str) and value.strip():
+                    return True
+        return False
 
     def _cyclonedx_has_cle_property(self, component: dict[str, Any], property_name: str) -> bool:
         """Check if a CycloneDX component has a specific CLE property.
