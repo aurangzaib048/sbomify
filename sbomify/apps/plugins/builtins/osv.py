@@ -291,7 +291,6 @@ class OSVPlugin(AssessmentPlugin):
         scan_command = [
             scanner_path,
             "scan",
-            "source",
             "--sbom",
             str(absolute_path),
             "--format",
@@ -345,6 +344,11 @@ class OSVPlugin(AssessmentPlugin):
         """
         if not stdout or returncode == 0:
             return []
+
+        # Strip any non-JSON lines (e.g., deprecation warnings) before the JSON object
+        json_start = stdout.find("{")
+        if json_start > 0:
+            stdout = stdout[json_start:]
 
         try:
             raw_results = json.loads(stdout)
