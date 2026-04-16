@@ -38,8 +38,10 @@ class DependencyTrackPlugin(AssessmentPlugin):
     """Dependency Track vulnerability scanning plugin.
 
     Scans CycloneDX SBOMs by uploading them to a Dependency Track server
-    and polling for vulnerability results. SPDX SBOMs are rejected since
-    DT only supports CycloneDX.
+    and polling for vulnerability results. SPDX (and any non-CycloneDX)
+    input is skipped with a "Format Not Supported" warning rather than an
+    error, since DT only supports CycloneDX and the format choice is
+    deliberate on the user's part.
 
     Uses RetryLaterError for the upload-then-poll async pattern:
     - First call: uploads SBOM to DT, raises RetryLaterError

@@ -1257,9 +1257,10 @@ class TestFileTypeComponentSkipped:
         assert finding is not None
         assert finding.status == "fail", "nameless file-type entry should still fail name check"
 
-    def test_spdx2_file_entry_skipped_in_version_and_supplier(self):
+    def test_spdx2_file_entry_skipped_in_version_and_creator_checks(self):
         """SPDX 2.x File-entries (SPDXID contains -File-) must be skipped for
-        component-level checks that don't apply to file inputs."""
+        the component-version and component-creator checks when versionInfo and
+        supplier data are not applicable to file inputs."""
         sbom = {
             "spdxVersion": "SPDX-2.3",
             "SPDXID": "SPDXRef-DOCUMENT",
