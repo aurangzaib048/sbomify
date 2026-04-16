@@ -1249,3 +1249,36 @@ class TestFileTypeComponentSkipped:
             finding = next((f for f in result.findings if f.id == finding_id), None)
             assert finding is not None, f"{finding_id} missing from findings"
             assert finding.status == "pass", f"{finding_id} should pass (File entry skipped): {finding.description}"
+
+    def test_cyclonedx_library_still_fails_alongside_file_type(self) -> None:
+        """Regression guard: real library without CLE data must still fail."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "broken-lib",
+                    "version": "1.0.0",
+                    "type": "library",
+                    "publisher": "SomeOrg",
+                    "purl": "pkg:pypi/broken-lib@1.0.0",
+                    # No CLE properties
+                },
+                {"name": "uv.lock", "type": "file"},
+            ],
+            "dependencies": [{"ref": "pkg:pypi/broken-lib@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        for finding_id in ("fda-2025:cle:support-status", "fda-2025:cle:end-of-support"):
+            finding = next((f for f in result.findings if f.id == finding_id), None)
+            assert finding is not None, f"{finding_id} missing"
+            assert finding.status == "fail", (
+                f"{finding_id} must fail for library without CLE data (got {finding.status})"
+            )
+            assert "broken-lib" in (finding.description or "")
+            assert "uv.lock" not in (finding.description or ""), "file-type entry must not appear in CLE failure list"

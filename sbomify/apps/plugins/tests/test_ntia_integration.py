@@ -610,3 +610,92 @@ class TestFileTypeComponentSkipped:
         assert version is not None, "version finding missing"
         assert supplier.status == "pass", f"File entry skipped for supplier: {supplier.description}"
         assert version.status == "pass", f"File entry skipped for version: {version.description}"
+
+    def test_cyclonedx_library_component_still_fails_when_missing_fields(self):
+        """Regression guard: file-type skip must not accidentally silence real failures.
+
+        A non-file component missing supplier or version must still surface the
+        failure. This test lives alongside the skip tests so that any future
+        refactor of the is_file_type check immediately breaks if the skip logic
+        accidentally widens.
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            "components": [
+                {
+                    # Library-type with missing supplier AND missing version
+                    "name": "unmaintained-lib",
+                    "type": "library",
+                    "purl": "pkg:pypi/unmaintained-lib@unknown",
+                },
+                {
+                    # File-type (should still be skipped)
+                    "name": "uv.lock",
+                    "type": "file",
+                },
+            ],
+            "dependencies": [{"ref": "pkg:pypi/unmaintained-lib@unknown", "dependsOn": []}],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        supplier = next((f for f in result.findings if f.id == "ntia-2021:supplier-name"), None)
+        version = next((f for f in result.findings if f.id == "ntia-2021:version"), None)
+        assert supplier is not None and supplier.status == "fail", "library component without supplier must still fail"
+        assert "unmaintained-lib" in (supplier.description or "")
+        assert "uv.lock" not in (supplier.description or ""), "file-type must not appear in failure list"
+        assert version is not None and version.status == "fail", "library component without version must still fail"
+        assert "unmaintained-lib" in (version.description or "")
+
+    def test_cyclonedx_file_type_case_insensitive(self):
+        """type matching is case-insensitive — File, FILE, file all skipped."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {"authors": [{"name": "Dev"}], "timestamp": "2026-01-01T00:00:00Z"},
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.2.3",
+                    "type": "library",
+                    "purl": "pkg:pypi/django@5.2.3",
+                    "publisher": "Django",
+                },
+                {"name": "lock1.lock", "type": "File"},
+                {"name": "lock2.lock", "type": "FILE"},
+                {"name": "lock3.lock", "type": "file"},
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
+            finding = next((f for f in result.findings if f.id == fid), None)
+            assert finding is not None and finding.status == "pass", (
+                f"{fid}: all case variations of type=file must be skipped, got {finding.status if finding else None}: "
+                f"{finding.description if finding else None}"
+            )

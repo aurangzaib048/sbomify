@@ -132,3 +132,22 @@ class TestUnsupportedFormatSkipped:
         assert finding.id == "dependency-track:unsupported-format"
         assert finding.status == "warning"
         assert "skipped" in (finding.description or "").lower()
+
+    def test_unrecognized_format_also_returns_skipped(self, tmp_path) -> None:
+        """Anything that isn't valid CycloneDX (random JSON, truncated file, etc.)
+        should skip rather than error. The old behavior returned a hard error for
+        anything that failed _validate_cyclonedx — we want that path to remain
+        user-friendly for non-CycloneDX input of any kind."""
+        import json
+
+        garbage = {"hello": "world", "notAnSBOM": True}
+        sbom_path = tmp_path / "garbage.json"
+        sbom_path.write_text(json.dumps(garbage))
+
+        plugin = DependencyTrackPlugin(config={})
+        result = plugin.assess("sbom-id", sbom_path)
+
+        assert result.summary.error_count == 0
+        assert result.summary.warning_count == 1
+        assert result.metadata.get("skipped") is True
+        assert result.findings[0].id == "dependency-track:unsupported-format"

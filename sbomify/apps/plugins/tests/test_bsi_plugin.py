@@ -1309,3 +1309,66 @@ class TestFileTypeComponentSkipped:
         assert creator is not None and creator.status == "pass", (
             f"File entry without supplier should be skipped: {creator.description if creator else None}"
         )
+
+    def test_library_with_missing_fields_still_fails_alongside_file_type(self):
+        """Regression guard: the skip must only apply to type=file.
+
+        If a real library component is missing version/creator/filename etc and
+        a file-type entry coexists, the library failures must still surface — we
+        must not accidentally widen the skip.
+        """
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"].append(
+            {
+                "name": "broken-lib",
+                "type": "library",
+                "purl": "pkg:pypi/broken-lib@unknown",
+                # No version, no manufacturer, no filename, no licence, no hashes
+            }
+        )
+        sbom["components"].append({"name": "uv.lock", "type": "file"})
+        result = assess_sbom(sbom)
+
+        for finding_id in (
+            "bsi-tr03183:component-version",
+            "bsi-tr03183:component-creator",
+        ):
+            finding = get_finding(result, finding_id)
+            assert finding is not None, f"{finding_id} missing"
+            assert finding.status == "fail", (
+                f"{finding_id} must fail for library missing the field (got {finding.status})"
+            )
+            assert "broken-lib" in (finding.description or ""), (
+                f"{finding_id} description should mention broken-lib: {finding.description}"
+            )
+            assert "uv.lock" not in (finding.description or ""), (
+                f"{finding_id} description must NOT mention file-type uv.lock: {finding.description}"
+            )
+
+    def test_cyclonedx_multiple_file_type_components_all_skipped(self):
+        """All file-type components should be skipped, not just the first one."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"].extend(
+            [
+                {"name": "uv.lock", "type": "file"},
+                {"name": "poetry.lock", "type": "FILE"},  # case-insensitive
+                {"name": "package-lock.json", "type": "File"},
+            ]
+        )
+        result = assess_sbom(sbom)
+
+        for finding_id in (
+            "bsi-tr03183:component-version",
+            "bsi-tr03183:component-creator",
+            "bsi-tr03183:filename",
+            "bsi-tr03183:distribution-licences",
+            "bsi-tr03183:hash-value",
+            "bsi-tr03183:executable-property",
+            "bsi-tr03183:archive-property",
+            "bsi-tr03183:structured-property",
+        ):
+            finding = get_finding(result, finding_id)
+            assert finding is not None, f"{finding_id} missing"
+            assert finding.status == "pass", (
+                f"{finding_id} should pass with 3 file-type entries (got {finding.status}): {finding.description}"
+            )
