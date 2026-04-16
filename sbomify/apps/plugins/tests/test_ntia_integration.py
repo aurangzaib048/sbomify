@@ -822,32 +822,56 @@ class TestFileTypeSkipAcrossGenerators:
                 f"Clean File- convention not skipped for {fid}: {finding.description if finding else None}"
             )
 
-    def test_spdx_package_with_filemanager_name_not_false_positive(self):
-        """A real package named 'FileManager' must NOT be falsely skipped.
+    def test_spdx_real_packages_containing_file_in_name_not_skipped(self):
+        """Real packages with 'File' in their name must NOT be falsely skipped.
 
-        The heuristic requires a '-File-' with dashes on both sides, so
-        'SPDXRef-Package-FileManager' doesn't match and its failures still
-        surface correctly.
+        The '-File-' heuristic requires dashes on BOTH sides (making it a
+        word-segment marker) AND is case-sensitive. This keeps these real
+        packages from being misclassified as file entries:
+
+        - filelock          (pypi, capital F absent: '-filelock-' has no match)
+        - FileManager       ('-FileM' has no trailing dash)
+        - file-utils        (lowercase 'file', not capital 'File')
+        - python-file-utils (same — lowercase)
+
+        Any of these missing supplier/version must still surface in failures.
         """
         sbom = self._base_spdx_doc(
             [
                 {
-                    # Note: no versionInfo, no supplier — must FAIL because
-                    # this is a real package, not a file entry.
+                    "SPDXID": "SPDXRef-Package-filelock-3.12.0",
+                    "name": "filelock",
+                    "downloadLocation": "NOASSERTION",
+                    # Intentionally missing supplier + versionInfo
+                },
+                {
                     "SPDXID": "SPDXRef-Package-FileManager-abc123",
                     "name": "FileManager",
                     "downloadLocation": "NOASSERTION",
-                }
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-python-file-utils-2.0",
+                    "name": "python-file-utils",
+                    "downloadLocation": "NOASSERTION",
+                },
             ]
         )
         result = self._assess(sbom)
         supplier = next((f for f in result.findings if f.id == "ntia-2021:supplier-name"), None)
         version = next((f for f in result.findings if f.id == "ntia-2021:version"), None)
-        assert supplier is not None and supplier.status == "fail", (
-            "Package named FileManager must still fail supplier check, not be skipped"
-        )
-        assert "FileManager" in (supplier.description or "")
+
+        # All three packages must appear in the supplier + version failure lists
+        # because they are real packages, not file entries.
+        assert supplier is not None and supplier.status == "fail"
         assert version is not None and version.status == "fail"
+        for expected_name in ("filelock", "FileManager", "python-file-utils"):
+            assert expected_name in (supplier.description or ""), (
+                f"real package '{expected_name}' missing from supplier failures — "
+                f"heuristic may be over-skipping: {supplier.description}"
+            )
+            assert expected_name in (version.description or ""), (
+                f"real package '{expected_name}' missing from version failures: {version.description}"
+            )
 
     def test_cyclonedx_works_on_multiple_spec_versions(self):
         """The type=file skip is not tied to a specific CycloneDX spec version.
