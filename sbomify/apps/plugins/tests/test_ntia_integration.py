@@ -699,3 +699,192 @@ class TestFileTypeComponentSkipped:
                 f"{fid}: all case variations of type=file must be skipped, got {finding.status if finding else None}: "
                 f"{finding.description if finding else None}"
             )
+
+
+class TestFileTypeSkipAcrossGenerators:
+    """Verify the file-type skip works for SBOMs produced by multiple generators,
+    not just syft's specific output format (which is what Lithium uses).
+
+    Different tools emit file-like metadata with different conventions:
+    - syft:               SPDXRef-DocumentRoot-File-<name>-<hash>
+    - Microsoft sbom-tool: SPDXRef-File--<name>-<hash> (double dash)
+    - Clean convention:   SPDXRef-File-<name>
+    - cdxgen / cyclonedx-py: CycloneDX type="file" with mime-type set
+
+    The common marker the plugin uses is the "-File-" substring in SPDXID for
+    SPDX and "type == 'file'" for CycloneDX. These tests prove the heuristic
+    covers the practical generator ecosystem, not only Lithium's setup.
+    """
+
+    def _assess(self, sbom_data: dict):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        plugin = NTIAMinimumElementsPlugin()
+        suffix = ".spdx.json" if "spdxVersion" in sbom_data else ".json"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            return plugin.assess("test", Path(f.name))
+
+    def _base_spdx_doc(self, packages: list[dict]) -> dict:
+        return {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: test"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.2.3",
+                        }
+                    ],
+                },
+                *packages,
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+        }
+
+    def test_spdx_syft_document_root_file_naming(self):
+        """syft emits SPDXRef-DocumentRoot-File-<name>-<hash>."""
+        sbom = self._base_spdx_doc(
+            [
+                {
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock-e473982c",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                }
+            ]
+        )
+        result = self._assess(sbom)
+        for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
+            finding = next((f for f in result.findings if f.id == fid), None)
+            assert finding is not None and finding.status == "pass", (
+                f"syft convention not skipped for {fid}: {finding.description if finding else None}"
+            )
+
+    def test_spdx_microsoft_sbom_tool_double_dash_naming(self):
+        """Microsoft sbom-tool emits SPDXRef-File--<name>-<hash> (double dash)."""
+        sbom = self._base_spdx_doc(
+            [
+                {
+                    "SPDXID": "SPDXRef-File--sbom-tool-win-x64.exe-E55F25E239D8D3572D75D5CDC5CA24899FD4993F",
+                    "name": "sbom-tool-win-x64.exe",
+                    "downloadLocation": "NOASSERTION",
+                }
+            ]
+        )
+        result = self._assess(sbom)
+        for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
+            finding = next((f for f in result.findings if f.id == fid), None)
+            assert finding is not None and finding.status == "pass", (
+                f"Microsoft sbom-tool convention not skipped for {fid}: "
+                f"{finding.description if finding else None}"
+            )
+
+    def test_spdx_clean_file_naming(self):
+        """Clean convention: SPDXRef-File-<name>."""
+        sbom = self._base_spdx_doc(
+            [
+                {
+                    "SPDXID": "SPDXRef-File-manifest.txt",
+                    "name": "manifest.txt",
+                    "downloadLocation": "NOASSERTION",
+                }
+            ]
+        )
+        result = self._assess(sbom)
+        for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
+            finding = next((f for f in result.findings if f.id == fid), None)
+            assert finding is not None and finding.status == "pass", (
+                f"Clean File- convention not skipped for {fid}: {finding.description if finding else None}"
+            )
+
+    def test_spdx_package_with_filemanager_name_not_false_positive(self):
+        """A real package named 'FileManager' must NOT be falsely skipped.
+
+        The heuristic requires a '-File-' with dashes on both sides, so
+        'SPDXRef-Package-FileManager' doesn't match and its failures still
+        surface correctly.
+        """
+        sbom = self._base_spdx_doc(
+            [
+                {
+                    # Note: no versionInfo, no supplier — must FAIL because
+                    # this is a real package, not a file entry.
+                    "SPDXID": "SPDXRef-Package-FileManager-abc123",
+                    "name": "FileManager",
+                    "downloadLocation": "NOASSERTION",
+                }
+            ]
+        )
+        result = self._assess(sbom)
+        supplier = next((f for f in result.findings if f.id == "ntia-2021:supplier-name"), None)
+        version = next((f for f in result.findings if f.id == "ntia-2021:version"), None)
+        assert supplier is not None and supplier.status == "fail", (
+            "Package named FileManager must still fail supplier check, not be skipped"
+        )
+        assert "FileManager" in (supplier.description or "")
+        assert version is not None and version.status == "fail"
+
+    def test_cyclonedx_works_on_multiple_spec_versions(self):
+        """The type=file skip is not tied to a specific CycloneDX spec version.
+        Works on 1.4, 1.5, and 1.6 (all versions sbomify-action produces)."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        def _sbom(spec_version: str) -> dict:
+            return {
+                "bomFormat": "CycloneDX",
+                "specVersion": spec_version,
+                "metadata": {"authors": [{"name": "Dev"}], "timestamp": "2026-01-01T00:00:00Z"},
+                "components": [
+                    {
+                        "name": "django",
+                        "version": "5.2.3",
+                        "type": "library",
+                        "purl": "pkg:pypi/django@5.2.3",
+                        "publisher": "Django",
+                    },
+                    {"name": "uv.lock", "type": "file"},
+                ],
+                "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+            }
+
+        for spec_version in ("1.4", "1.5", "1.6"):
+            plugin = NTIAMinimumElementsPlugin()
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(_sbom(spec_version), f)
+                f.flush()
+                result = plugin.assess("test", Path(f.name))
+            for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
+                finding = next((f for f in result.findings if f.id == fid), None)
+                assert finding is not None and finding.status == "pass", (
+                    f"CycloneDX {spec_version}: {fid} should pass but got "
+                    f"{finding.status if finding else None}: {finding.description if finding else None}"
+                )
