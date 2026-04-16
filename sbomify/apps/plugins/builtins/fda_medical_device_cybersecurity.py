@@ -281,38 +281,42 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         for i, package in enumerate(packages):
             package_name = package.get("name", f"Package {i + 1}")
 
+            # Skip file-type packages (e.g., lockfiles) — they're input metadata,
+            # not software packages. Detected by SPDXID containing "-File-".
+            spdx_id = str(package.get("SPDXID") or "")
+            is_file_entry = "-File-" in spdx_id
+
             # === NTIA Elements ===
 
             # 1. Supplier name
-            if not package.get("supplier"):
+            if not is_file_entry and not package.get("supplier"):
                 supplier_failures.append(package_name)
 
-            # 2. Component name
+            # 2. Component name (applies to all entries)
             if not package.get("name"):
                 component_name_failures.append(f"Package at index {i}")
+
+            if is_file_entry:
+                continue
 
             # 3. Version
             if not package.get("versionInfo"):
                 version_failures.append(package_name)
 
             # 4. Unique identifiers (PURL, CPE, SWID via externalRefs)
-            # Skip file-type packages (e.g., lockfiles) — not software packages.
-            spdx_id = str(package.get("SPDXID") or "")
-            is_file_entry = "-File-" in spdx_id
-            if not is_file_entry:
-                valid_identifier_types = {"purl", "cpe22Type", "cpe23Type", "swid"}
-                purl = package.get("purl")
-                external_refs = package.get("externalRefs")
-                if not isinstance(external_refs, list):
-                    external_refs = []
-                has_unique_id = (isinstance(purl, str) and bool(purl)) or any(
-                    isinstance(ref, dict)
-                    and isinstance(ref.get("referenceType"), str)
-                    and ref["referenceType"] in valid_identifier_types
-                    for ref in external_refs
-                )
-                if not has_unique_id:
-                    unique_id_failures.append(package_name)
+            valid_identifier_types = {"purl", "cpe22Type", "cpe23Type", "swid"}
+            purl = package.get("purl")
+            external_refs = package.get("externalRefs")
+            if not isinstance(external_refs, list):
+                external_refs = []
+            has_unique_id = (isinstance(purl, str) and bool(purl)) or any(
+                isinstance(ref, dict)
+                and isinstance(ref.get("referenceType"), str)
+                and ref["referenceType"] in valid_identifier_types
+                for ref in external_refs
+            )
+            if not has_unique_id:
+                unique_id_failures.append(package_name)
 
             # === FDA CLE Elements ===
 
@@ -742,19 +746,28 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
 
+            # Skip type=file components (e.g., lockfiles) — they're input metadata,
+            # not software packages, so FDA/NTIA per-component fields don't apply.
+            # Component Name is still checked so misnamed file entries surface.
+            is_file_type = str(component.get("type", "")).lower() == "file"
+
             # === NTIA Elements ===
 
             # 1. Supplier name (publisher or supplier.name)
-            supplier_field = component.get("supplier")
-            supplier = component.get("publisher") or (
-                supplier_field.get("name") if isinstance(supplier_field, dict) else None
-            )
-            if not supplier:
-                supplier_failures.append(component_name)
+            if not is_file_type:
+                supplier_field = component.get("supplier")
+                supplier = component.get("publisher") or (
+                    supplier_field.get("name") if isinstance(supplier_field, dict) else None
+                )
+                if not supplier:
+                    supplier_failures.append(component_name)
 
-            # 2. Component name
+            # 2. Component name (applies to all component types)
             if not component.get("name"):
                 component_name_failures.append(f"Component at index {i}")
+
+            if is_file_type:
+                continue
 
             # 3. Version
             if not component.get("version"):
@@ -762,11 +775,9 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # 4. Unique identifiers (PURL, CPE, SWID)
             # Note: hashes are for "Component Hash" (RECOMMENDED), not "Unique Identifiers" (MINIMUM)
-            # Skip type=file components (e.g., lockfiles) — not software packages.
-            if str(component.get("type", "")).lower() != "file":
-                has_unique_id = component.get("purl") or component.get("cpe") or component.get("swid")
-                if not has_unique_id:
-                    unique_id_failures.append(component_name)
+            has_unique_id = component.get("purl") or component.get("cpe") or component.get("swid")
+            if not has_unique_id:
+                unique_id_failures.append(component_name)
 
             # === FDA CLE Elements ===
 

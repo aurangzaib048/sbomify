@@ -495,9 +495,19 @@ class BSICompliancePlugin(AssessmentPlugin):
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
 
-            # 1. Component name
+            # Skip type=file components (e.g., lockfiles, scan inputs) for BSI
+            # per-component checks. BSI TR-03183-2 §5.2.2 fields apply to software
+            # components (type=library/application/framework/container/...), not to
+            # file-type entries that generators like syft emit for their scan input.
+            # Component Name is still validated so misnamed file entries surface.
+            is_file_type = str(component.get("type", "")).lower() == "file"
+
+            # 1. Component name (applies to all component types)
             if not component.get("name"):
                 name_failures.append(f"Component at index {i}")
+
+            if is_file_type:
+                continue
 
             # 2. Component version
             if not component.get("version"):
@@ -1058,10 +1068,23 @@ class BSICompliancePlugin(AssessmentPlugin):
             )
         )
 
-        # Component-level - mark most as fail with note about SPDX 2.x limitations
+        # Component-level - mark most as fail with note about SPDX 2.x limitations.
+        # Skip file-type entries (SPDXID contains "-File-") since BSI §5.2.2 applies
+        # to software packages, not to file entries generators emit for their inputs.
+        def _is_file_pkg(p: dict[str, Any]) -> bool:
+            return "-File-" in str(p.get("SPDXID") or "")
+
         name_failures = [p.get("name", f"Package {i}") for i, p in enumerate(packages) if not p.get("name")]
-        version_failures = [p.get("name", f"Package {i}") for i, p in enumerate(packages) if not p.get("versionInfo")]
-        supplier_failures = [p.get("name", f"Package {i}") for i, p in enumerate(packages) if not p.get("supplier")]
+        version_failures = [
+            p.get("name", f"Package {i}")
+            for i, p in enumerate(packages)
+            if not _is_file_pkg(p) and not p.get("versionInfo")
+        ]
+        supplier_failures = [
+            p.get("name", f"Package {i}")
+            for i, p in enumerate(packages)
+            if not _is_file_pkg(p) and not p.get("supplier")
+        ]
 
         findings.append(
             self._create_finding(
@@ -1127,9 +1150,11 @@ class BSICompliancePlugin(AssessmentPlugin):
             )
         )
 
-        # Unique identifiers
+        # Unique identifiers (skip file-type entries — they don't have package IDs)
         identifier_warnings = []
         for i, pkg in enumerate(packages):
+            if _is_file_pkg(pkg):
+                continue
             purl = pkg.get("purl")
             external_refs = pkg.get("externalRefs")
             if not isinstance(external_refs, list):

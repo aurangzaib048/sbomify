@@ -1140,3 +1140,145 @@ class TestFileTypeComponentSkipped:
         uid_finding = next((f for f in result.findings if f.id == "fda-2025:ntia:unique-identifiers"), None)
         assert uid_finding is not None
         assert uid_finding.status == "pass", f"File entry should be skipped: {uid_finding.description}"
+
+    def test_cyclonedx_file_type_skipped_in_supplier_version_and_cle(self) -> None:
+        """FDA file-type skip must extend to supplier, version and CLE checks,
+        not just unique-identifiers. A lockfile has no supplier/version/lifecycle
+        by nature — it's input metadata, not a software component.
+        """
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.2.3",
+                    "type": "library",
+                    "publisher": "Django",
+                    "purl": "pkg:pypi/django@5.2.3",
+                    "properties": [
+                        {"name": "cdx:cle:supportStatus", "value": "active"},
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                },
+                {
+                    # Bare file-type entry — no supplier, version, or CLE fields
+                    "name": "uv.lock",
+                    "type": "file",
+                },
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        for finding_id in (
+            "fda-2025:ntia:supplier-name",
+            "fda-2025:ntia:version",
+            "fda-2025:cle:support-status",
+            "fda-2025:cle:end-of-support",
+        ):
+            finding = next((f for f in result.findings if f.id == finding_id), None)
+            assert finding is not None, f"{finding_id} missing from findings"
+            assert finding.status == "pass", (
+                f"{finding_id} should pass (file-type entry skipped): {finding.description}"
+            )
+
+    def test_spdx_file_entry_skipped_in_supplier_version_and_cle(self) -> None:
+        """SPDX File-entries must be skipped for supplier, version and CLE checks."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: test"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                    "validUntilDate": "2027-12-31T00:00:00Z",
+                    "annotations": [
+                        {
+                            "annotationType": "OTHER",
+                            "annotator": "Tool: sbomify",
+                            "annotationDate": "2026-01-01T00:00:00Z",
+                            "comment": "cle:supportStatus=active",
+                        }
+                    ],
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.2.3",
+                        }
+                    ],
+                },
+                {
+                    # Bare file entry — no supplier/versionInfo/validUntilDate
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        for finding_id in (
+            "fda-2025:ntia:supplier-name",
+            "fda-2025:ntia:version",
+            "fda-2025:cle:support-status",
+            "fda-2025:cle:end-of-support",
+        ):
+            finding = next((f for f in result.findings if f.id == finding_id), None)
+            assert finding is not None, f"{finding_id} missing from findings"
+            assert finding.status == "pass", f"{finding_id} should pass (File entry skipped): {finding.description}"
+
+    def test_cyclonedx_library_still_fails_alongside_file_type(self) -> None:
+        """Regression guard: real library without CLE data must still fail."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "broken-lib",
+                    "version": "1.0.0",
+                    "type": "library",
+                    "publisher": "SomeOrg",
+                    "purl": "pkg:pypi/broken-lib@1.0.0",
+                    # No CLE properties
+                },
+                {"name": "uv.lock", "type": "file"},
+            ],
+            "dependencies": [{"ref": "pkg:pypi/broken-lib@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        for finding_id in ("fda-2025:cle:support-status", "fda-2025:cle:end-of-support"):
+            finding = next((f for f in result.findings if f.id == finding_id), None)
+            assert finding is not None, f"{finding_id} missing"
+            assert finding.status == "fail", (
+                f"{finding_id} must fail for library without CLE data (got {finding.status})"
+            )
+            assert "broken-lib" in (finding.description or "")
+            assert "uv.lock" not in (finding.description or ""), "file-type entry must not appear in CLE failure list"
