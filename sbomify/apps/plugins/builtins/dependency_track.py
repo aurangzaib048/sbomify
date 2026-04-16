@@ -102,11 +102,19 @@ class DependencyTrackPlugin(AssessmentPlugin):
             logger.error(f"[DT] Failed to read SBOM file: {e}")
             return self._create_error_result(f"Failed to read SBOM: {e}")
 
-        # Validate CycloneDX format (DT does not support SPDX)
+        # Validate CycloneDX format (DT does not support SPDX).
+        # Non-CycloneDX SBOMs aren't an error — DT simply can't process them.
+        # Return a skipped result so the UI shows "not applicable" rather than
+        # a hard error finding for a format choice the user made deliberately.
         if not self._validate_cyclonedx(sbom_bytes):
-            return self._create_error_result(
-                "Dependency Track only supports CycloneDX format. "
-                "This SBOM appears to be SPDX or an unrecognized format."
+            return self._create_skipped_result(
+                finding_id="dependency-track:unsupported-format",
+                title="Format Not Supported",
+                description=(
+                    "Dependency Track only supports CycloneDX format. "
+                    "This SBOM appears to be SPDX or an unrecognized format — "
+                    "vulnerability scanning was skipped."
+                ),
             )
 
         # Look up SBOM → Component → Team

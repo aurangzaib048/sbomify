@@ -97,3 +97,38 @@ class TestTrackedObjectCount:
         assert server.is_available_for_scan is False
 
 
+class TestUnsupportedFormatSkipped:
+    """DT should return a skipped (not error) result when given a non-CycloneDX SBOM.
+
+    SPDX is a deliberate format choice, not an error condition — DT simply doesn't
+    support it. The UI/reporting layer should surface this as "not applicable"
+    rather than a hard error finding.
+    """
+
+    def test_spdx_input_returns_skipped_not_error(self, tmp_path) -> None:
+        """Passing an SPDX 2.3 SBOM to DT should yield a skipped result."""
+        import json
+
+        spdx_sbom = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {"created": "2026-01-01T00:00:00Z", "creators": ["Tool: test"]},
+            "packages": [],
+        }
+        sbom_path = tmp_path / "test.spdx.json"
+        sbom_path.write_text(json.dumps(spdx_sbom))
+
+        plugin = DependencyTrackPlugin(config={})
+        result = plugin.assess("sbom-id-does-not-matter", sbom_path)
+
+        assert result.summary.error_count == 0, f"SPDX input should not produce errors, got {result.summary}"
+        assert result.summary.warning_count == 1
+        assert result.metadata.get("skipped") is True
+        assert len(result.findings) == 1
+        finding = result.findings[0]
+        assert finding.id == "dependency-track:unsupported-format"
+        assert finding.status == "warning"
+        assert "skipped" in (finding.description or "").lower()

@@ -500,3 +500,113 @@ class TestFileTypeComponentSkipped:
         uid_finding = next((f for f in result.findings if f.id == "ntia-2021:unique-identifiers"), None)
         assert uid_finding is not None
         assert uid_finding.status == "pass", f"uv.lock (File entry) should be skipped: {uid_finding.description}"
+
+    def test_cyclonedx_file_type_skipped_in_supplier_and_version_checks(self):
+        """CycloneDX type=file components must also be skipped for Supplier Name
+        and Component Version — not just Unique Identifiers. Generators like syft
+        emit lockfiles as file-type entries which lack supplier/version by design.
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.2.3",
+                    "type": "library",
+                    "purl": "pkg:pypi/django@5.2.3",
+                    "publisher": "Django",
+                },
+                {
+                    # No supplier, no version — file-type should be skipped
+                    "name": "uv.lock",
+                    "type": "file",
+                    "hashes": [{"alg": "SHA-256", "content": "abc123"}],
+                },
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.2.3", "dependsOn": []}],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        supplier = next((f for f in result.findings if f.id == "ntia-2021:supplier-name"), None)
+        version = next((f for f in result.findings if f.id == "ntia-2021:version"), None)
+        assert supplier is not None, "supplier-name finding missing"
+        assert version is not None, "version finding missing"
+        assert supplier.status == "pass", f"file skipped for supplier: {supplier.description}"
+        assert version.status == "pass", f"file skipped for version: {version.description}"
+
+    def test_spdx_file_entry_skipped_in_supplier_and_version_checks(self):
+        """SPDX File-type entries must be skipped for Supplier + Version too."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from sbomify.apps.plugins.builtins.ntia import NTIAMinimumElementsPlugin
+
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: test"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.2.3",
+                        }
+                    ],
+                },
+                {
+                    # No supplier, no versionInfo — File entry should be skipped
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": False,
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+        }
+        plugin = NTIAMinimumElementsPlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".spdx.json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            result = plugin.assess("test", Path(f.name))
+
+        supplier = next((f for f in result.findings if f.id == "ntia-2021:supplier-name"), None)
+        version = next((f for f in result.findings if f.id == "ntia-2021:version"), None)
+        assert supplier is not None, "supplier-name finding missing"
+        assert version is not None, "version finding missing"
+        assert supplier.status == "pass", f"File entry skipped for supplier: {supplier.description}"
+        assert version.status == "pass", f"File entry skipped for version: {version.description}"

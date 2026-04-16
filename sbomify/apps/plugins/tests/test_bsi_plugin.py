@@ -1207,3 +1207,105 @@ class TestFormatFailureDetails:
         plugin = BSICompliancePlugin({})
         result = plugin._format_failure_details(["a", "b", "c", "d"], max_shown=2)
         assert result == "Missing for: a, b (4 total; 2 more)"
+
+
+class TestFileTypeComponentSkipped:
+    """BSI must skip type=file / File-entry components across per-component checks.
+
+    BSI TR-03183-2 §5.2.2 applies to software components. Generators like syft
+    emit scan-input artifacts (e.g. lockfiles) as type=file in CycloneDX or with
+    "-File-" in the SPDXID in SPDX, which lack version/creator/licence/properties
+    by design. These entries should not contribute to failure counts.
+    """
+
+    def test_cyclonedx_file_type_skipped_across_all_component_checks(self):
+        """A type=file component without any BSI fields should not cause failures."""
+        sbom = create_base_cyclonedx_sbom()
+        # Add a bare file-type component alongside the valid library component.
+        sbom["components"].append(
+            {
+                "name": "uv.lock",
+                "type": "file",
+                "hashes": [{"alg": "SHA-256", "content": "def456" * 20}],
+            }
+        )
+        result = assess_sbom(sbom)
+
+        # All per-component BSI checks should still pass because the only
+        # non-compliant entry is a file-type component that must be skipped.
+        for finding_id in (
+            "bsi-tr03183:component-version",
+            "bsi-tr03183:component-creator",
+            "bsi-tr03183:filename",
+            "bsi-tr03183:distribution-licences",
+            "bsi-tr03183:hash-value",
+            "bsi-tr03183:executable-property",
+            "bsi-tr03183:archive-property",
+            "bsi-tr03183:structured-property",
+        ):
+            finding = get_finding(result, finding_id)
+            assert finding is not None, f"{finding_id} missing from result"
+            assert finding.status == "pass", f"{finding_id} should pass but got {finding.status}: {finding.description}"
+
+    def test_cyclonedx_file_type_component_name_still_validated(self):
+        """Component Name is universal — file-type entries without a name still fail."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"].append({"type": "file"})
+        result = assess_sbom(sbom)
+
+        finding = get_finding(result, "bsi-tr03183:component-name")
+        assert finding is not None
+        assert finding.status == "fail", "nameless file-type entry should still fail name check"
+
+    def test_spdx2_file_entry_skipped_in_version_and_supplier(self):
+        """SPDX 2.x File-entries (SPDXID contains -File-) must be skipped for
+        component-level checks that don't apply to file inputs."""
+        sbom = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/test",
+            "creationInfo": {
+                "created": "2024-01-15T12:00:00Z",
+                "creators": ["Tool: test", "Organization: Example Corp (sbom@example.com)"],
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.2.3",
+                    "supplier": "Organization: Django",
+                    "downloadLocation": "NOASSERTION",
+                },
+                {
+                    # No versionInfo, no supplier — File entry should be skipped
+                    "SPDXID": "SPDXRef-DocumentRoot-File-uv.lock",
+                    "name": "uv.lock",
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": False,
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                },
+                {
+                    "spdxElementId": "SPDXRef-Package-django",
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                },
+            ],
+        }
+        result = assess_sbom(sbom)
+
+        version = get_finding(result, "bsi-tr03183:component-version")
+        creator = get_finding(result, "bsi-tr03183:component-creator")
+        assert version is not None and version.status == "pass", (
+            f"File entry without versionInfo should be skipped: {version.description if version else None}"
+        )
+        assert creator is not None and creator.status == "pass", (
+            f"File entry without supplier should be skipped: {creator.description if creator else None}"
+        )
