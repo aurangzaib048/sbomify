@@ -38,6 +38,22 @@ Key differences from NTIA 2021:
     - Software Producer replaces Supplier Name
     - Software Identifiers requires at least one (not optional)
     - Stricter timestamp validation (ISO 8601 enforced)
+
+Generation Context recognition:
+    - CycloneDX: metadata.lifecycles[].phase is the authoritative path
+      (see https://cyclonedx.org/guides/sbom/lifecycle_phases/).
+      A property fallback in metadata.properties is also accepted.
+      The sanctioned fallback property name is 'internal:sbom:generationContext'
+      (under the taxonomy-registered 'internal' namespace). The legacy
+      'cdx:sbom:generationContext' name is still accepted for backward
+      compatibility, but it is not part of the CycloneDX property
+      taxonomy; new data should use one of the sanctioned paths.
+    - SPDX 2.3: recognised via creationInfo.comment, the top-level
+      DocumentComment, or an OTHER annotation describing the document.
+      Per SPDX 2.3 §12, a top-level annotation with spdxElementId pointing
+      at a specific package describes that package — not the SBOM — so
+      such annotations do NOT satisfy the document-level Generation
+      Context check.
 """
 
 import json

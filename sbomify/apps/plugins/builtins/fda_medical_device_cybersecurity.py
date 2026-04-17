@@ -25,8 +25,9 @@ CLE (Common Lifecycle Enumeration) data is expected to be injected by the
 sbomify GitHub Action and validated by this plugin.
 
 CLE Format Support:
-    - CycloneDX: Component properties under the sanctioned cdx:lifecycle:milestone
-      taxonomy (see https://cyclonedx.github.io/cyclonedx-property-taxonomy/cdx/lifecycle.html):
+    - CycloneDX: Component-level properties. Primary recognition uses the
+      sanctioned cdx:lifecycle:milestone:* taxonomy (see
+      https://cyclonedx.github.io/cyclonedx-property-taxonomy/cdx/lifecycle.html):
         - cdx:lifecycle:milestone:endOfSupport (ISO-8601 date) — satisfies the
           FDA "End-of-Support Date" element.
         - Any status-bearing milestone on the component
@@ -34,9 +35,26 @@ CLE Format Support:
           endOfBusinessOperations) — satisfies the FDA "Software Support Status"
           element, since the component's lifecycle position is derivable from
           these dates.
+      For backward compatibility the deprecated cdx:cle:supportStatus /
+      cdx:cle:endOfSupport property names are still accepted. New data
+      should use the sanctioned names; the cdx:cle:* names are not part
+      of the CycloneDX property taxonomy.
     - SPDX 2.3: Native validUntilDate field + annotations
-        - validUntilDate for end-of-support
-        - Annotation with cle:supportStatus=<status>
+        - Per-package validUntilDate for end-of-support.
+        - Package-level or document-level OTHER annotation with
+          cle:supportStatus=<status>. Document-level annotations are
+          resolved to their spdxElementId target; annotations without a
+          subject, or whose subject is SPDXRef-DOCUMENT, describe the
+          document itself (per SPDX 2.3 §12).
+
+Scope of the per-component CLE checks:
+    FDA V.A.4.b requires per-component support data (or a per-component
+    justification when unknown). Dependencies in components[] / packages[]
+    are judged on their own CLE data and cannot inherit coverage from
+    document-level fields. The only document-level fallback recognised is
+    a narrow one that applies solely to the BOM subject (the root
+    component referenced by metadata.component.bom-ref in CycloneDX, or
+    the documentDescribes / DESCRIBES target in SPDX).
 """
 
 import json
@@ -75,7 +93,11 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
     status and end-of-support dates) for each software component.
 
     The plugin validates CLE (Common Lifecycle Enumeration) data that should
-    be injected by the sbomify GitHub Action.
+    be injected by the sbomify GitHub Action. Per-component data is
+    load-bearing: the BOM subject (root component) can inherit support
+    information from document-level fields via a narrow fallback, but every
+    dependency must carry its own data or fail — a single document-level
+    support date does not cover every component in the BOM.
 
     Attributes:
         VERSION: Plugin version (semantic versioning).
