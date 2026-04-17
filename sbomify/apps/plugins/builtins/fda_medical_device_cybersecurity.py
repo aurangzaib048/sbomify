@@ -285,10 +285,13 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
         # Narrow doc-level CLE fallback, mirroring the CycloneDX path.
         # Only the SPDX root subject (DESCRIBES target) inherits document-level
-        # CLE annotations — dependencies must carry their own data.
+        # CLE annotations — dependencies must carry their own data. Per SPDX 2.3
+        # §12, a top-level annotation with spdxElementId pointing at a specific
+        # package describes that package, not the document, so such annotations
+        # are not counted as "document-level" for the root fallback.
         root_spdxid = self._spdx_root_spdxid(data)
-        doc_has_support_status = self._spdx_doc_has_valid_support_status(data)
-        doc_has_end_of_support = self._spdx_doc_has_cle_token(data, "cle:endOfSupport=")
+        doc_has_support_status = self._spdx_doc_has_valid_support_status(data, root_spdxid)
+        doc_has_end_of_support = self._spdx_doc_has_cle_token(data, "cle:endOfSupport=", root_spdxid)
 
         # Check each package for required elements
         for i, package in enumerate(packages):
@@ -517,28 +520,46 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
         return None
 
-    def _spdx_doc_has_cle_token(self, data: dict[str, Any], token: str) -> bool:
-        """Check if any top-level OTHER annotation comment contains a CLE token.
+    def _spdx_annotation_targets_document(self, annotation: dict[str, Any], root_spdxid: str | None) -> bool:
+        """Return True if an SPDX top-level annotation's target is the
+        document or the BOM subject (root). Per SPDX 2.3 §12 an annotation
+        with an spdxElementId pointing at a specific package describes
+        that package, not the document, so it MUST NOT be counted as
+        "document-level" for the narrow root fallback.
+        """
+        subject = annotation.get("spdxElementId", "")
+        if not isinstance(subject, str):
+            return False
+        if subject == "" or subject == "SPDXRef-DOCUMENT":
+            return True
+        return root_spdxid is not None and subject == root_spdxid
 
-        Doc-level annotations not scoped to a specific package are treated as
-        describing the BOM subject. Supports tokens like "cle:endOfSupport="
-        for the narrow root-component fallback.
+    def _spdx_doc_has_cle_token(self, data: dict[str, Any], token: str, root_spdxid: str | None) -> bool:
+        """Check if any top-level OTHER annotation describing the document
+        (or its DESCRIBES target) contains the given CLE token.
         """
         for annotation in data.get("annotations") or []:
             if not isinstance(annotation, dict):
                 continue
             if annotation.get("annotationType") != "OTHER":
                 continue
+            if not self._spdx_annotation_targets_document(annotation, root_spdxid):
+                continue
             comment = annotation.get("comment", "")
             if isinstance(comment, str) and token in comment:
                 return True
         return False
 
-    def _spdx_doc_has_valid_support_status(self, data: dict[str, Any]) -> bool:
-        """Check if any top-level OTHER annotation carries a valid CLE support
-        status value (active/deprecated/eol/abandoned/unknown)."""
+    def _spdx_doc_has_valid_support_status(self, data: dict[str, Any], root_spdxid: str | None) -> bool:
+        """Check if any top-level OTHER annotation describing the document
+        (or its DESCRIBES target) carries a valid CLE support status value
+        (active/deprecated/eol/abandoned/unknown)."""
         for annotation in data.get("annotations") or []:
-            if isinstance(annotation, dict) and self._parse_spdx_support_status_annotation(annotation):
+            if not isinstance(annotation, dict):
+                continue
+            if not self._spdx_annotation_targets_document(annotation, root_spdxid):
+                continue
+            if self._parse_spdx_support_status_annotation(annotation):
                 return True
         return False
 

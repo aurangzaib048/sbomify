@@ -846,6 +846,130 @@ class TestSPDXLifecycleFallback:
             assert "django" in fail_list, f"Expected django in {finding.id} fail list: {fail_list}"
             assert "lithium" not in fail_list, f"Root 'lithium' should not be in {finding.id} fail list: {fail_list}"
 
+    def test_spdx_doc_annotation_targeting_specific_package_does_not_fallback_to_root(self) -> None:
+        """Per SPDX 2.3 §12, a top-level annotation with spdxElementId pointing
+        at a specific package describes that package — not the document. The
+        narrow root fallback must therefore ignore such annotations and must
+        not grant the root component a pass via someone else's annotation.
+        """
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "doc",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/doc",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: Corp"],
+            },
+            "documentDescribes": ["SPDXRef-Package-root"],
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-root",
+                    "name": "root",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Corp",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/root@1.0.0",
+                        }
+                    ],
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-dep",
+                    "name": "dep",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Corp",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/dep@1.0.0",
+                        }
+                    ],
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-root",
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    "spdxElementId": "SPDXRef-Package-dep",
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        for finding in cle_findings:
+            assert finding.status == "fail"
+            fail_list = (finding.description or "").split("Missing for:")[-1]
+            assert "root" in fail_list, (
+                f"Root must fail {finding.id}: doc annotation targets dep, not document. Got: {finding.description}"
+            )
+
+    def test_spdx_doc_annotation_with_explicit_document_subject_passes_root(self) -> None:
+        """A top-level annotation with spdxElementId=SPDXRef-DOCUMENT behaves
+        identically to one with no spdxElementId — both describe the document
+        and feed the root fallback."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "doc",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/doc",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: Corp"],
+            },
+            "documentDescribes": ["SPDXRef-Package-root"],
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-root",
+                    "name": "root",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Corp",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/root@1.0.0",
+                        }
+                    ],
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-root",
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings)
+
     def test_spdx_root_passes_with_doc_level_annotation(self) -> None:
         """When the SPDX DESCRIBES target has a doc-level CLE annotation,
         that target passes. Other packages still need their own data."""
