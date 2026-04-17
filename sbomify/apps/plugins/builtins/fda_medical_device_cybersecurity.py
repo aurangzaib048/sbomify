@@ -861,14 +861,22 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
             # milestone on the component (endOfSupport, endOfLife, etc.). The
             # CycloneDX property taxonomy expresses lifecycle position via
             # dated milestones, not a status enum; presence of any such date
-            # gives the FDA reviewer enough to determine support level.
-            has_support_status = self._cyclonedx_has_status_milestone(component) or doc_fallback
+            # gives the FDA reviewer enough to determine support level. The
+            # deprecated cdx:cle:supportStatus / cdx:cle:endOfSupport names
+            # are also accepted for backward compatibility.
+            has_support_status = (
+                self._cyclonedx_has_status_milestone(component)
+                or self._cyclonedx_has_legacy_status_property(component)
+                or self._cyclonedx_has_legacy_eos_property(component)
+                or doc_fallback
+            )
             if not has_support_status:
                 support_status_failures.append(component_name)
 
             # 9. End of support date
             has_end_of_support = (
                 self._cyclonedx_component_has_milestone(component, "cdx:lifecycle:milestone:endOfSupport")
+                or self._cyclonedx_has_legacy_eos_property(component)
                 or doc_fallback
             )
             if not has_end_of_support:
@@ -1001,6 +1009,13 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         "cdx:lifecycle:milestone:endOfBusinessOperations",
     )
 
+    # Deprecated legacy property names (not in the CycloneDX taxonomy).
+    # Accepted for backward compatibility with SBOMs that were generated
+    # when the plugin used the unsanctioned cdx:cle:* convention. Prefer
+    # the _STATUS_MILESTONES names for new data.
+    _LEGACY_STATUS_PROP = "cdx:cle:supportStatus"
+    _LEGACY_EOS_PROP = "cdx:cle:endOfSupport"
+
     def _cyclonedx_has_lifecycle_property(self, metadata: dict[str, Any], property_name: str) -> bool:
         """Check if a CycloneDX metadata object has a specific lifecycle property.
 
@@ -1043,6 +1058,32 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         status (rather than via a dedicated enum property).
         """
         return any(self._cyclonedx_component_has_milestone(component, name) for name in self._STATUS_MILESTONES)
+
+    def _cyclonedx_has_legacy_status_property(self, component: dict[str, Any]) -> bool:
+        """Recognise the deprecated cdx:cle:supportStatus property for
+        backward compatibility. Value must be a valid CLE status enum."""
+        for prop in component.get("properties") or []:
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("name") != self._LEGACY_STATUS_PROP:
+                continue
+            value = prop.get("value", "")
+            if isinstance(value, str) and value.strip().lower() in CLE_SUPPORT_STATUS_VALUES:
+                return True
+        return False
+
+    def _cyclonedx_has_legacy_eos_property(self, component: dict[str, Any]) -> bool:
+        """Recognise the deprecated cdx:cle:endOfSupport property for
+        backward compatibility. Any non-empty value counts."""
+        for prop in component.get("properties") or []:
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("name") != self._LEGACY_EOS_PROP:
+                continue
+            value = prop.get("value", "")
+            if isinstance(value, str) and value.strip():
+                return True
+        return False
 
     def _validate_timestamp(self, timestamp: str | None) -> bool:
         """Validate that a timestamp is in valid ISO-8601 format.

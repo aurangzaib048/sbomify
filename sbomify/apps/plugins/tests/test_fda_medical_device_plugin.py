@@ -373,6 +373,185 @@ class TestCycloneDXValidation:
             return plugin.assess("test-sbom-id", Path(f.name))
 
 
+class TestCycloneDXLegacyCleProperties:
+    """Tests for backward compatibility with the deprecated cdx:cle:* names.
+
+    Before this PR the plugin only recognised the non-standard
+    cdx:cle:supportStatus / cdx:cle:endOfSupport properties. The primary
+    path now uses the sanctioned cdx:lifecycle:milestone:* taxonomy, but
+    the old names are still accepted so SBOMs emitted by earlier
+    sbomify-action versions (or any other consumer that adopted the old
+    convention) continue to pass.
+    """
+
+    def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
+        plugin = FDAMedicalDevicePlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            return plugin.assess("test-sbom-id", Path(f.name))
+
+    def test_legacy_cdx_cle_properties_still_pass(self) -> None:
+        """A component using only the deprecated cdx:cle:* names should
+        still satisfy both CLE checks."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                    "properties": [
+                        {"name": "cdx:cle:supportStatus", "value": "active"},
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"Legacy cdx:cle:* properties should still pass: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
+    def test_legacy_cdx_cle_endOfSupport_alone_passes_both_checks(self) -> None:
+        """Legacy cdx:cle:endOfSupport alone (without supportStatus) still
+        implies enough lifecycle data to derive support status."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                    "properties": [
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings)
+
+    def test_legacy_invalid_support_status_value_not_counted(self) -> None:
+        """An invalid enum value on cdx:cle:supportStatus must not count
+        (preserves the original enum validation)."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                    "properties": [
+                        {"name": "cdx:cle:supportStatus", "value": "not-a-valid-status"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "fail" for f in cle_findings)
+
+    @pytest.mark.parametrize("spec_version", ["1.3", "1.4", "1.5", "1.6", "1.7"])
+    def test_cle_checks_work_across_cdx_spec_versions(self, spec_version: str) -> None:
+        """The sanctioned cdx:lifecycle:milestone:* properties should be
+        honoured across every CycloneDX spec version sbomify accepts
+        (1.3 to 1.7). Component.properties has existed since 1.3."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": spec_version,
+            "components": [
+                {
+                    "name": "example",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/example@1.0.0",
+                    "properties": [
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"CLE checks failed on CycloneDX {spec_version}: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
+    def test_mixed_legacy_and_sanctioned_properties_pass(self) -> None:
+        """Components mixing legacy and sanctioned property names should
+        still pass — either is sufficient."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "legacy-component",
+                    "version": "1.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/legacy@1.0.0",
+                    "properties": [
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                },
+                {
+                    "name": "sanctioned-component",
+                    "version": "2.0.0",
+                    "publisher": "Corp",
+                    "purl": "pkg:pypi/sanctioned@2.0.0",
+                    "properties": [
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2028-06-30"},
+                    ],
+                },
+            ],
+            "dependencies": [
+                {"ref": "pkg:pypi/legacy@1.0.0", "dependsOn": []},
+                {"ref": "pkg:pypi/sanctioned@2.0.0", "dependsOn": []},
+            ],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings)
+
+
 class TestCycloneDXLifecycleFallback:
     """Tests for metadata-level lifecycle property fallback.
 
