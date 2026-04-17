@@ -285,6 +285,38 @@ class TestCycloneDXValidation:
         context_finding = next(f for f in result.findings if "generation-context" in f.id)
         assert context_finding.status == "pass"
 
+    def test_cyclonedx_generation_context_internal_namespace(self) -> None:
+        """internal:sbom:generationContext is the taxonomy-compliant fallback
+        for tooling that wants to use a property instead of metadata.lifecycles.
+        """
+        sbom_data = self._create_base_cyclonedx_sbom()
+        del sbom_data["metadata"]["properties"]
+        sbom_data["metadata"]["properties"] = [
+            {"name": "internal:sbom:generationContext", "value": "build"},
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
+
+    def test_cyclonedx_generation_context_legacy_cdx_name_still_accepted(self) -> None:
+        """Legacy cdx:sbom:generationContext (non-taxonomy-sanctioned) remains
+        accepted for backward compatibility with earlier sbomify-action output.
+        """
+        sbom_data = self._create_base_cyclonedx_sbom()
+        # base already uses the legacy name; remove lifecycles to ensure we
+        # exercise the property fallback path and not the primary lifecycles path
+        sbom_data["metadata"].pop("lifecycles", None)
+        sbom_data["metadata"]["properties"] = [
+            {"name": "cdx:sbom:generationContext", "value": "build"},
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
+
     def test_cyclonedx_generation_context_lifecycle_phases(self) -> None:
         """Test all valid CycloneDX lifecycle phase values.
 
@@ -599,6 +631,55 @@ class TestSPDXValidation:
                 }
             ],
         }
+
+    def test_spdx_generation_context_annotation_targeting_package_does_not_count(self) -> None:
+        """Per SPDX 2.3 §12, a top-level annotation with spdxElementId
+        pointing at a specific package describes that package, not the
+        document. Such an annotation must not satisfy the document-level
+        Generation Context check.
+        """
+        sbom_data = self._create_base_spdx_sbom()
+        # Wipe all other generation-context sources so the only signal is
+        # a package-scoped annotation.
+        sbom_data["creationInfo"].pop("comment", None)
+        sbom_data.pop("comment", None)
+        sbom_data["annotations"] = [
+            {
+                "annotationType": "OTHER",
+                "annotator": "Tool: example-tool",
+                "annotationDate": "2023-01-01T00:00:00Z",
+                "spdxElementId": "SPDXRef-Package",
+                "comment": "cisa:generationContext=build",
+            }
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "fail", (
+            "Package-scoped annotation must not satisfy document-level generation context"
+        )
+
+    def test_spdx_generation_context_annotation_with_explicit_document_subject_passes(self) -> None:
+        """An annotation with spdxElementId=SPDXRef-DOCUMENT is explicitly
+        document-scoped and satisfies the Generation Context check."""
+        sbom_data = self._create_base_spdx_sbom()
+        sbom_data["creationInfo"].pop("comment", None)
+        sbom_data.pop("comment", None)
+        sbom_data["annotations"] = [
+            {
+                "annotationType": "OTHER",
+                "annotator": "Tool: example-tool",
+                "annotationDate": "2023-01-01T00:00:00Z",
+                "spdxElementId": "SPDXRef-DOCUMENT",
+                "comment": "cisa:generationContext=build",
+            }
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
 
     def test_malformed_reference_type_as_list(self) -> None:
         """Regression: referenceType as list should not crash."""
