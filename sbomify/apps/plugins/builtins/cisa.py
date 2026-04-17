@@ -759,7 +759,9 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         Checks:
         - SpdxDocument comment field
         - CreationInfo comment field
-        - Annotation elements in @graph
+        - Annotation elements whose subject is the SpdxDocument or one of
+          its rootElements (package-scoped annotations describe those
+          packages, not the SBOM; see SPDX 3.0.1 §9 Annotation)
 
         Args:
             data: Full SPDX 3.0 document dictionary.
@@ -768,6 +770,20 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
             True if valid generation context found.
         """
         elements = data.get("@graph", data.get("elements", []))
+
+        # Collect acceptable annotation subjects: SpdxDocument IDs and their
+        # declared rootElement IDs. Empty-subject annotations are treated as
+        # document-level per spec convention.
+        document_subjects: set[str] = set()
+        for element in elements:
+            elem_type = element.get("type", element.get("@type", ""))
+            if "SpdxDocument" in elem_type:
+                doc_id = element.get("spdxId", element.get("@id", ""))
+                if isinstance(doc_id, str) and doc_id:
+                    document_subjects.add(doc_id)
+                for root in element.get("rootElement", []) or []:
+                    if isinstance(root, str) and root:
+                        document_subjects.add(root)
 
         for element in elements:
             elem_type = element.get("type", element.get("@type", ""))
@@ -784,8 +800,14 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
                 if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
                     return True
 
-            # Check Annotation elements
+            # Check Annotation elements — only those whose subject is the
+            # SpdxDocument or its rootElement (or unset, treated as document)
             if "Annotation" in elem_type:
+                subject = element.get("subject", element.get("annotationSubject", ""))
+                if not isinstance(subject, str):
+                    continue
+                if subject and subject not in document_subjects:
+                    continue
                 comment = element.get("statement", element.get("comment", "")).lower()
                 if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
                     return True

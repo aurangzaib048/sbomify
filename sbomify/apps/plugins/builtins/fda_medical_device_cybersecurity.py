@@ -629,6 +629,15 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         support_status_failures: list[str] = []
         end_of_support_failures: list[str] = []
 
+        # Narrow root-only doc-level CLE fallback (parity with SPDX 2.3 path).
+        # Only the SpdxDocument subject and its declared rootElements inherit
+        # document-level CLE annotations — dependencies must carry their own
+        # data. Annotations scoped to a specific package describe that
+        # package, not the document.
+        doc_subjects = self._spdx3_document_subjects(data)
+        doc_has_support_status = self._spdx3_doc_has_valid_support_status(data, doc_subjects)
+        doc_has_end_of_support = self._spdx3_doc_has_cle_token(data, "cle:endOfSupport=", doc_subjects)
+
         for i, package in enumerate(packages):
             pkg_fields = get_spdx3_package_fields(package)
             pkg_name = pkg_fields["name"] or f"Package {i + 1}"
@@ -658,14 +667,17 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
-            # 8. Support status (from Annotation elements)
             pkg_id = package.get("spdxId", package.get("@id", ""))
-            has_support_status = self._spdx3_has_support_status(pkg_id, data)
+            is_root = isinstance(pkg_id, str) and pkg_id in doc_subjects
+
+            # 8. Support status (from Annotation elements + root-only doc fallback)
+            has_support_status = self._spdx3_has_support_status(pkg_id, data) or (is_root and doc_has_support_status)
             if not has_support_status:
                 support_status_failures.append(pkg_name)
 
-            # 9. End of support date (software_validUntilDate)
-            if not package.get("software_validUntilDate"):
+            # 9. End of support date (software_validUntilDate + root-only doc fallback)
+            has_end_of_support = bool(package.get("software_validUntilDate")) or (is_root and doc_has_end_of_support)
+            if not has_end_of_support:
                 end_of_support_failures.append(pkg_name)
 
         # Create findings for per-package NTIA elements
@@ -813,6 +825,68 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                         if status in CLE_SUPPORT_STATUS_VALUES:
                             return True
 
+        return False
+
+    def _spdx3_document_subjects(self, data: dict[str, Any]) -> set[str]:
+        """Return the set of spdxIds considered "document-level" subjects for
+        the narrow SPDX 3.x doc-level CLE fallback: each SpdxDocument's
+        spdxId plus the spdxIds listed in its rootElement array.
+        """
+        subjects: set[str] = set()
+        for element in data.get("@graph", data.get("elements", [])):
+            elem_type = element.get("type", element.get("@type", ""))
+            if "SpdxDocument" not in elem_type:
+                continue
+            doc_id = element.get("spdxId", element.get("@id", ""))
+            if isinstance(doc_id, str) and doc_id:
+                subjects.add(doc_id)
+            for root in element.get("rootElement", []) or []:
+                if isinstance(root, str) and root:
+                    subjects.add(root)
+        return subjects
+
+    def _spdx3_annotation_subject_matches(self, element: dict[str, Any], doc_subjects: set[str]) -> bool:
+        """Return True if an SPDX 3.x Annotation element targets the
+        document or one of its rootElements. Annotations with no subject
+        are treated as document-level (per spec convention)."""
+        subject = element.get("subject", element.get("annotationSubject", ""))
+        if not isinstance(subject, str):
+            return False
+        if subject == "":
+            return True
+        return subject in doc_subjects
+
+    def _spdx3_doc_has_valid_support_status(self, data: dict[str, Any], doc_subjects: set[str]) -> bool:
+        """Check for an SPDX 3.x Annotation describing the document (or its
+        rootElement) that carries a valid cle:supportStatus token."""
+        for element in data.get("@graph", data.get("elements", [])):
+            elem_type = element.get("type", element.get("@type", ""))
+            if "Annotation" not in elem_type:
+                continue
+            if not self._spdx3_annotation_subject_matches(element, doc_subjects):
+                continue
+            statement = element.get("statement", element.get("comment", ""))
+            if not isinstance(statement, str) or "cle:supportStatus=" not in statement:
+                continue
+            for part in statement.split():
+                if part.startswith("cle:supportStatus="):
+                    status = part.split("=", 1)[1].lower().strip()
+                    if status in CLE_SUPPORT_STATUS_VALUES:
+                        return True
+        return False
+
+    def _spdx3_doc_has_cle_token(self, data: dict[str, Any], token: str, doc_subjects: set[str]) -> bool:
+        """Check for an SPDX 3.x Annotation describing the document (or its
+        rootElement) whose statement contains the given CLE token."""
+        for element in data.get("@graph", data.get("elements", [])):
+            elem_type = element.get("type", element.get("@type", ""))
+            if "Annotation" not in elem_type:
+                continue
+            if not self._spdx3_annotation_subject_matches(element, doc_subjects):
+                continue
+            statement = element.get("statement", element.get("comment", ""))
+            if isinstance(statement, str) and token in statement:
+                return True
         return False
 
     def _validate_cyclonedx(self, data: dict[str, Any]) -> list[Finding]:

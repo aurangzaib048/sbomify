@@ -1665,6 +1665,84 @@ class TestSPDX3Validation:
         dep_finding = next(f for f in result.findings if "dependency-relationship" in f.id)
         assert dep_finding.status == "fail"
 
+    def test_spdx3_doc_level_annotation_passes_root_only(self) -> None:
+        """A doc-level Annotation whose subject is the SpdxDocument lets the
+        root package inherit CLE data; dependencies without their own data
+        must still fail (parity with the SPDX 2.3 narrow fallback)."""
+        sbom_data = _create_base_spdx3_sbom()
+        # Remove the package-level annotation and software_validUntilDate so
+        # the only CLE signal is a doc-level annotation.
+        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "software_Package":
+                e.pop("software_validUntilDate", None)
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-1"],
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Root",
+                "subject": "SPDXRef-Package-1",  # == rootElement → document subject
+                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"Root should pass via doc-level annotation: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
+    def test_spdx3_package_scoped_annotation_does_not_pass_root(self) -> None:
+        """A top-level Annotation whose subject is a non-root package does
+        not feed the root's doc-level CLE fallback."""
+        sbom_data = _create_base_spdx3_sbom()
+        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "software_Package":
+                e.pop("software_validUntilDate", None)
+        # Add an extra non-root package
+        sbom_data["@graph"].append(
+            {
+                "type": "software_Package",
+                "spdxId": "SPDXRef-Package-2",
+                "name": "other-package",
+                "software_packageVersion": "2.0.0",
+                "originatedBy": ["SPDXRef-Supplier"],
+                "externalIdentifiers": [{"externalIdentifierType": "packageURL", "identifier": "pkg:pypi/other@2.0.0"}],
+            }
+        )
+        # Declare the document with Package-1 as the only root; an annotation
+        # targeting Package-2 must not feed Package-1's fallback.
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-1"],
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Off",
+                "subject": "SPDXRef-Package-2",
+                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "fail" for f in cle_findings), (
+            f"Package-scoped annotation must not grant root fallback: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
     def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
         """Helper to write SBOM to temp file and assess it."""
         plugin = FDAMedicalDevicePlugin()

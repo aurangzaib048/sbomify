@@ -1166,6 +1166,54 @@ class TestSPDX3Validation:
         context_finding = next(f for f in result.findings if "generation-context" in f.id)
         assert context_finding.status == "pass"
 
+    def test_spdx3_annotation_targeting_package_does_not_count(self) -> None:
+        """SPDX 3.x Annotation whose subject is a specific package describes
+        that package — not the SBOM — so it must not satisfy the document-
+        level Generation Context check (parity with the SPDX 2.3 rule)."""
+        sbom_data = _create_base_spdx3_sbom()
+        del sbom_data["@graph"][0]["comment"]
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Pkg",
+                "subject": "SPDXRef-Package-1",
+                "statement": "cisa:generationContext=build",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "fail", (
+            "Package-scoped SPDX 3.x annotation must not satisfy document-level generation context"
+        )
+
+    def test_spdx3_annotation_subject_is_rootelement_passes(self) -> None:
+        """An Annotation whose subject matches the SpdxDocument's rootElement
+        is treated as document-scoped and satisfies the check."""
+        sbom_data = _create_base_spdx3_sbom()
+        del sbom_data["@graph"][0]["comment"]
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-1"],
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Root",
+                "subject": "SPDXRef-Package-1",
+                "statement": "cisa:generationContext=build",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
+
     def test_spdx3_missing_timestamp(self) -> None:
         """Test SPDX 3.0 SBOM missing timestamp."""
         sbom_data = _create_base_spdx3_sbom()
