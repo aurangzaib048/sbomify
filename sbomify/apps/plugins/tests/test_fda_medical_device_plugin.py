@@ -81,8 +81,7 @@ class TestCycloneDXValidation:
                     "publisher": "Example Corp",
                     "purl": "pkg:pypi/example-component@1.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 }
             ],
@@ -99,8 +98,11 @@ class TestCycloneDXValidation:
         assert result.summary.pass_count == 9  # 7 NTIA + 2 CLE elements
         assert result.summary.total_findings == 9
 
-    def test_cyclonedx_missing_cle_support_status(self) -> None:
-        """Test CycloneDX SBOM missing CLE support status."""
+    def test_cyclonedx_endOfSupport_satisfies_both_cle_checks(self) -> None:
+        """A single cdx:lifecycle:milestone:endOfSupport on a component
+        should satisfy both the End-of-Support finding (specific date) and
+        the Support Status finding (status derivable from the milestone).
+        """
         sbom_data = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
@@ -111,8 +113,40 @@ class TestCycloneDXValidation:
                     "publisher": "Example Corp",
                     "purl": "pkg:pypi/example-component@1.0.0",
                     "properties": [
-                        # Missing cdx:cle:supportStatus
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example-component@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Example Developer"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+
+        result = self._assess_sbom(sbom_data)
+
+        support_finding = next(f for f in result.findings if "support-status" in f.id)
+        eos_finding = next(f for f in result.findings if "end-of-support" in f.id)
+        assert support_finding.status == "pass"
+        assert eos_finding.status == "pass"
+
+    def test_cyclonedx_non_eos_milestone_passes_status_only(self) -> None:
+        """A status-bearing milestone other than endOfSupport (e.g. endOfLife)
+        satisfies the Support Status check but not the End-of-Support Date
+        check, which requires the specific endOfSupport milestone.
+        """
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example-component",
+                    "version": "1.0.0",
+                    "publisher": "Example Corp",
+                    "purl": "pkg:pypi/example-component@1.0.0",
+                    "properties": [
+                        {"name": "cdx:lifecycle:milestone:endOfLife", "value": "2030-01-01"},
                     ],
                 }
             ],
@@ -127,36 +161,8 @@ class TestCycloneDXValidation:
 
         assert result.summary.fail_count == 1
         support_finding = next(f for f in result.findings if "support-status" in f.id)
-        assert support_finding.status == "fail"
-
-    def test_cyclonedx_missing_cle_end_of_support(self) -> None:
-        """Test CycloneDX SBOM missing CLE end-of-support date."""
-        sbom_data = {
-            "bomFormat": "CycloneDX",
-            "specVersion": "1.5",
-            "components": [
-                {
-                    "name": "example-component",
-                    "version": "1.0.0",
-                    "publisher": "Example Corp",
-                    "purl": "pkg:pypi/example-component@1.0.0",
-                    "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        # Missing cdx:cle:endOfSupport
-                    ],
-                }
-            ],
-            "dependencies": [{"ref": "pkg:pypi/example-component@1.0.0", "dependsOn": []}],
-            "metadata": {
-                "authors": [{"name": "Example Developer"}],
-                "timestamp": "2023-01-01T00:00:00Z",
-            },
-        }
-
-        result = self._assess_sbom(sbom_data)
-
-        assert result.summary.fail_count == 1
         eos_finding = next(f for f in result.findings if "end-of-support" in f.id)
+        assert support_finding.status == "pass"
         assert eos_finding.status == "fail"
 
     def test_cyclonedx_missing_all_cle_data(self) -> None:
@@ -185,8 +191,8 @@ class TestCycloneDXValidation:
         assert result.summary.fail_count == 2  # Both CLE elements fail
         assert result.summary.pass_count == 7  # All NTIA elements pass
 
-    def test_cyclonedx_invalid_support_status_value(self) -> None:
-        """Test CycloneDX SBOM with invalid CLE support status value."""
+    def test_cyclonedx_empty_milestone_value_fails(self) -> None:
+        """A milestone property with an empty string value must not count."""
         sbom_data = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
@@ -197,8 +203,7 @@ class TestCycloneDXValidation:
                     "publisher": "Example Corp",
                     "purl": "pkg:pypi/example-component@1.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "invalid-status"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "   "},
                     ],
                 }
             ],
@@ -211,16 +216,25 @@ class TestCycloneDXValidation:
 
         result = self._assess_sbom(sbom_data)
 
-        # Invalid support status should be treated as missing
         support_finding = next(f for f in result.findings if "support-status" in f.id)
+        eos_finding = next(f for f in result.findings if "end-of-support" in f.id)
         assert support_finding.status == "fail"
+        assert eos_finding.status == "fail"
 
     @pytest.mark.parametrize(
-        "status_value",
-        ["active", "deprecated", "eol", "abandoned", "unknown", "ACTIVE", "Active"],
+        "milestone_name",
+        [
+            "cdx:lifecycle:milestone:endOfSupport",
+            "cdx:lifecycle:milestone:endOfLife",
+            "cdx:lifecycle:milestone:endOfDevelopment",
+            "cdx:lifecycle:milestone:endOfGuaranteedSupport",
+            "cdx:lifecycle:milestone:endOfBusinessOperations",
+        ],
     )
-    def test_cyclonedx_valid_support_status_values(self, status_value: str) -> None:
-        """Test CycloneDX SBOM with various valid CLE support status values."""
+    def test_cyclonedx_any_status_milestone_satisfies_support_status(self, milestone_name: str) -> None:
+        """Any status-bearing lifecycle milestone should satisfy the
+        Software Support Status check, since the support level is
+        derivable from the lifecycle position."""
         sbom_data = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
@@ -231,8 +245,7 @@ class TestCycloneDXValidation:
                     "publisher": "Example Corp",
                     "purl": "pkg:pypi/example-component@1.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": status_value},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": milestone_name, "value": "2027-12-31"},
                     ],
                 }
             ],
@@ -248,6 +261,37 @@ class TestCycloneDXValidation:
         support_finding = next(f for f in result.findings if "support-status" in f.id)
         assert support_finding.status == "pass"
 
+    def test_cyclonedx_non_status_milestone_does_not_satisfy_support_status(self) -> None:
+        """A non-status milestone (generalAvailability, endOfMarketing,
+        endOfProduction) should not be enough for Support Status alone."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "example-component",
+                    "version": "1.0.0",
+                    "publisher": "Example Corp",
+                    "purl": "pkg:pypi/example-component@1.0.0",
+                    "properties": [
+                        {"name": "cdx:lifecycle:milestone:generalAvailability", "value": "2020-01-01"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/example-component@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Example Developer"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+
+        result = self._assess_sbom(sbom_data)
+
+        support_finding = next(f for f in result.findings if "support-status" in f.id)
+        eos_finding = next(f for f in result.findings if "end-of-support" in f.id)
+        assert support_finding.status == "fail"
+        assert eos_finding.status == "fail"
+
     def test_cyclonedx_multiple_components_mixed_cle(self) -> None:
         """Test CycloneDX SBOM with multiple components, some missing CLE data."""
         sbom_data = {
@@ -260,8 +304,7 @@ class TestCycloneDXValidation:
                     "publisher": "Example Corp",
                     "purl": "pkg:pypi/component-with-cle@1.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 },
                 {
@@ -303,8 +346,7 @@ class TestCycloneDXValidation:
                     "name": "example-component",
                     # Missing version, publisher, purl
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 }
             ],
@@ -486,8 +528,8 @@ class TestCycloneDXLifecycleFallback:
             assert finding.description and "requests" in finding.description
 
     def test_component_with_own_cle_passes(self) -> None:
-        """A component carrying its own cdx:cle:* properties should pass
-        the CLE checks regardless of doc-level data."""
+        """A component carrying its own cdx:lifecycle:milestone:* properties
+        should pass the CLE checks regardless of doc-level data."""
         sbom_data = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
@@ -499,8 +541,7 @@ class TestCycloneDXLifecycleFallback:
                     "purl": "pkg:pypi/django@5.0.0",
                     "bom-ref": "pkg:pypi/django@5.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 }
             ],
@@ -1058,8 +1099,7 @@ class TestFindingDetails:
                     "publisher": "Example",
                     "purl": "pkg:npm/example@1.0.0",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 }
             ],
@@ -1355,8 +1395,7 @@ class TestFileTypeComponentSkipped:
                     "publisher": "Django",
                     "purl": "pkg:pypi/django@5.2.3",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 },
                 {
@@ -1439,8 +1478,7 @@ class TestFileTypeComponentSkipped:
                     "publisher": "Django",
                     "purl": "pkg:pypi/django@5.2.3",
                     "properties": [
-                        {"name": "cdx:cle:supportStatus", "value": "active"},
-                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                        {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                     ],
                 },
                 {

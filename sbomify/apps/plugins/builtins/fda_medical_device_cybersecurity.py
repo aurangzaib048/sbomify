@@ -25,9 +25,15 @@ CLE (Common Lifecycle Enumeration) data is expected to be injected by the
 sbomify GitHub Action and validated by this plugin.
 
 CLE Format Support:
-    - CycloneDX: Component properties with cdx:cle namespace
-        - cdx:cle:supportStatus (active, deprecated, eol, abandoned, unknown)
-        - cdx:cle:endOfSupport (ISO-8601 date)
+    - CycloneDX: Component properties under the sanctioned cdx:lifecycle:milestone
+      taxonomy (see https://cyclonedx.github.io/cyclonedx-property-taxonomy/cdx/lifecycle.html):
+        - cdx:lifecycle:milestone:endOfSupport (ISO-8601 date) — satisfies the
+          FDA "End-of-Support Date" element.
+        - Any status-bearing milestone on the component
+          (endOfSupport, endOfLife, endOfDevelopment, endOfGuaranteedSupport,
+          endOfBusinessOperations) — satisfies the FDA "Software Support Status"
+          element, since the component's lifecycle position is derivable from
+          these dates.
     - SPDX 2.3: Native validUntilDate field + annotations
         - validUntilDate for end-of-support
         - Annotation with cle:supportStatus=<status>
@@ -851,13 +857,20 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
             is_root = bool(root_bom_ref) and component.get("bom-ref") == root_bom_ref
             doc_fallback = is_root and doc_lifecycle_eos
 
-            # 8. Support status
-            has_support_status = self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus") or doc_fallback
+            # 8. Support status — derived from any status-bearing lifecycle
+            # milestone on the component (endOfSupport, endOfLife, etc.). The
+            # CycloneDX property taxonomy expresses lifecycle position via
+            # dated milestones, not a status enum; presence of any such date
+            # gives the FDA reviewer enough to determine support level.
+            has_support_status = self._cyclonedx_has_status_milestone(component) or doc_fallback
             if not has_support_status:
                 support_status_failures.append(component_name)
 
             # 9. End of support date
-            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport") or doc_fallback
+            has_end_of_support = (
+                self._cyclonedx_component_has_milestone(component, "cdx:lifecycle:milestone:endOfSupport")
+                or doc_fallback
+            )
             if not has_end_of_support:
                 end_of_support_failures.append(component_name)
 
@@ -953,9 +966,11 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                 status="fail" if support_status_failures else "pass",
                 details=f"Missing for: {', '.join(support_status_failures)}" if support_status_failures else None,
                 remediation=(
-                    "Add CLE support status via component property 'cdx:cle:supportStatus' "
-                    "with value: active, deprecated, eol, abandoned, or unknown. "
-                    "Use sbomify GitHub Action to inject CLE data."
+                    "Add a lifecycle milestone to each component under the sanctioned "
+                    "cdx:lifecycle:milestone:* taxonomy (e.g. "
+                    "'cdx:lifecycle:milestone:endOfSupport', 'endOfLife', or "
+                    "'endOfDevelopment'). The component's support status is derived "
+                    "from the milestone date. Use sbomify GitHub Action to inject this data."
                 ),
             )
         )
@@ -967,20 +982,31 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                 status="fail" if end_of_support_failures else "pass",
                 details=f"Missing for: {', '.join(end_of_support_failures)}" if end_of_support_failures else None,
                 remediation=(
-                    "Add CLE end-of-support date via component property 'cdx:cle:endOfSupport' "
-                    "with ISO-8601 date value. Use sbomify GitHub Action to inject CLE data."
+                    "Add the sanctioned component property 'cdx:lifecycle:milestone:endOfSupport' "
+                    "with an ISO-8601 date value. Use sbomify GitHub Action to inject this data."
                 ),
             )
         )
 
         return findings
 
-    def _cyclonedx_has_lifecycle_property(self, metadata: dict[str, Any], property_name: str) -> bool:
-        """Check if CycloneDX metadata has a lifecycle milestone property.
+    # Status-bearing milestones: presence of any of these on a component lets
+    # an FDA reviewer determine its support level (active / deprecated / eol /
+    # abandoned) from the dated lifecycle position.
+    _STATUS_MILESTONES = (
+        "cdx:lifecycle:milestone:endOfSupport",
+        "cdx:lifecycle:milestone:endOfLife",
+        "cdx:lifecycle:milestone:endOfDevelopment",
+        "cdx:lifecycle:milestone:endOfGuaranteedSupport",
+        "cdx:lifecycle:milestone:endOfBusinessOperations",
+    )
 
-        The sbomify-action augmentation writes support dates as metadata-level
-        properties using the cdx:lifecycle:milestone:* taxonomy. This serves
-        as a fallback when per-component cdx:cle:* properties are absent.
+    def _cyclonedx_has_lifecycle_property(self, metadata: dict[str, Any], property_name: str) -> bool:
+        """Check if a CycloneDX metadata object has a specific lifecycle property.
+
+        Used for the narrow root-only doc-level fallback: the BOM subject can
+        inherit support data from metadata.properties when the corresponding
+        per-component property is absent.
         """
         properties = metadata.get("properties") or []
         for prop in properties if isinstance(properties, list) else []:
@@ -992,26 +1018,31 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                     return True
         return False
 
-    def _cyclonedx_has_cle_property(self, component: dict[str, Any], property_name: str) -> bool:
-        """Check if a CycloneDX component has a specific CLE property.
-
-        Args:
-            component: CycloneDX component dictionary.
-            property_name: The property name to look for (e.g., "cdx:cle:supportStatus").
-
-        Returns:
-            True if property found with a non-empty value.
+    def _cyclonedx_component_has_milestone(self, component: dict[str, Any], property_name: str) -> bool:
+        """Check if a CycloneDX component has a specific lifecycle milestone
+        property with a non-empty value. Uses the taxonomy-sanctioned
+        cdx:lifecycle:milestone:* namespace.
         """
-        properties = component.get("properties", [])
-        for prop in properties:
-            if prop.get("name") == property_name:
-                value = prop.get("value", "").strip()
-                if value:
-                    # For supportStatus, validate the value
-                    if property_name == "cdx:cle:supportStatus":
-                        return value.lower() in CLE_SUPPORT_STATUS_VALUES
-                    return True
+        properties = component.get("properties") or []
+        for prop in properties if isinstance(properties, list) else []:
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("name") != property_name:
+                continue
+            value = prop.get("value", "")
+            if isinstance(value, str) and value.strip():
+                return True
         return False
+
+    def _cyclonedx_has_status_milestone(self, component: dict[str, Any]) -> bool:
+        """Check if a component carries any status-bearing lifecycle milestone.
+
+        Any of the ``_STATUS_MILESTONES`` is enough: presence of a dated
+        milestone lets the reviewer derive support level from the
+        lifecycle position, which is how the CycloneDX taxonomy expresses
+        status (rather than via a dedicated enum property).
+        """
+        return any(self._cyclonedx_component_has_milestone(component, name) for name in self._STATUS_MILESTONES)
 
     def _validate_timestamp(self, timestamp: str | None) -> bool:
         """Validate that a timestamp is in valid ISO-8601 format.
