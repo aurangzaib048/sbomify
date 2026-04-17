@@ -656,7 +656,7 @@ class TestCycloneDXLifecycleFallback:
         """Root listed only in metadata.component (not components[]) must not
         make dependencies auto-pass via doc-level lifecycle.
 
-        This is the Lithium-like case: the subject component is described in
+        This is the real-world case: the subject component is described in
         metadata.component and each dependency sits in components[]. The
         dependencies have no CLE data and must fail.
         """
@@ -687,8 +687,8 @@ class TestCycloneDXLifecycleFallback:
                 "authors": [{"name": "Dev"}],
                 "timestamp": "2023-01-01T00:00:00Z",
                 "component": {
-                    "bom-ref": "pkg:pypi/lithium@1.0.0",
-                    "name": "lithium",
+                    "bom-ref": "pkg:pypi/my-app@1.0.0",
+                    "name": "my-app",
                     "version": "1.0.0",
                     "type": "application",
                 },
@@ -782,25 +782,25 @@ class TestSPDXLifecycleFallback:
         sbom_data = {
             "spdxVersion": "SPDX-2.3",
             "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "lithium",
+            "name": "my-app",
             "dataLicense": "CC0-1.0",
-            "documentNamespace": "https://example.com/lithium",
+            "documentNamespace": "https://example.com/my-app",
             "creationInfo": {
                 "created": "2023-01-01T00:00:00Z",
-                "creators": ["Organization: Lithium Project"],
+                "creators": ["Organization: Example Corp"],
             },
-            "documentDescribes": ["SPDXRef-Package-lithium"],
+            "documentDescribes": ["SPDXRef-Package-my-app"],
             "packages": [
                 {
-                    "SPDXID": "SPDXRef-Package-lithium",
-                    "name": "lithium",
+                    "SPDXID": "SPDXRef-Package-my-app",
+                    "name": "my-app",
                     "versionInfo": "1.0.0",
-                    "supplier": "Organization: Lithium Project",
+                    "supplier": "Organization: Example Corp",
                     "externalRefs": [
                         {
                             "referenceCategory": "PACKAGE-MANAGER",
                             "referenceType": "purl",
-                            "referenceLocator": "pkg:pypi/lithium@1.0.0",
+                            "referenceLocator": "pkg:pypi/my-app@1.0.0",
                         }
                     ],
                 },
@@ -820,7 +820,7 @@ class TestSPDXLifecycleFallback:
             ],
             "relationships": [
                 {
-                    "spdxElementId": "SPDXRef-Package-lithium",
+                    "spdxElementId": "SPDXRef-Package-my-app",
                     "relationshipType": "DEPENDS_ON",
                     "relatedSpdxElement": "SPDXRef-Package-django",
                 }
@@ -838,13 +838,13 @@ class TestSPDXLifecycleFallback:
 
         cle_findings = [f for f in result.findings if "cle:" in f.id]
         assert len(cle_findings) == 2
-        # Doc-level fallback should cover the root (lithium) for both checks,
+        # Doc-level fallback should cover the root (my-app) for both checks,
         # but dependencies must be judged on their own data.
         for finding in cle_findings:
             assert finding.status == "fail", f"Expected fail for {finding.id}, got {finding.status}"
             fail_list = (finding.description or "").split("Missing for:")[-1]
             assert "django" in fail_list, f"Expected django in {finding.id} fail list: {fail_list}"
-            assert "lithium" not in fail_list, f"Root 'lithium' should not be in {finding.id} fail list: {fail_list}"
+            assert "my-app" not in fail_list, f"Root 'my-app' should not be in {finding.id} fail list: {fail_list}"
 
     def test_spdx_doc_annotation_targeting_specific_package_does_not_fallback_to_root(self) -> None:
         """Per SPDX 2.3 §12, a top-level annotation with spdxElementId pointing
