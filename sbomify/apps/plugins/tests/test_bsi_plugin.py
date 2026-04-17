@@ -760,6 +760,94 @@ class TestUniqueIdentifiersValidation:
         assert finding.status == "warning"
 
 
+class TestAdditionalDataFields:
+    """Tests for BSI §5.2.3 / §5.2.4 additional-data-fields (MUST if exists)."""
+
+    # --- SBOM-URI (§5.2.3) ---
+
+    def test_cyclonedx_sbom_uri_pass_with_serialnumber(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["serialNumber"] = "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_cyclonedx_sbom_uri_warns_without_serialnumber(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom.pop("serialNumber", None)
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    # --- Source code URI (§5.2.4) ---
+
+    def test_cyclonedx_source_code_uri_pass_via_vcs_ref(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0]["externalReferences"] = [
+            {"type": "vcs", "url": "https://github.com/example/example-component"}
+        ]
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_cyclonedx_source_code_uri_warns_without_ref(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0].pop("externalReferences", None)
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    # --- URI of deployable form (§5.2.4) ---
+
+    def test_cyclonedx_deployable_uri_pass_via_distribution_ref(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0]["externalReferences"] = [
+            {"type": "distribution", "url": "https://example.com/example-component.whl"}
+        ]
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_cyclonedx_deployable_uri_warns_without_distribution_ref(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0].pop("externalReferences", None)
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    # --- Original licences (§5.2.4) ---
+
+    def test_cyclonedx_original_licences_pass_via_declared_acknowledgement(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0]["licenses"] = [{"expression": "MIT", "acknowledgement": "declared"}]
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_cyclonedx_original_licences_pass_via_bsi_property(self):
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0]["properties"].append({"name": "bsi:component:effectiveLicence", "value": "MIT"})
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_cyclonedx_original_licences_warns_when_only_concluded(self):
+        sbom = create_base_cyclonedx_sbom()
+        # Base fixture only has acknowledgement="concluded" (effective licence).
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "warning"
+
+
 class TestVulnerabilityCheck:
     """Tests for vulnerability exclusion check (BSI §3.1)."""
 

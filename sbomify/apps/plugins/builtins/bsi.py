@@ -165,7 +165,11 @@ class BSICompliancePlugin(AssessmentPlugin):
         "archive_property": "bsi-tr03183:archive-property",
         "structured_property": "bsi-tr03183:structured-property",
         # Additional MUST if exists (§5.2.3, §5.2.4)
+        "sbom_uri": "bsi-tr03183:sbom-uri",
+        "source_code_uri": "bsi-tr03183:source-code-uri",
+        "uri_deployable_form": "bsi-tr03183:uri-deployable-form",
         "unique_identifiers": "bsi-tr03183:unique-identifiers",
+        "original_licences": "bsi-tr03183:original-licences",
         # Critical restrictions
         "no_vulnerabilities": "bsi-tr03183:no-vulnerabilities",
         # Attestation cross-check (requires one of attestation plugins)
@@ -187,7 +191,11 @@ class BSICompliancePlugin(AssessmentPlugin):
         "executable_property": "Executable Property",
         "archive_property": "Archive Property",
         "structured_property": "Structured Property",
+        "sbom_uri": "SBOM URI",
+        "source_code_uri": "Source Code URI",
+        "uri_deployable_form": "URI of Deployable Form",
         "unique_identifiers": "Unique Identifiers",
+        "original_licences": "Original Licences",
         "no_vulnerabilities": "No Embedded Vulnerabilities",
         "attestation_check": "Digital Signature Attestation",
     }
@@ -232,9 +240,24 @@ class BSICompliancePlugin(AssessmentPlugin):
         "structured_property": (
             "Indicates whether the component is structured (structured/unstructured) (BSI TR-03183-2 §5.2.2 Table 3)"
         ),
+        "sbom_uri": (
+            "Uniform Resource Identifier of this SBOM — MUST be provided if it exists and "
+            "fulfils the requirements of the SBOM format specification (BSI TR-03183-2 §5.2.3 Table 4)"
+        ),
+        "source_code_uri": (
+            "URI of the source code of the component — MUST be provided if it exists (BSI TR-03183-2 §5.2.4 Table 5)"
+        ),
+        "uri_deployable_form": (
+            "URI pointing directly to the deployable (e.g. downloadable) form of the component — "
+            "MUST be provided if it exists (BSI TR-03183-2 §5.2.4 Table 5)"
+        ),
         "unique_identifiers": (
             "Other identifiers for vulnerability lookup (CPE, purl) - MUST be provided if they exist "
             "(BSI TR-03183-2 §5.2.4 Table 5)"
+        ),
+        "original_licences": (
+            "Original licence(s) assigned by the component creator (distinct from distribution "
+            "licences) — MUST be provided if they exist (BSI TR-03183-2 §5.2.4 Table 5, §6.1)"
         ),
         "no_vulnerabilities": (
             "SBOM MUST NOT contain vulnerability information. Use CSAF or VEX documents instead "
@@ -491,6 +514,10 @@ class BSICompliancePlugin(AssessmentPlugin):
         archive_failures: list[str] = []
         structured_failures: list[str] = []
         identifier_warnings: list[str] = []
+        # §5.2.4 additional-data-fields "MUST if exists" — track as warnings
+        source_code_uri_warnings: list[str] = []
+        uri_deployable_form_warnings: list[str] = []
+        original_licences_warnings: list[str] = []
 
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
@@ -555,6 +582,14 @@ class BSICompliancePlugin(AssessmentPlugin):
             has_identifier = bool(component.get("purl") or component.get("cpe") or component.get("swid"))
             if not has_identifier:
                 identifier_warnings.append(component_name)
+
+            # §5.2.4 Additional data fields — "MUST if exists"
+            if not self._cyclonedx_has_source_code_uri(component):
+                source_code_uri_warnings.append(component_name)
+            if not self._cyclonedx_has_deployable_uri(component):
+                uri_deployable_form_warnings.append(component_name)
+            if not self._cyclonedx_has_original_licence(component):
+                original_licences_warnings.append(component_name)
 
         # Create findings for component-level fields
 
@@ -709,6 +744,76 @@ class BSICompliancePlugin(AssessmentPlugin):
             )
         )
 
+        # SBOM-URI (§5.2.3 Table 4) — document-level, warning-level
+        has_sbom_uri = self._cyclonedx_has_sbom_uri(data)
+        findings.append(
+            self._create_finding(
+                "sbom_uri",
+                status="pass" if has_sbom_uri else "warning",
+                details=None if has_sbom_uri else "No serialNumber (or equivalent SBOM URI) found on the BOM",
+                remediation=(
+                    "Set the BOM serialNumber field to a URN such as urn:uuid:<uuid> so the SBOM "
+                    "has a stable URI. Per BSI TR-03183-2 §5.2.3, the SBOM-URI MUST be provided if "
+                    "it exists for the format."
+                ),
+            )
+        )
+
+        # Source code URI (§5.2.4 Table 5) — per-component, warning-level
+        findings.append(
+            self._create_finding(
+                "source_code_uri",
+                status="pass" if not source_code_uri_warnings else "warning",
+                details=(
+                    self._format_failure_details(source_code_uri_warnings)
+                    if source_code_uri_warnings
+                    else "All components expose a source-code URI"
+                ),
+                remediation=(
+                    'Add externalReferences with type="vcs" or type="source-distribution" (CycloneDX) '
+                    "so the upstream source location is available. Per BSI TR-03183-2 §5.2.4, this "
+                    "MUST be provided if it exists for the component."
+                ),
+            )
+        )
+
+        # URI of deployable form (§5.2.4 Table 5) — per-component, warning-level
+        findings.append(
+            self._create_finding(
+                "uri_deployable_form",
+                status="pass" if not uri_deployable_form_warnings else "warning",
+                details=(
+                    self._format_failure_details(uri_deployable_form_warnings)
+                    if uri_deployable_form_warnings
+                    else "All components expose a deployable-form URI"
+                ),
+                remediation=(
+                    'Add externalReferences with type="distribution" or type="distribution-intake" '
+                    "so consumers can fetch the deployable artefact. Per BSI TR-03183-2 §5.2.4, "
+                    "this MUST be provided if it exists for the component."
+                ),
+            )
+        )
+
+        # Original licences (§5.2.4 Table 5) — per-component, warning-level
+        findings.append(
+            self._create_finding(
+                "original_licences",
+                status="pass" if not original_licences_warnings else "warning",
+                details=(
+                    self._format_failure_details(original_licences_warnings)
+                    if original_licences_warnings
+                    else "All components expose original licence information"
+                ),
+                remediation=(
+                    'Mark the component\'s original licence with licenses[].acknowledgement = "declared" '
+                    "(CycloneDX 1.5+) or add the bsi:component:associatedLicences / "
+                    "bsi:component:effectiveLicence BSI property. Per BSI TR-03183-2 §5.2.4, original "
+                    "licences MUST be provided if they exist for the component."
+                ),
+            )
+        )
+
         # Check for embedded vulnerabilities (MUST NOT have any per BSI §3.1)
         findings.append(self._check_cyclonedx_vulnerabilities(data))
 
@@ -824,6 +929,9 @@ class BSICompliancePlugin(AssessmentPlugin):
         archive_failures: list[str] = []
         structured_failures: list[str] = []
         identifier_warnings: list[str] = []
+        source_code_uri_warnings: list[str] = []
+        uri_deployable_form_warnings: list[str] = []
+        original_licences_warnings: list[str] = []
 
         for i, package in enumerate(packages):
             pkg_name = package.get("name", f"Package {i + 1}")
@@ -885,6 +993,14 @@ class BSICompliancePlugin(AssessmentPlugin):
             has_identifier = self._has_spdx3_identifier(package)
             if not has_identifier:
                 identifier_warnings.append(pkg_name)
+
+            # §5.2.4 Additional data fields — "MUST if exists"
+            if not self._spdx3_has_source_code_uri(package):
+                source_code_uri_warnings.append(pkg_name)
+            if not self._spdx3_has_deployable_uri(package):
+                uri_deployable_form_warnings.append(pkg_name)
+            if not self._spdx3_has_original_licence(package, relationships):
+                original_licences_warnings.append(pkg_name)
 
         # Create findings (same pattern as CycloneDX)
         findings.append(
@@ -1012,6 +1128,53 @@ class BSICompliancePlugin(AssessmentPlugin):
                 status="pass" if not identifier_warnings else "warning",
                 details=self._format_failure_details(identifier_warnings) if identifier_warnings else None,
                 remediation="Add externalIdentifiers with cpe22, cpe23, swid, or packageURL types.",
+            )
+        )
+
+        has_sbom_uri = self._spdx3_has_sbom_uri(data)
+        findings.append(
+            self._create_finding(
+                "sbom_uri",
+                status="pass" if has_sbom_uri else "warning",
+                details=None if has_sbom_uri else "No SpdxDocument URI (spdxId) found",
+                remediation="Set the SpdxDocument element's spdxId to a URI identifying the SBOM.",
+            )
+        )
+
+        findings.append(
+            self._create_finding(
+                "source_code_uri",
+                status="pass" if not source_code_uri_warnings else "warning",
+                details=self._format_failure_details(source_code_uri_warnings) if source_code_uri_warnings else None,
+                remediation=(
+                    "Populate software_sourceInfo or add an externalIdentifier referencing the source "
+                    "repository (vcs) for each package."
+                ),
+            )
+        )
+
+        findings.append(
+            self._create_finding(
+                "uri_deployable_form",
+                status="pass" if not uri_deployable_form_warnings else "warning",
+                details=self._format_failure_details(uri_deployable_form_warnings)
+                if uri_deployable_form_warnings
+                else None,
+                remediation="Set software_downloadLocation to the deployable artefact URL on each package.",
+            )
+        )
+
+        findings.append(
+            self._create_finding(
+                "original_licences",
+                status="pass" if not original_licences_warnings else "warning",
+                details=self._format_failure_details(original_licences_warnings)
+                if original_licences_warnings
+                else None,
+                remediation=(
+                    "Add a Relationship of type hasDeclaredLicense to a "
+                    "simpleLicensing_LicenseExpression element on each package."
+                ),
             )
         )
 
@@ -1177,6 +1340,67 @@ class BSICompliancePlugin(AssessmentPlugin):
             )
         )
 
+        # §5.2.3 / §5.2.4 "MUST if exists" checks for the SPDX 2.x legacy path
+        doc_namespace = data.get("documentNamespace")
+        has_sbom_uri = isinstance(doc_namespace, str) and bool(doc_namespace.strip())
+        findings.append(
+            self._create_finding(
+                "sbom_uri",
+                status="pass" if has_sbom_uri else "warning",
+                details=None if has_sbom_uri else "documentNamespace is missing",
+                remediation="Set documentNamespace to a unique URI identifying this SBOM.",
+            )
+        )
+
+        source_code_warnings: list[str] = []
+        deployable_warnings: list[str] = []
+        original_licence_warnings: list[str] = []
+        for i, pkg in enumerate(packages):
+            if _is_file_pkg(pkg):
+                continue
+            pkg_name = pkg.get("name", f"Package {i}")
+            if not self._spdx2_has_source_code_uri(pkg):
+                source_code_warnings.append(pkg_name)
+            if not self._spdx2_has_deployable_uri(pkg):
+                deployable_warnings.append(pkg_name)
+            if not self._spdx2_has_original_licence(pkg):
+                original_licence_warnings.append(pkg_name)
+
+        findings.append(
+            self._create_finding(
+                "source_code_uri",
+                status="pass" if not source_code_warnings else "warning",
+                details=self._format_failure_details(source_code_warnings) if source_code_warnings else None,
+                remediation=(
+                    "Populate sourceInfo with the upstream source URL, or add externalRefs with "
+                    "referenceType indicating the VCS location on each package."
+                ),
+            )
+        )
+
+        findings.append(
+            self._create_finding(
+                "uri_deployable_form",
+                status="pass" if not deployable_warnings else "warning",
+                details=self._format_failure_details(deployable_warnings) if deployable_warnings else None,
+                remediation=(
+                    'Set downloadLocation to the URL of the deployable artefact on each package (not "NOASSERTION").'
+                ),
+            )
+        )
+
+        findings.append(
+            self._create_finding(
+                "original_licences",
+                status="pass" if not original_licence_warnings else "warning",
+                details=self._format_failure_details(original_licence_warnings) if original_licence_warnings else None,
+                remediation=(
+                    "Populate licenseDeclared on each package — this is the licence originally "
+                    "assigned by the component creator (distinct from licenseConcluded)."
+                ),
+            )
+        )
+
         # Check for embedded vulnerabilities (MUST NOT have any per BSI §3.1)
         findings.append(self._check_spdx_vulnerabilities(data))
 
@@ -1185,6 +1409,42 @@ class BSICompliancePlugin(AssessmentPlugin):
         return findings
 
     # === Helper methods ===
+
+    def _spdx2_has_source_code_uri(self, package: dict[str, Any]) -> bool:
+        """Accept sourceInfo containing text, or an externalRef with a VCS/URL type."""
+        source_info = package.get("sourceInfo")
+        if isinstance(source_info, str) and source_info.strip():
+            return True
+        for ref in package.get("externalRefs", []) or []:
+            if not isinstance(ref, dict):
+                continue
+            ref_type = str(ref.get("referenceType") or "").strip().lower()
+            if ref_type in ("vcs", "url") and isinstance(ref.get("referenceLocator"), str):
+                if ref["referenceLocator"].strip():
+                    return True
+        return False
+
+    def _spdx2_has_deployable_uri(self, package: dict[str, Any]) -> bool:
+        """SPDX 2.x exposes this via downloadLocation. Treat NOASSERTION / NONE
+        placeholders as missing."""
+        value = package.get("downloadLocation")
+        if not isinstance(value, str):
+            return False
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return stripped.upper() not in {"NOASSERTION", "NONE"}
+
+    def _spdx2_has_original_licence(self, package: dict[str, Any]) -> bool:
+        """SPDX 2.x distinguishes licenseDeclared (original) from
+        licenseConcluded (effective). Treat NOASSERTION / NONE as missing."""
+        value = package.get("licenseDeclared")
+        if not isinstance(value, str):
+            return False
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return stripped.upper() not in {"NOASSERTION", "NONE"}
 
     def _get_cyclonedx_sbom_creator(self, metadata: dict[str, Any]) -> str | None:
         """Extract SBOM creator email or URL from CycloneDX metadata.
@@ -1258,6 +1518,55 @@ class BSICompliancePlugin(AssessmentPlugin):
                 return True
             # Check for license.id (SPDX identifier)
             if licence.get("license", {}).get("id"):
+                return True
+        return False
+
+    def _cyclonedx_has_sbom_uri(self, data: dict[str, Any]) -> bool:
+        """Per BSI §5.2.3, the SBOM MUST expose a URI if the format allows.
+        CycloneDX provides this via the top-level serialNumber (URN form).
+        """
+        serial = data.get("serialNumber")
+        return isinstance(serial, str) and bool(serial.strip())
+
+    def _cyclonedx_component_has_external_ref(self, component: dict[str, Any], ref_types: tuple[str, ...]) -> bool:
+        """True if the component has any externalReferences entry whose
+        normalized type is in ref_types."""
+        for ref in component.get("externalReferences", []) or []:
+            if not isinstance(ref, dict):
+                continue
+            ref_type = str(ref.get("type") or "").strip().lower()
+            if ref_type in ref_types and isinstance(ref.get("url"), str) and ref["url"].strip():
+                return True
+        return False
+
+    def _cyclonedx_has_source_code_uri(self, component: dict[str, Any]) -> bool:
+        """Per BSI §5.2.4, source-code URI must be provided if it exists.
+        Accept CycloneDX externalReferences of type 'vcs' or 'source-distribution'.
+        """
+        return self._cyclonedx_component_has_external_ref(component, ("vcs", "source-distribution"))
+
+    def _cyclonedx_has_deployable_uri(self, component: dict[str, Any]) -> bool:
+        """Per BSI §5.2.4, a URI of the deployable form must be provided if it
+        exists. Accept 'distribution' or 'distribution-intake' externalReferences.
+        """
+        return self._cyclonedx_component_has_external_ref(component, ("distribution", "distribution-intake"))
+
+    def _cyclonedx_has_original_licence(self, component: dict[str, Any]) -> bool:
+        """Per BSI §5.2.4, the component's original licence(s) must be provided
+        if they exist. Recognise either:
+          - CycloneDX 1.5+ licenses[].acknowledgement == "declared", or
+          - BSI taxonomy properties bsi:component:associatedLicences /
+            bsi:component:effectiveLicence.
+        """
+        for licence in component.get("licenses", []) or []:
+            if not isinstance(licence, dict):
+                continue
+            ack = str(licence.get("acknowledgement") or "").strip().lower()
+            if ack == "declared":
+                return True
+        for prop_name in ("associatedLicences", "effectiveLicence"):
+            value = self._get_bsi_property(component, prop_name)
+            if isinstance(value, str) and value.strip():
                 return True
         return False
 
@@ -1395,6 +1704,53 @@ class BSICompliancePlugin(AssessmentPlugin):
         for ext_id in package.get("externalIdentifiers", []):
             id_type = ext_id.get("externalIdentifierType", "")
             if id_type in ("cpe22", "cpe23", "swid", "packageURL"):
+                return True
+        return False
+
+    def _spdx3_has_sbom_uri(self, data: dict[str, Any]) -> bool:
+        """Per BSI §5.2.3, the SBOM itself MUST expose a URI when the format
+        supports one. SPDX 3.x exposes the document identity via the
+        SpdxDocument element's spdxId.
+        """
+        for element in data.get("@graph", data.get("elements", [])):
+            elem_type = element.get("type", element.get("@type", ""))
+            if "SpdxDocument" not in elem_type:
+                continue
+            doc_id = element.get("spdxId", element.get("@id", ""))
+            if isinstance(doc_id, str) and doc_id.strip():
+                return True
+        return False
+
+    def _spdx3_has_source_code_uri(self, package: dict[str, Any]) -> bool:
+        """Per BSI §5.2.4. Accept any non-empty software_sourceInfo or an
+        externalIdentifier referencing a VCS / repository URL.
+        """
+        source_info = package.get("software_sourceInfo")
+        if isinstance(source_info, str) and source_info.strip():
+            return True
+        for ext_id in package.get("externalIdentifiers", []) or []:
+            if not isinstance(ext_id, dict):
+                continue
+            id_type = str(ext_id.get("externalIdentifierType") or "").strip().lower()
+            ident = ext_id.get("identifier") or ""
+            if id_type in ("vcs", "url") and isinstance(ident, str) and ident.strip():
+                return True
+        return False
+
+    def _spdx3_has_deployable_uri(self, package: dict[str, Any]) -> bool:
+        """Per BSI §5.2.4. SPDX 3.x exposes this via software_downloadLocation."""
+        value = package.get("software_downloadLocation")
+        return isinstance(value, str) and bool(value.strip())
+
+    def _spdx3_has_original_licence(self, package: dict[str, Any], relationships: list[dict[str, Any]]) -> bool:
+        """Per BSI §5.2.4, recognise an original/declared licence via the
+        hasDeclaredLicense relationship on the package.
+        """
+        pkg_id = package.get("spdxId", package.get("@id"))
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("from") == pkg_id and rel.get("relationshipType") == "hasDeclaredLicense":
                 return True
         return False
 
