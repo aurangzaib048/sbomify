@@ -332,7 +332,14 @@ class TestCycloneDXValidation:
 
 
 class TestCycloneDXLifecycleFallback:
-    """Tests for metadata-level lifecycle property fallback."""
+    """Tests for metadata-level lifecycle property fallback.
+
+    Per FDA V.A.4.b and the CycloneDX property taxonomy, a doc-level
+    cdx:lifecycle:milestone:endOfSupport describes only the BOM subject
+    (the root component) — it does NOT imply support coverage for the
+    dependencies listed in components[]. Each dependency must carry its
+    own CLE data or fail the per-component check.
+    """
 
     def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
         plugin = FDAMedicalDevicePlugin()
@@ -341,23 +348,36 @@ class TestCycloneDXLifecycleFallback:
             f.flush()
             return plugin.assess("test-sbom-id", Path(f.name))
 
-    def test_metadata_lifecycle_satisfies_cle_support_status(self) -> None:
-        """Metadata-level cdx:lifecycle:milestone:endOfSupport should satisfy support status."""
+    def test_dependency_fails_even_with_doc_level_lifecycle(self) -> None:
+        """Doc-level lifecycle milestone must not blanket-pass dependencies.
+
+        Regression guard for the pre-fix behavior where a single doc-level
+        cdx:lifecycle:milestone:endOfSupport caused every component in
+        components[] to auto-pass both CLE checks. That behavior hid real
+        per-component data gaps that FDA V.A.4.b requires surfaced.
+        """
         sbom_data = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
             "components": [
                 {
-                    "name": "example",
-                    "version": "1.0.0",
-                    "publisher": "Corp",
-                    "purl": "pkg:pypi/example@1.0.0",
+                    "name": "django",
+                    "version": "5.0.0",
+                    "publisher": "Django Software Foundation",
+                    "purl": "pkg:pypi/django@5.0.0",
+                    "bom-ref": "pkg:pypi/django@5.0.0",
                 }
             ],
-            "dependencies": [{"ref": "pkg:pypi/example@1.0.0", "dependsOn": []}],
+            "dependencies": [{"ref": "pkg:pypi/django@5.0.0", "dependsOn": []}],
             "metadata": {
                 "authors": [{"name": "Dev"}],
                 "timestamp": "2023-01-01T00:00:00Z",
+                "component": {
+                    "bom-ref": "pkg:pypi/my-app@1.0.0",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "type": "application",
+                },
                 "properties": [
                     {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
                 ],
@@ -365,12 +385,136 @@ class TestCycloneDXLifecycleFallback:
         }
         result = self._assess_sbom(sbom_data)
 
-        # Both CLE checks should pass via metadata fallback
         cle_findings = [f for f in result.findings if "cle:" in f.id]
-        assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
-        assert all(f.status == "pass" for f in cle_findings), (
-            f"CLE findings should pass with metadata lifecycle: {[(f.id, f.status) for f in cle_findings]}"
+        assert len(cle_findings) == 2
+        assert all(f.status == "fail" for f in cle_findings), (
+            f"Dependencies must not pass via doc-level fallback: {[(f.id, f.status) for f in cle_findings]}"
         )
+        for finding in cle_findings:
+            assert finding.description and "django" in finding.description
+
+    def test_root_component_passes_with_doc_level_lifecycle(self) -> None:
+        """When the root subject is listed in components[], the doc-level
+        milestone is a valid fallback ONLY for that root component."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "publisher": "My Corp",
+                    "purl": "pkg:pypi/my-app@1.0.0",
+                    "bom-ref": "pkg:pypi/my-app@1.0.0",
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/my-app@1.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+                "component": {
+                    "bom-ref": "pkg:pypi/my-app@1.0.0",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "type": "application",
+                },
+                "properties": [
+                    {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
+                ],
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"Root component should pass via narrow doc-level fallback: {[(f.id, f.status) for f in cle_findings]}"
+        )
+
+    def test_root_in_metadata_only_dependencies_still_fail(self) -> None:
+        """Root listed only in metadata.component (not components[]) must not
+        make dependencies auto-pass via doc-level lifecycle.
+
+        This is the Lithium-like case: the subject component is described in
+        metadata.component and each dependency sits in components[]. The
+        dependencies have no CLE data and must fail.
+        """
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.0.0",
+                    "publisher": "DSF",
+                    "purl": "pkg:pypi/django@5.0.0",
+                    "bom-ref": "pkg:pypi/django@5.0.0",
+                },
+                {
+                    "name": "requests",
+                    "version": "2.32.0",
+                    "publisher": "Python Software Foundation",
+                    "purl": "pkg:pypi/requests@2.32.0",
+                    "bom-ref": "pkg:pypi/requests@2.32.0",
+                },
+            ],
+            "dependencies": [
+                {"ref": "pkg:pypi/django@5.0.0", "dependsOn": []},
+                {"ref": "pkg:pypi/requests@2.32.0", "dependsOn": []},
+            ],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+                "component": {
+                    "bom-ref": "pkg:pypi/lithium@1.0.0",
+                    "name": "lithium",
+                    "version": "1.0.0",
+                    "type": "application",
+                },
+                "properties": [
+                    {"name": "cdx:lifecycle:milestone:endOfSupport", "value": "2027-12-31"},
+                ],
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        assert all(f.status == "fail" for f in cle_findings)
+        for finding in cle_findings:
+            assert finding.description and "django" in finding.description
+            assert finding.description and "requests" in finding.description
+
+    def test_component_with_own_cle_passes(self) -> None:
+        """A component carrying its own cdx:cle:* properties should pass
+        the CLE checks regardless of doc-level data."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "django",
+                    "version": "5.0.0",
+                    "publisher": "DSF",
+                    "purl": "pkg:pypi/django@5.0.0",
+                    "bom-ref": "pkg:pypi/django@5.0.0",
+                    "properties": [
+                        {"name": "cdx:cle:supportStatus", "value": "active"},
+                        {"name": "cdx:cle:endOfSupport", "value": "2027-12-31"},
+                    ],
+                }
+            ],
+            "dependencies": [{"ref": "pkg:pypi/django@5.0.0", "dependsOn": []}],
+            "metadata": {
+                "authors": [{"name": "Dev"}],
+                "timestamp": "2023-01-01T00:00:00Z",
+            },
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        assert all(f.status == "pass" for f in cle_findings)
 
     def test_no_lifecycle_anywhere_fails_cle(self) -> None:
         """Without any lifecycle data, CLE checks should fail."""
@@ -396,6 +540,144 @@ class TestCycloneDXLifecycleFallback:
         cle_findings = [f for f in result.findings if "cle:" in f.id]
         assert len(cle_findings) == 2, f"Expected 2 CLE findings, got {len(cle_findings)}"
         assert all(f.status == "fail" for f in cle_findings)
+
+
+class TestSPDXLifecycleFallback:
+    """Tests for SPDX document-level lifecycle annotation fallback.
+
+    Mirrors TestCycloneDXLifecycleFallback for SPDX: a document-level
+    annotation describing support lifecycle applies only to the DESCRIBES
+    target (the root subject), not to every package in packages[].
+    """
+
+    def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
+        plugin = FDAMedicalDevicePlugin()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(sbom_data, f)
+            f.flush()
+            return plugin.assess("test-sbom-id", Path(f.name))
+
+    def test_spdx_dependency_fails_with_only_doc_level_annotation(self) -> None:
+        """A document-level CLE annotation must not blanket-pass dependencies."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "lithium",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/lithium",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: Lithium Project"],
+            },
+            "documentDescribes": ["SPDXRef-Package-lithium"],
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-lithium",
+                    "name": "lithium",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Lithium Project",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/lithium@1.0.0",
+                        }
+                    ],
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-django",
+                    "name": "django",
+                    "versionInfo": "5.0.0",
+                    "supplier": "Organization: DSF",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/django@5.0.0",
+                        }
+                    ],
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-Package-lithium",
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": "SPDXRef-Package-django",
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        # Doc-level fallback should cover the root (lithium) for both checks,
+        # but dependencies must be judged on their own data.
+        for finding in cle_findings:
+            assert finding.status == "fail", f"Expected fail for {finding.id}, got {finding.status}"
+            fail_list = (finding.description or "").split("Missing for:")[-1]
+            assert "django" in fail_list, f"Expected django in {finding.id} fail list: {fail_list}"
+            assert "lithium" not in fail_list, f"Root 'lithium' should not be in {finding.id} fail list: {fail_list}"
+
+    def test_spdx_root_passes_with_doc_level_annotation(self) -> None:
+        """When the SPDX DESCRIBES target has a doc-level CLE annotation,
+        that target passes. Other packages still need their own data."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "my-app",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/my-app",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: My Corp"],
+            },
+            "documentDescribes": ["SPDXRef-Package-my-app"],
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-my-app",
+                    "name": "my-app",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: My Corp",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/my-app@1.0.0",
+                        }
+                    ],
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-my-app",
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert len(cle_findings) == 2
+        assert all(f.status == "pass" for f in cle_findings), (
+            f"Root SPDX package should pass via doc-level annotation: {[(f.id, f.status) for f in cle_findings]}"
+        )
 
 
 class TestSPDXValidation:

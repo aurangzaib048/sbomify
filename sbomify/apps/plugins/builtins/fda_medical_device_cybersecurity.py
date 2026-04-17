@@ -277,6 +277,13 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         support_status_failures: list[str] = []
         end_of_support_failures: list[str] = []
 
+        # Narrow doc-level CLE fallback, mirroring the CycloneDX path.
+        # Only the SPDX root subject (DESCRIBES target) inherits document-level
+        # CLE annotations — dependencies must carry their own data.
+        root_spdxid = self._spdx_root_spdxid(data)
+        doc_has_support_status = self._spdx_doc_has_valid_support_status(data)
+        doc_has_end_of_support = self._spdx_doc_has_cle_token(data, "cle:endOfSupport=")
+
         # Check each package for required elements
         for i, package in enumerate(packages):
             package_name = package.get("name", f"Package {i + 1}")
@@ -320,13 +327,16 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
-            # 8. Support status (from annotations)
-            has_support_status = self._spdx_has_support_status(package, data)
+            is_root = bool(root_spdxid) and spdx_id == root_spdxid
+
+            # 8. Support status (from annotations, with root-only doc fallback)
+            has_support_status = self._spdx_has_support_status(package, data) or (is_root and doc_has_support_status)
             if not has_support_status:
                 support_status_failures.append(package_name)
 
-            # 9. End of support date (validUntilDate)
-            if not package.get("validUntilDate"):
+            # 9. End of support date (validUntilDate, with root-only doc fallback)
+            has_end_of_support = bool(package.get("validUntilDate")) or (is_root and doc_has_end_of_support)
+            if not has_end_of_support:
                 end_of_support_failures.append(package_name)
 
         # Create findings for per-package NTIA elements
@@ -474,6 +484,56 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                     if self._parse_spdx_support_status_annotation(annotation):
                         return True
 
+        return False
+
+    def _spdx_root_spdxid(self, data: dict[str, Any]) -> str | None:
+        """Identify the SPDX root subject (BOM target).
+
+        Returns the SPDXID from documentDescribes[0] if present, else from
+        the first DESCRIBES relationship with spdxElementId == SPDXRef-DOCUMENT.
+        """
+        describes = data.get("documentDescribes")
+        if isinstance(describes, list) and describes:
+            first = describes[0]
+            if isinstance(first, str) and first:
+                return first
+
+        for rel in data.get("relationships") or []:
+            if not isinstance(rel, dict):
+                continue
+            if str(rel.get("relationshipType") or "").upper() != "DESCRIBES":
+                continue
+            if rel.get("spdxElementId") != "SPDXRef-DOCUMENT":
+                continue
+            related = rel.get("relatedSpdxElement")
+            if isinstance(related, str) and related:
+                return related
+
+        return None
+
+    def _spdx_doc_has_cle_token(self, data: dict[str, Any], token: str) -> bool:
+        """Check if any top-level OTHER annotation comment contains a CLE token.
+
+        Doc-level annotations not scoped to a specific package are treated as
+        describing the BOM subject. Supports tokens like "cle:endOfSupport="
+        for the narrow root-component fallback.
+        """
+        for annotation in data.get("annotations") or []:
+            if not isinstance(annotation, dict):
+                continue
+            if annotation.get("annotationType") != "OTHER":
+                continue
+            comment = annotation.get("comment", "")
+            if isinstance(comment, str) and token in comment:
+                return True
+        return False
+
+    def _spdx_doc_has_valid_support_status(self, data: dict[str, Any]) -> bool:
+        """Check if any top-level OTHER annotation carries a valid CLE support
+        status value (active/deprecated/eol/abandoned/unknown)."""
+        for annotation in data.get("annotations") or []:
+            if isinstance(annotation, dict) and self._parse_spdx_support_status_annotation(annotation):
+                return True
         return False
 
     def _parse_spdx_support_status_annotation(self, annotation: dict[str, Any]) -> bool:
@@ -736,11 +796,16 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         support_status_failures: list[str] = []
         end_of_support_failures: list[str] = []
 
-        # Hoist metadata-level lifecycle check out of the per-component loop.
-        # Having an end-of-support date implies active support (until that date),
-        # satisfying the FDA "support level" requirement as a fallback when
-        # per-component cdx:cle:supportStatus is absent.
-        metadata_has_eos = self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+        # Doc-level lifecycle milestone applies ONLY to the BOM subject (root
+        # component referenced by metadata.component.bom-ref). Per the CycloneDX
+        # property taxonomy, cdx:lifecycle:milestone:endOfSupport describes a
+        # single manufacturer's support timeline for the object it's attached
+        # to — it does NOT imply coverage for every component in components[].
+        # FDA V.A.4.b likewise requires per-component support data (or a
+        # per-component justification when unknown).
+        doc_lifecycle_eos = self._cyclonedx_has_lifecycle_property(metadata, "cdx:lifecycle:milestone:endOfSupport")
+        root_component = metadata.get("component") if isinstance(metadata.get("component"), dict) else {}
+        root_bom_ref = root_component.get("bom-ref") if isinstance(root_component, dict) else None
 
         # Check each component for required elements
         for i, component in enumerate(components):
@@ -781,15 +846,18 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # === FDA CLE Elements ===
 
+            # Narrow doc-level fallback: the metadata lifecycle milestone
+            # applies only when this component IS the BOM subject.
+            is_root = bool(root_bom_ref) and component.get("bom-ref") == root_bom_ref
+            doc_fallback = is_root and doc_lifecycle_eos
+
             # 8. Support status
-            has_support_status = (
-                self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus") or metadata_has_eos
-            )
+            has_support_status = self._cyclonedx_has_cle_property(component, "cdx:cle:supportStatus") or doc_fallback
             if not has_support_status:
                 support_status_failures.append(component_name)
 
             # 9. End of support date
-            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport") or metadata_has_eos
+            has_end_of_support = self._cyclonedx_has_cle_property(component, "cdx:cle:endOfSupport") or doc_fallback
             if not has_end_of_support:
                 end_of_support_failures.append(component_name)
 
