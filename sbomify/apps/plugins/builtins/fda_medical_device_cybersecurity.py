@@ -69,6 +69,7 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
     is_spdx3,
 )
 from sbomify.apps.plugins.builtins._spdx_shared import (
+    iter_spdx3_elements,
     spdx2_annotation_targets_document,
     spdx2_root_spdxid,
     spdx3_annotation_subject_matches,
@@ -599,14 +600,9 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         # Narrow root-only doc-level CLE fallback (parity with SPDX 2.3 path).
         # Only the SpdxDocument subject and its declared rootElements inherit
         # document-level CLE annotations — dependencies must carry their own
-        # data. Annotations scoped to a specific package describe that
-        # package, not the document.
+        # data. See spdx3_document_subjects / spdx3_annotation_subject_matches
+        # for the split-sets rationale.
         doc_ids, root_ids = spdx3_document_subjects(data)
-        # Only rootElement IDs are "BOM subjects" per SPDX 3.0.1 Core.SpdxDocument;
-        # the SpdxDocument's own spdxId is not a rootElement candidate. Keep both
-        # sets separate so the annotation-scope helper can treat empty-subject
-        # annotations as document-scoped ONLY when at least one rootElement is
-        # declared (symmetric to the SPDX 2.x DESCRIBES requirement).
         doc_has_support_status = self._spdx3_doc_has_valid_support_status(data, doc_ids, root_ids)
         doc_has_end_of_support = self._spdx3_doc_has_cle_token(data, "cle:endOfSupport=", doc_ids, root_ids)
 
@@ -781,10 +777,9 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         Returns:
             True if valid support status annotation found.
         """
-        elements = data.get("@graph", data.get("elements", []))
-        for element in elements:
+        for element in iter_spdx3_elements(data):
             elem_type = element.get("type", element.get("@type", ""))
-            if "Annotation" not in elem_type:
+            if not isinstance(elem_type, str) or "Annotation" not in elem_type:
                 continue
 
             # Check if annotation references this package
@@ -794,6 +789,8 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
             # Check statement for cle:supportStatus
             statement = element.get("statement", element.get("comment", ""))
+            if not isinstance(statement, str):
+                continue
             if "cle:supportStatus=" in statement:
                 for part in statement.split():
                     if part.startswith("cle:supportStatus="):
@@ -806,9 +803,9 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
     def _spdx3_doc_has_valid_support_status(self, data: dict[str, Any], doc_ids: set[str], root_ids: set[str]) -> bool:
         """Check for an SPDX 3.x Annotation describing the document (or its
         rootElement) that carries a valid cle:supportStatus token."""
-        for element in data.get("@graph", data.get("elements", [])):
+        for element in iter_spdx3_elements(data):
             elem_type = element.get("type", element.get("@type", ""))
-            if "Annotation" not in elem_type:
+            if not isinstance(elem_type, str) or "Annotation" not in elem_type:
                 continue
             if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                 continue
@@ -825,9 +822,9 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
     def _spdx3_doc_has_cle_token(self, data: dict[str, Any], token: str, doc_ids: set[str], root_ids: set[str]) -> bool:
         """Check for an SPDX 3.x Annotation describing the document (or its
         rootElement) whose statement contains the given CLE token."""
-        for element in data.get("@graph", data.get("elements", [])):
+        for element in iter_spdx3_elements(data):
             elem_type = element.get("type", element.get("@type", ""))
-            if "Annotation" not in elem_type:
+            if not isinstance(elem_type, str) or "Annotation" not in elem_type:
                 continue
             if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                 continue

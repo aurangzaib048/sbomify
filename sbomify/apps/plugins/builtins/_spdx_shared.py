@@ -7,7 +7,23 @@ scope) and SPDX 3.0.1 rootElement semantics stay consistent.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
+
+
+def iter_spdx3_elements(data: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Yield well-formed SPDX 3.x elements from `@graph` (or the `elements`
+    alias). Non-dict entries and non-list containers are skipped rather
+    than raised — a hostile / malformed SBOM cannot crash the plugin.
+    """
+    raw_elements = data.get("@graph", data.get("elements", []))
+    if isinstance(raw_elements, dict):
+        raw_elements = [raw_elements]
+    if not isinstance(raw_elements, list):
+        return
+    for element in raw_elements:
+        if isinstance(element, dict):
+            yield element
 
 
 def spdx2_root_spdxid(data: dict[str, Any]) -> str | None:
@@ -76,17 +92,25 @@ def spdx3_document_subjects(data: dict[str, Any]) -> tuple[set[str], set[str]]:
     (e.g. "empty-subject annotation is document-scoped only when at least
     one rootElement has been declared" — analogous to SPDX 2.x requiring
     a DESCRIBES target before lenient empty-subject handling kicks in).
+
+    Defensive against malformed input: hostile SBOMs may set @graph to
+    non-list values or individual elements to non-dicts. Such entries are
+    skipped rather than allowed to raise AttributeError / TypeError out
+    of the plugin.
     """
     document_ids: set[str] = set()
     root_element_ids: set[str] = set()
-    for element in data.get("@graph", data.get("elements", [])):
+    for element in iter_spdx3_elements(data):
         elem_type = element.get("type", element.get("@type", ""))
-        if "SpdxDocument" not in elem_type:
+        if not isinstance(elem_type, str) or "SpdxDocument" not in elem_type:
             continue
         doc_id = element.get("spdxId", element.get("@id", ""))
         if isinstance(doc_id, str) and doc_id:
             document_ids.add(doc_id)
-        for root in element.get("rootElement", []) or []:
+        roots = element.get("rootElement") or []
+        if not isinstance(roots, list):
+            continue
+        for root in roots:
             if isinstance(root, str) and root:
                 root_element_ids.add(root)
     return document_ids, root_element_ids
@@ -106,6 +130,11 @@ def spdx3_annotation_subject_matches(
     exists. Without any rootElement the annotation is unanchored — a
     malformed / crafted SBOM can't inflate the compliance score by
     dropping in a subject-less annotation.
+
+    Both sets are accepted as valid subjects (`document_ids` covers the
+    SpdxDocument's own spdxId, `root_element_ids` covers the declared
+    BOM subject). Callers that need strict BOM-subject scoping should
+    consult `root_element_ids` directly instead of using this helper.
     """
     subject = element.get("subject", element.get("annotationSubject", ""))
     if not isinstance(subject, str):

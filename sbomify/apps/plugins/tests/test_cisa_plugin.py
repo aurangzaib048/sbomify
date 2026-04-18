@@ -718,7 +718,7 @@ class TestSPDXValidation:
         assert context_finding.status == "fail", "Unanchored annotation must not satisfy the generation context check"
 
     def test_spdx_root_via_describes_relationship_fallback(self) -> None:
-        """When documentDescribes is absent, _spdx2_root_spdxid falls back to
+        """When documentDescribes is absent, spdx2_root_spdxid falls back to
         a DESCRIBES relationship with spdxElementId == SPDXRef-DOCUMENT.
         Verify the annotation subject filter then correctly accepts an
         annotation scoped to that derived root."""
@@ -1220,6 +1220,39 @@ class TestSPDX3Validation:
             {
                 "type": "Annotation",
                 "spdxId": "SPDXRef-Annotation-1",
+                "subject": "SPDXRef-Document",
+                "statement": "cisa:generationContext=build",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
+
+    def test_spdx3_anchored_annotation_without_rootelement_still_accepted(self) -> None:
+        """A non-empty annotation subject that matches an SpdxDocument's
+        spdxId is accepted even when the document has no rootElement.
+
+        spdx3_annotation_subject_matches treats document_ids and
+        root_element_ids as equally valid subjects; only empty-subject
+        annotations require a declared rootElement. This pins down the
+        boundary between the two rules.
+        """
+        sbom_data = _create_base_spdx3_sbom()
+        del sbom_data["@graph"][0]["comment"]
+        # SpdxDocument WITHOUT rootElement — but the annotation points at it
+        # explicitly by spdxId, so the non-empty-subject branch applies.
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-AnchoredNoRoot",
                 "subject": "SPDXRef-Document",
                 "statement": "cisa:generationContext=build",
             }

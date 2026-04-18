@@ -11,6 +11,7 @@ This plugin validates:
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1795,6 +1796,32 @@ class TestSPDX3Validation:
             f"Root should pass via doc-level annotation: {[(f.id, f.status) for f in cle_findings]}"
         )
 
+    def _build_spdx3_with_empty_subject_annotation(self, *, root_elements: list[str] | None) -> dict:
+        """Build an SPDX 3.x fixture with an SpdxDocument (optionally carrying
+        a rootElement) and an empty-subject Annotation that would supply
+        doc-level CLE tokens. Keeps existing non-Annotation, non-SpdxDocument
+        elements so the base CreationInfo/Organization/Package/Relationship
+        survive but no conflicting document/annotation pre-exists.
+        """
+        sbom_data = _create_base_spdx3_sbom()
+        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") not in {"Annotation", "SpdxDocument"}]
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "software_Package":
+                e.pop("software_validUntilDate", None)
+        spdx_document: dict[str, Any] = {"type": "SpdxDocument", "spdxId": "SPDXRef-Document"}
+        if root_elements is not None:
+            spdx_document["rootElement"] = root_elements
+        sbom_data["@graph"].append(spdx_document)
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Empty",
+                # no `subject` — empty
+                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+            }
+        )
+        return sbom_data
+
     def test_spdx3_empty_subject_without_rootelement_rejected(self) -> None:
         """An SPDX 3.x SBOM with an SpdxDocument element but NO rootElement
         must NOT treat an empty-subject annotation as document-scoped.
@@ -1803,27 +1830,7 @@ class TestSPDX3Validation:
         (rootElement in 3.x, DESCRIBES target in 2.x) an empty-subject
         annotation is unanchored and cannot inflate the compliance score.
         """
-        sbom_data = _create_base_spdx3_sbom()
-        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
-        for e in sbom_data["@graph"]:
-            if e.get("type") == "software_Package":
-                e.pop("software_validUntilDate", None)
-        # SpdxDocument with no rootElement — unanchored.
-        sbom_data["@graph"].append(
-            {
-                "type": "SpdxDocument",
-                "spdxId": "SPDXRef-Document",
-                # deliberately: no rootElement
-            }
-        )
-        sbom_data["@graph"].append(
-            {
-                "type": "Annotation",
-                "spdxId": "SPDXRef-Annotation-Unanchored",
-                # no `subject` — empty
-                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
-            }
-        )
+        sbom_data = self._build_spdx3_with_empty_subject_annotation(root_elements=None)
 
         result = self._assess_sbom(sbom_data)
 
@@ -1835,26 +1842,7 @@ class TestSPDX3Validation:
     def test_spdx3_empty_subject_with_rootelement_accepted(self) -> None:
         """Positive control: with a declared rootElement, an empty-subject
         annotation is treated as document-scoped."""
-        sbom_data = _create_base_spdx3_sbom()
-        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
-        for e in sbom_data["@graph"]:
-            if e.get("type") == "software_Package":
-                e.pop("software_validUntilDate", None)
-        sbom_data["@graph"].append(
-            {
-                "type": "SpdxDocument",
-                "spdxId": "SPDXRef-Document",
-                "rootElement": ["SPDXRef-Package-1"],
-            }
-        )
-        sbom_data["@graph"].append(
-            {
-                "type": "Annotation",
-                "spdxId": "SPDXRef-Annotation-Empty",
-                # no `subject` — empty, but rootElement present so doc-scoped
-                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
-            }
-        )
+        sbom_data = self._build_spdx3_with_empty_subject_annotation(root_elements=["SPDXRef-Package-1"])
 
         result = self._assess_sbom(sbom_data)
 

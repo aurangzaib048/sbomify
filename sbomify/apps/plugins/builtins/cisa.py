@@ -68,6 +68,7 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
     is_spdx3,
 )
 from sbomify.apps.plugins.builtins._spdx_shared import (
+    iter_spdx3_elements,
     spdx2_annotation_targets_document,
     spdx2_root_spdxid,
     spdx3_annotation_subject_matches,
@@ -743,16 +744,16 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         Returns:
             True if valid generation context found.
         """
-        elements = data.get("@graph", data.get("elements", []))
-
         # Shared helper returns (doc_ids, root_ids) separately so the
         # annotation-scope filter can treat empty-subject annotations as
         # document-scoped ONLY when at least one rootElement has been
         # declared — mirroring the SPDX 2.x DESCRIBES-target requirement.
         doc_ids, root_ids = spdx3_document_subjects(data)
 
-        for element in elements:
+        for element in iter_spdx3_elements(data):
             elem_type = element.get("type", element.get("@type", ""))
+            if not isinstance(elem_type, str):
+                continue
 
             # Check SpdxDocument comment
             if "SpdxDocument" in elem_type:
