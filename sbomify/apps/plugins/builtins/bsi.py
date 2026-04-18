@@ -58,6 +58,7 @@ from typing import Any
 
 from packaging import version as pkg_version
 
+from sbomify.apps.plugins.builtins._spdx_shared import iter_spdx3_elements
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
 from sbomify.apps.plugins.sdk.results import (
@@ -1728,9 +1729,9 @@ class BSICompliancePlugin(AssessmentPlugin):
         supports one. SPDX 3.x exposes the document identity via the
         SpdxDocument element's spdxId.
         """
-        for element in data.get("@graph", data.get("elements", [])):
+        for element in iter_spdx3_elements(data):
             elem_type = element.get("type", element.get("@type", ""))
-            if "SpdxDocument" not in elem_type:
+            if not isinstance(elem_type, str) or "SpdxDocument" not in elem_type:
                 continue
             doc_id = element.get("spdxId", element.get("@id", ""))
             if isinstance(doc_id, str) and doc_id.strip():

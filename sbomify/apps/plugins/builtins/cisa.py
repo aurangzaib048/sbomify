@@ -771,21 +771,28 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
 
             # Check SpdxDocument comment
             if "SpdxDocument" in elem_type:
-                comment = element.get("comment", "").lower()
-                if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
-                    return True
+                comment_raw = element.get("comment", "")
+                if isinstance(comment_raw, str):
+                    comment = comment_raw.lower()
+                    if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
+                        return True
 
             # Check CreationInfo comment
             if "CreationInfo" in elem_type:
-                comment = element.get("comment", "").lower()
-                if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
-                    return True
+                comment_raw = element.get("comment", "")
+                if isinstance(comment_raw, str):
+                    comment = comment_raw.lower()
+                    if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
+                        return True
 
             # Check Annotation elements via the shared subject filter.
             if "Annotation" in elem_type:
                 if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                     continue
-                comment = element.get("statement", element.get("comment", "")).lower()
+                raw_comment = element.get("statement", element.get("comment", ""))
+                if not isinstance(raw_comment, str):
+                    continue
+                comment = raw_comment.lower()
                 if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
                     return True
                 # Check for explicit cisa:generationContext

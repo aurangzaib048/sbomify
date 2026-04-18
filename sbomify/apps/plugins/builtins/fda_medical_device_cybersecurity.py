@@ -41,11 +41,14 @@ CLE Format Support:
       of the CycloneDX property taxonomy.
     - SPDX 2.3: Native validUntilDate field + annotations
         - Per-package validUntilDate for end-of-support.
-        - Package-level or document-level OTHER annotation with
-          cle:supportStatus=<status>. Document-level annotations are
-          resolved to their spdxElementId target; annotations without a
-          subject, or whose subject is SPDXRef-DOCUMENT, describe the
-          document itself (per SPDX 2.3 §12).
+        - Package-scoped OTHER annotation carrying cle:supportStatus=<status>
+          or cle:endOfSupport=<ISO-8601 date> (annotation.spdxElementId
+          points at the package).
+        - Document-scoped OTHER annotation carrying the same tokens
+          (spdxElementId empty, SPDXRef-DOCUMENT, or the documentDescribes
+          target, per SPDX 2.3 §12). Document-level annotations are only
+          applied to the BOM root subject — dependencies must carry their
+          own annotations.
     - SPDX 3.0.1: Native software_validUntilDate field + Annotation elements
         - Per-package software_validUntilDate for end-of-support.
         - Annotation elements whose statement contains
