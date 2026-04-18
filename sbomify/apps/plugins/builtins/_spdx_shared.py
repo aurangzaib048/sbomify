@@ -1,9 +1,8 @@
-"""Shared SPDX 2.x helpers used by multiple compliance plugins.
+"""Shared SPDX helpers used by multiple compliance plugins.
 
-The FDA and CISA plugins both need to identify the BOM subject (DESCRIBES
-target) and filter document-level OTHER annotations by subject. Keeping
-one implementation here prevents the two plugins from drifting in their
-interpretation of SPDX 2.3 §12 Annotation semantics.
+Covers both SPDX 2.x and SPDX 3.x. FDA and CISA plugins share this
+module so their interpretation of SPDX 2.3 §12 (annotation subject
+scope) and SPDX 3.0.1 rootElement semantics stay consistent.
 """
 
 from __future__ import annotations
@@ -62,3 +61,55 @@ def spdx2_annotation_targets_document(annotation: dict[str, Any], root_spdxid: s
     if subject == "":
         return root_spdxid is not None
     return root_spdxid is not None and subject == root_spdxid
+
+
+def spdx3_document_subjects(data: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Return (document_ids, root_element_ids) for an SPDX 3.x document.
+
+    Per SPDX 3.0.1 Core.SpdxDocument:
+      - spdxId of the SpdxDocument element itself identifies the document.
+      - rootElement lists the "interesting" element(s) of the contained tree
+        (the BOM subject). The spec explicitly forbids rootElement being
+        of type SpdxDocument, so the two sets are disjoint by design.
+
+    Returning them separately lets callers enforce stricter scoping rules
+    (e.g. "empty-subject annotation is document-scoped only when at least
+    one rootElement has been declared" — analogous to SPDX 2.x requiring
+    a DESCRIBES target before lenient empty-subject handling kicks in).
+    """
+    document_ids: set[str] = set()
+    root_element_ids: set[str] = set()
+    for element in data.get("@graph", data.get("elements", [])):
+        elem_type = element.get("type", element.get("@type", ""))
+        if "SpdxDocument" not in elem_type:
+            continue
+        doc_id = element.get("spdxId", element.get("@id", ""))
+        if isinstance(doc_id, str) and doc_id:
+            document_ids.add(doc_id)
+        for root in element.get("rootElement", []) or []:
+            if isinstance(root, str) and root:
+                root_element_ids.add(root)
+    return document_ids, root_element_ids
+
+
+def spdx3_annotation_subject_matches(
+    element: dict[str, Any],
+    document_ids: set[str],
+    root_element_ids: set[str],
+) -> bool:
+    """Return True if an SPDX 3.x Annotation targets the document or
+    one of its rootElements.
+
+    Empty subject is accepted as document-scoped only when at least one
+    rootElement has been declared. This mirrors the SPDX 2.x rule that
+    empty spdxElementId is only acceptable when a DESCRIBES target
+    exists. Without any rootElement the annotation is unanchored — a
+    malformed / crafted SBOM can't inflate the compliance score by
+    dropping in a subject-less annotation.
+    """
+    subject = element.get("subject", element.get("annotationSubject", ""))
+    if not isinstance(subject, str):
+        return False
+    if subject == "":
+        return bool(root_element_ids)
+    return subject in document_ids or subject in root_element_ids

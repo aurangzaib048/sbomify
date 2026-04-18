@@ -1795,6 +1795,74 @@ class TestSPDX3Validation:
             f"Root should pass via doc-level annotation: {[(f.id, f.status) for f in cle_findings]}"
         )
 
+    def test_spdx3_empty_subject_without_rootelement_rejected(self) -> None:
+        """An SPDX 3.x SBOM with an SpdxDocument element but NO rootElement
+        must NOT treat an empty-subject annotation as document-scoped.
+
+        Symmetric to the SPDX 2.x rule: without a declared BOM subject
+        (rootElement in 3.x, DESCRIBES target in 2.x) an empty-subject
+        annotation is unanchored and cannot inflate the compliance score.
+        """
+        sbom_data = _create_base_spdx3_sbom()
+        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "software_Package":
+                e.pop("software_validUntilDate", None)
+        # SpdxDocument with no rootElement — unanchored.
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                # deliberately: no rootElement
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Unanchored",
+                # no `subject` — empty
+                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "fail" for f in cle_findings), (
+            "Empty-subject annotation must be rejected when no rootElement is declared"
+        )
+
+    def test_spdx3_empty_subject_with_rootelement_accepted(self) -> None:
+        """Positive control: with a declared rootElement, an empty-subject
+        annotation is treated as document-scoped."""
+        sbom_data = _create_base_spdx3_sbom()
+        sbom_data["@graph"] = [e for e in sbom_data["@graph"] if e.get("type") != "Annotation"]
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "software_Package":
+                e.pop("software_validUntilDate", None)
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-1"],
+            }
+        )
+        sbom_data["@graph"].append(
+            {
+                "type": "Annotation",
+                "spdxId": "SPDXRef-Annotation-Empty",
+                # no `subject` — empty, but rootElement present so doc-scoped
+                "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings), (
+            "Empty-subject annotation should be accepted when rootElement is present"
+        )
+
     def test_spdx3_package_scoped_annotation_does_not_pass_root(self) -> None:
         """A top-level Annotation whose subject is a non-root package does
         not feed the root's doc-level CLE fallback."""

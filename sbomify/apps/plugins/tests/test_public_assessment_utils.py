@@ -930,4 +930,3 @@ class TestGetLatestAssessmentRunsForSbom:
         runs = _get_latest_assessment_runs_for_sbom(str(sbom.id))
         ntia_runs = [r for r in runs if r.plugin_name == "ntia-minimum-elements-2021"]
         assert len(ntia_runs) == 1, "Expected exactly one NTIA run (latest only)"
-

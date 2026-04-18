@@ -70,6 +70,8 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
 from sbomify.apps.plugins.builtins._spdx_shared import (
     spdx2_annotation_targets_document,
     spdx2_root_spdxid,
+    spdx3_annotation_subject_matches,
+    spdx3_document_subjects,
 )
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
@@ -494,14 +496,6 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
 
         return findings
 
-    def _spdx2_root_spdxid(self, data: dict[str, Any]) -> str | None:
-        """Deprecated thin wrapper — delegates to shared helper."""
-        return spdx2_root_spdxid(data)
-
-    def _spdx2_annotation_targets_document(self, annotation: dict[str, Any], root_spdxid: str | None) -> bool:
-        """Deprecated thin wrapper — delegates to shared helper."""
-        return spdx2_annotation_targets_document(annotation, root_spdxid)
-
     def _spdx_has_generation_context(self, data: dict[str, Any]) -> bool:
         """Check if SPDX document has generation context information.
 
@@ -531,13 +525,13 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         # Per SPDX 2.3 §12, only consider annotations whose spdxElementId
         # points at the document or its DESCRIBES target — annotations
         # targeting specific packages describe those packages, not the BOM.
-        root_spdxid = self._spdx2_root_spdxid(data)
+        root_spdxid = spdx2_root_spdxid(data)
         for annotation in data.get("annotations", []):
             if not isinstance(annotation, dict):
                 continue
             if annotation.get("annotationType") != "OTHER":
                 continue
-            if not self._spdx2_annotation_targets_document(annotation, root_spdxid):
+            if not spdx2_annotation_targets_document(annotation, root_spdxid):
                 continue
             comment = annotation.get("comment", "")
             if "cisa:generationContext=" in comment:
@@ -751,19 +745,11 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         """
         elements = data.get("@graph", data.get("elements", []))
 
-        # Collect acceptable annotation subjects: SpdxDocument IDs and their
-        # declared rootElement IDs. Empty-subject annotations are treated as
-        # document-level per spec convention.
-        document_subjects: set[str] = set()
-        for element in elements:
-            elem_type = element.get("type", element.get("@type", ""))
-            if "SpdxDocument" in elem_type:
-                doc_id = element.get("spdxId", element.get("@id", ""))
-                if isinstance(doc_id, str) and doc_id:
-                    document_subjects.add(doc_id)
-                for root in element.get("rootElement", []) or []:
-                    if isinstance(root, str) and root:
-                        document_subjects.add(root)
+        # Shared helper returns (doc_ids, root_ids) separately so the
+        # annotation-scope filter can treat empty-subject annotations as
+        # document-scoped ONLY when at least one rootElement has been
+        # declared — mirroring the SPDX 2.x DESCRIBES-target requirement.
+        doc_ids, root_ids = spdx3_document_subjects(data)
 
         for element in elements:
             elem_type = element.get("type", element.get("@type", ""))
@@ -780,13 +766,9 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
                 if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):
                     return True
 
-            # Check Annotation elements — only those whose subject is the
-            # SpdxDocument or its rootElement (or unset, treated as document)
+            # Check Annotation elements via the shared subject filter.
             if "Annotation" in elem_type:
-                subject = element.get("subject", element.get("annotationSubject", ""))
-                if not isinstance(subject, str):
-                    continue
-                if subject and subject not in document_subjects:
+                if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                     continue
                 comment = element.get("statement", element.get("comment", "")).lower()
                 if any(ctx in comment for ctx in GENERATION_CONTEXT_VALUES):

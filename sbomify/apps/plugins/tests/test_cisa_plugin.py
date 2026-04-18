@@ -715,9 +715,7 @@ class TestSPDXValidation:
         result = self._assess_sbom(sbom_data)
 
         context_finding = next(f for f in result.findings if "generation-context" in f.id)
-        assert context_finding.status == "fail", (
-            "Unanchored annotation must not satisfy the generation context check"
-        )
+        assert context_finding.status == "fail", "Unanchored annotation must not satisfy the generation context check"
 
     def test_spdx_root_via_describes_relationship_fallback(self) -> None:
         """When documentDescribes is absent, _spdx2_root_spdxid falls back to
@@ -1201,14 +1199,28 @@ class TestSPDX3Validation:
         assert context_finding.status == "fail"
 
     def test_spdx3_generation_context_via_annotation(self) -> None:
-        """Test SPDX 3.0 generation context via Annotation element."""
+        """Test SPDX 3.0 generation context via Annotation element.
+
+        Uses an anchored annotation (subject = SpdxDocument) because the
+        tightened scope filter rejects empty-subject annotations when no
+        rootElement is declared (symmetric to SPDX 2.x DESCRIBES rule).
+        """
         sbom_data = _create_base_spdx3_sbom()
         del sbom_data["@graph"][0]["comment"]
-        # Add Annotation element
+        # Declare an SpdxDocument with a rootElement so the annotation has
+        # a valid BOM subject to point at.
+        sbom_data["@graph"].append(
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-1"],
+            }
+        )
         sbom_data["@graph"].append(
             {
                 "type": "Annotation",
                 "spdxId": "SPDXRef-Annotation-1",
+                "subject": "SPDXRef-Document",
                 "statement": "cisa:generationContext=build",
             }
         )

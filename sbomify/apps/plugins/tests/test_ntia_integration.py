@@ -800,8 +800,7 @@ class TestFileTypeSkipAcrossGenerators:
         for fid in ("ntia-2021:supplier-name", "ntia-2021:version", "ntia-2021:unique-identifiers"):
             finding = next((f for f in result.findings if f.id == fid), None)
             assert finding is not None and finding.status == "pass", (
-                f"Microsoft sbom-tool convention not skipped for {fid}: "
-                f"{finding.description if finding else None}"
+                f"Microsoft sbom-tool convention not skipped for {fid}: {finding.description if finding else None}"
             )
 
     def test_spdx_clean_file_naming(self):

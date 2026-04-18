@@ -71,6 +71,8 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
 from sbomify.apps.plugins.builtins._spdx_shared import (
     spdx2_annotation_targets_document,
     spdx2_root_spdxid,
+    spdx3_annotation_subject_matches,
+    spdx3_document_subjects,
 )
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
@@ -315,7 +317,7 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         # §12, a top-level annotation with spdxElementId pointing at a specific
         # package describes that package, not the document, so such annotations
         # are not counted as "document-level" for the root fallback.
-        root_spdxid = self._spdx_root_spdxid(data)
+        root_spdxid = spdx2_root_spdxid(data)
         doc_has_support_status = self._spdx_doc_has_valid_support_status(data, root_spdxid)
         doc_has_end_of_support = self._spdx_doc_has_cle_token(data, "cle:endOfSupport=", root_spdxid)
 
@@ -521,16 +523,6 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
         return False
 
-    def _spdx_root_spdxid(self, data: dict[str, Any]) -> str | None:
-        """Deprecated thin wrapper kept for internal call sites — delegates
-        to the shared `_spdx_shared.spdx2_root_spdxid`."""
-        return spdx2_root_spdxid(data)
-
-    def _spdx_annotation_targets_document(self, annotation: dict[str, Any], root_spdxid: str | None) -> bool:
-        """Deprecated thin wrapper — delegates to
-        `_spdx_shared.spdx2_annotation_targets_document`."""
-        return spdx2_annotation_targets_document(annotation, root_spdxid)
-
     def _spdx_doc_has_cle_token(self, data: dict[str, Any], token: str, root_spdxid: str | None) -> bool:
         """Check if any top-level OTHER annotation describing the document
         (or its DESCRIBES target) contains the given CLE token.
@@ -540,7 +532,7 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                 continue
             if annotation.get("annotationType") != "OTHER":
                 continue
-            if not self._spdx_annotation_targets_document(annotation, root_spdxid):
+            if not spdx2_annotation_targets_document(annotation, root_spdxid):
                 continue
             comment = annotation.get("comment", "")
             if isinstance(comment, str) and token in comment:
@@ -554,7 +546,7 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         for annotation in data.get("annotations") or []:
             if not isinstance(annotation, dict):
                 continue
-            if not self._spdx_annotation_targets_document(annotation, root_spdxid):
+            if not spdx2_annotation_targets_document(annotation, root_spdxid):
                 continue
             if self._parse_spdx_support_status_annotation(annotation):
                 return True
@@ -609,9 +601,14 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         # document-level CLE annotations — dependencies must carry their own
         # data. Annotations scoped to a specific package describe that
         # package, not the document.
-        doc_subjects = self._spdx3_document_subjects(data)
-        doc_has_support_status = self._spdx3_doc_has_valid_support_status(data, doc_subjects)
-        doc_has_end_of_support = self._spdx3_doc_has_cle_token(data, "cle:endOfSupport=", doc_subjects)
+        doc_ids, root_ids = spdx3_document_subjects(data)
+        # Only rootElement IDs are "BOM subjects" per SPDX 3.0.1 Core.SpdxDocument;
+        # the SpdxDocument's own spdxId is not a rootElement candidate. Keep both
+        # sets separate so the annotation-scope helper can treat empty-subject
+        # annotations as document-scoped ONLY when at least one rootElement is
+        # declared (symmetric to the SPDX 2.x DESCRIBES requirement).
+        doc_has_support_status = self._spdx3_doc_has_valid_support_status(data, doc_ids, root_ids)
+        doc_has_end_of_support = self._spdx3_doc_has_cle_token(data, "cle:endOfSupport=", doc_ids, root_ids)
 
         for i, package in enumerate(packages):
             pkg_fields = get_spdx3_package_fields(package)
@@ -643,7 +640,11 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
             # === FDA CLE Elements ===
 
             pkg_id = package.get("spdxId", package.get("@id", ""))
-            is_root = isinstance(pkg_id, str) and pkg_id in doc_subjects
+            # Root subjects per SPDX 3.0.1 are the declared rootElement IDs,
+            # not the SpdxDocument's own spdxId (which is not a rootElement
+            # candidate). Matching pkg_id against root_ids only prevents the
+            # SpdxDocument element itself from being treated as the root.
+            is_root = isinstance(pkg_id, str) and pkg_id in root_ids
 
             # 8. Support status (from Annotation elements + root-only doc fallback)
             has_support_status = self._spdx3_has_support_status(pkg_id, data) or (is_root and doc_has_support_status)
@@ -802,48 +803,14 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
         return False
 
-    def _spdx3_document_subjects(self, data: dict[str, Any]) -> set[str]:
-        """Return the set of spdxIds considered "document-level" subjects for
-        the narrow SPDX 3.x doc-level CLE fallback: each SpdxDocument's
-        spdxId plus the spdxIds listed in its rootElement array.
-        """
-        subjects: set[str] = set()
-        for element in data.get("@graph", data.get("elements", [])):
-            elem_type = element.get("type", element.get("@type", ""))
-            if "SpdxDocument" not in elem_type:
-                continue
-            doc_id = element.get("spdxId", element.get("@id", ""))
-            if isinstance(doc_id, str) and doc_id:
-                subjects.add(doc_id)
-            for root in element.get("rootElement", []) or []:
-                if isinstance(root, str) and root:
-                    subjects.add(root)
-        return subjects
-
-    def _spdx3_annotation_subject_matches(self, element: dict[str, Any], doc_subjects: set[str]) -> bool:
-        """Return True if an SPDX 3.x Annotation element targets the
-        document or one of its rootElements.
-
-        Empty subject is accepted as document-scoped only when the @graph
-        has declared at least one SpdxDocument element; otherwise the
-        annotation is unanchored and must be rejected so a malformed /
-        attacker-crafted SBOM can't inflate the compliance score.
-        """
-        subject = element.get("subject", element.get("annotationSubject", ""))
-        if not isinstance(subject, str):
-            return False
-        if subject == "":
-            return bool(doc_subjects)
-        return subject in doc_subjects
-
-    def _spdx3_doc_has_valid_support_status(self, data: dict[str, Any], doc_subjects: set[str]) -> bool:
+    def _spdx3_doc_has_valid_support_status(self, data: dict[str, Any], doc_ids: set[str], root_ids: set[str]) -> bool:
         """Check for an SPDX 3.x Annotation describing the document (or its
         rootElement) that carries a valid cle:supportStatus token."""
         for element in data.get("@graph", data.get("elements", [])):
             elem_type = element.get("type", element.get("@type", ""))
             if "Annotation" not in elem_type:
                 continue
-            if not self._spdx3_annotation_subject_matches(element, doc_subjects):
+            if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                 continue
             statement = element.get("statement", element.get("comment", ""))
             if not isinstance(statement, str) or "cle:supportStatus=" not in statement:
@@ -855,14 +822,14 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
                         return True
         return False
 
-    def _spdx3_doc_has_cle_token(self, data: dict[str, Any], token: str, doc_subjects: set[str]) -> bool:
+    def _spdx3_doc_has_cle_token(self, data: dict[str, Any], token: str, doc_ids: set[str], root_ids: set[str]) -> bool:
         """Check for an SPDX 3.x Annotation describing the document (or its
         rootElement) whose statement contains the given CLE token."""
         for element in data.get("@graph", data.get("elements", [])):
             elem_type = element.get("type", element.get("@type", ""))
             if "Annotation" not in elem_type:
                 continue
-            if not self._spdx3_annotation_subject_matches(element, doc_subjects):
+            if not spdx3_annotation_subject_matches(element, doc_ids, root_ids):
                 continue
             statement = element.get("statement", element.get("comment", ""))
             if isinstance(statement, str) and token in statement:

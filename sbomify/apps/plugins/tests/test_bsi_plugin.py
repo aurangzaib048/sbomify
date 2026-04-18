@@ -852,9 +852,7 @@ class TestAdditionalDataFields:
         also accepted as an original-licence signal, alongside the newer
         bsi:component:effectiveLicence."""
         sbom = create_base_cyclonedx_sbom()
-        sbom["components"][0]["properties"].append(
-            {"name": "bsi:component:associatedLicences", "value": "MIT"}
-        )
+        sbom["components"][0]["properties"].append({"name": "bsi:component:associatedLicences", "value": "MIT"})
         result = assess_sbom(sbom)
         finding = get_finding(result, "bsi-tr03183:original-licences")
         assert finding is not None
@@ -980,8 +978,11 @@ class TestAdditionalDataFields:
     def test_spdx2_source_code_uri_pass_via_externalRefs_vcs(self):
         sbom = create_base_spdx2_sbom()
         sbom["packages"][0].setdefault("externalRefs", []).append(
-            {"referenceCategory": "SOURCE_CODE", "referenceType": "vcs",
-             "referenceLocator": "git+https://github.com/example/repo"}
+            {
+                "referenceCategory": "SOURCE_CODE",
+                "referenceType": "vcs",
+                "referenceLocator": "git+https://github.com/example/repo",
+            }
         )
         result = assess_sbom(sbom)
         finding = get_finding(result, "bsi-tr03183:source-code-uri")
@@ -1032,6 +1033,21 @@ class TestAdditionalDataFields:
         """licenseDeclared = NOASSERTION does not count as an original licence."""
         sbom = create_base_spdx2_sbom()
         sbom["packages"][0]["licenseDeclared"] = "NOASSERTION"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx2_original_licences_rejects_none(self):
+        """licenseDeclared = NONE does not count as an original licence.
+
+        Per SPDX 2.3 Clause 7, NONE means "no license information whatsoever",
+        which is distinct from NOASSERTION (no determination made). BSI §5.2.4
+        requires the original licence to be provided when it exists — both
+        placeholders signal the absence of useful data and must be rejected.
+        """
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["licenseDeclared"] = "NONE"
         result = assess_sbom(sbom)
         finding = get_finding(result, "bsi-tr03183:original-licences")
         assert finding is not None
