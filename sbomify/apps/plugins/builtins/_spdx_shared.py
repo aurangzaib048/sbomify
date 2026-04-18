@@ -108,6 +108,12 @@ def spdx3_document_subjects(data: dict[str, Any]) -> tuple[set[str], set[str]]:
         if isinstance(doc_id, str) and doc_id:
             document_ids.add(doc_id)
         roots = element.get("rootElement") or []
+        # JSON-LD 1.1 compact form: an `@container: @set` property with a
+        # single value may be serialised as a bare string rather than a
+        # single-item array. Accept both forms so we don't miss a real
+        # rootElement on a spec-legal compact document.
+        if isinstance(roots, str):
+            roots = [roots]
         if not isinstance(roots, list):
             continue
         for root in roots:

@@ -774,6 +774,56 @@ class TestSPDXValidation:
         result = self._assess_sbom(sbom_data)
         assert result.summary.error_count == 0
 
+    def test_spdx_generation_context_with_null_comment_fields(self) -> None:
+        """SPDX comment fields carrying null / non-string values must not
+        crash the generation-context scan — coerce defensively."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "comment": None,  # hostile: null comment
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z",
+                "comment": 42,  # hostile: non-string comment
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Pkg",
+                    "name": "test",
+                    "supplier": "Org: Test",
+                    "versionInfo": "1.0",
+                    "purl": "pkg:pypi/t@1",
+                }
+            ],
+            "annotations": "not-a-list",  # hostile: annotations as string
+        }
+        result = self._assess_sbom(sbom_data)
+        assert result.summary.error_count == 0
+        ctx_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert ctx_finding.status == "fail"
+
+    def test_cyclonedx_generation_context_with_malformed_metadata(self) -> None:
+        """CDX metadata.lifecycles / metadata.properties with non-list /
+        non-dict shapes must not crash the generation-context scan."""
+        sbom_data = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {
+                "lifecycles": "build",  # hostile: string instead of list
+                "properties": [
+                    "not-a-dict",  # hostile: non-dict entry
+                    {"name": "internal:sbom:generationContext", "value": None},  # non-string value
+                ],
+                "timestamp": "2023-01-01T00:00:00Z",
+                "component": {"bom-ref": "root", "type": "application", "name": "app"},
+                "tools": {"components": [{"name": "test-tool"}]},
+            },
+            "components": [],
+        }
+        result = self._assess_sbom(sbom_data)
+        assert result.summary.error_count == 0
+        ctx_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert ctx_finding.status == "fail"
+
     def test_malformed_relationship_type_as_list(self) -> None:
         """Regression: relationshipType as list should not crash."""
         sbom_data = {

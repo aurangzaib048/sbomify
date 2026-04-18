@@ -512,22 +512,34 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         Returns:
             True if valid generation context found.
         """
-        # Check CreatorComment (creationInfo.comment)
-        creator_comment = data.get("creationInfo", {}).get("comment", "").lower()
-        if any(ctx in creator_comment for ctx in GENERATION_CONTEXT_VALUES):
-            return True
+        # Check CreatorComment (creationInfo.comment). Malformed SBOMs can
+        # emit null / non-string comment fields, so coerce defensively before
+        # calling .lower() — otherwise a crafted SBOM would crash the whole
+        # assessment instead of producing a clean "fail" finding.
+        creation_info = data.get("creationInfo") or {}
+        if isinstance(creation_info, dict):
+            creator_comment_raw = creation_info.get("comment", "")
+            if isinstance(creator_comment_raw, str):
+                creator_comment = creator_comment_raw.lower()
+                if any(ctx in creator_comment for ctx in GENERATION_CONTEXT_VALUES):
+                    return True
 
         # Check DocumentComment (document-level comment)
-        document_comment = data.get("comment", "").lower()
-        if any(ctx in document_comment for ctx in GENERATION_CONTEXT_VALUES):
-            return True
+        document_comment_raw = data.get("comment", "")
+        if isinstance(document_comment_raw, str):
+            document_comment = document_comment_raw.lower()
+            if any(ctx in document_comment for ctx in GENERATION_CONTEXT_VALUES):
+                return True
 
         # Document-level annotations with explicit cisa:generationContext.
         # Per SPDX 2.3 §12, only consider annotations whose spdxElementId
         # points at the document or its DESCRIBES target — annotations
         # targeting specific packages describe those packages, not the BOM.
         root_spdxid = spdx2_root_spdxid(data)
-        for annotation in data.get("annotations", []):
+        annotations = data.get("annotations") or []
+        if not isinstance(annotations, list):
+            return False
+        for annotation in annotations:
             if not isinstance(annotation, dict):
                 continue
             if annotation.get("annotationType") != "OTHER":
@@ -535,6 +547,8 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
             if not spdx2_annotation_targets_document(annotation, root_spdxid):
                 continue
             comment = annotation.get("comment", "")
+            if not isinstance(comment, str):
+                continue
             if "cisa:generationContext=" in comment:
                 for part in comment.split():
                     if part.startswith("cisa:generationContext="):
@@ -1030,18 +1044,31 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         """
         # Primary: metadata.lifecycles[].phase per CycloneDX spec
         # (https://cyclonedx.org/guides/sbom/lifecycle_phases/)
-        lifecycles = metadata.get("lifecycles", [])
-        for lifecycle in lifecycles:
-            phase = lifecycle.get("phase", "").lower().strip()
-            if phase in GENERATION_CONTEXT_VALUES:
-                return True
+        lifecycles = metadata.get("lifecycles") or []
+        if isinstance(lifecycles, list):
+            for lifecycle in lifecycles:
+                if not isinstance(lifecycle, dict):
+                    continue
+                phase_raw = lifecycle.get("phase", "")
+                if not isinstance(phase_raw, str):
+                    continue
+                phase = phase_raw.lower().strip()
+                if phase in GENERATION_CONTEXT_VALUES:
+                    return True
 
         # Fallback properties
-        properties = metadata.get("properties", [])
+        properties = metadata.get("properties") or []
+        if not isinstance(properties, list):
+            return False
         accepted_names = (self._GENERATION_CONTEXT_PROP, self._LEGACY_GENERATION_CONTEXT_PROP)
         for prop in properties:
+            if not isinstance(prop, dict):
+                continue
             if prop.get("name") in accepted_names:
-                value = prop.get("value", "").lower().strip()
+                value_raw = prop.get("value", "")
+                if not isinstance(value_raw, str):
+                    continue
+                value = value_raw.lower().strip()
                 if value in GENERATION_CONTEXT_VALUES:
                     return True
 

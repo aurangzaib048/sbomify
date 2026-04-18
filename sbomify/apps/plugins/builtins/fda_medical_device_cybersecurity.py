@@ -46,6 +46,14 @@ CLE Format Support:
           resolved to their spdxElementId target; annotations without a
           subject, or whose subject is SPDXRef-DOCUMENT, describe the
           document itself (per SPDX 2.3 §12).
+    - SPDX 3.0.1: Native software_validUntilDate field + Annotation elements
+        - Per-package software_validUntilDate for end-of-support.
+        - Annotation elements whose statement contains
+          cle:supportStatus=<status> / cle:endOfSupport=<date>, scoped
+          by the annotation's subject: a non-empty subject matches the
+          package with that spdxId; an empty subject or subject matching
+          an SpdxDocument/rootElement is treated as document-level per
+          SPDX 3.0.1 Core.SpdxDocument.
 
 Scope of the per-component CLE checks:
     FDA V.A.4.b requires per-component support data (or a per-component

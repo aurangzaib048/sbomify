@@ -1502,22 +1502,38 @@ class BSICompliancePlugin(AssessmentPlugin):
         return None
 
     def _get_bsi_property(self, component: dict[str, Any], prop_name: str) -> str | None:
-        """Get a BSI property value from CycloneDX component properties."""
+        """Get a BSI property value from CycloneDX component properties.
+
+        Runs per component across every BSI check, so a malformed
+        properties array on one component must not abort the whole
+        assessment — non-list / non-dict entries are skipped defensively.
+        """
         full_name = f"{BSI_PROPERTY_PREFIX}{prop_name}"
-        for prop in component.get("properties", []):
+        properties = component.get("properties") or []
+        if not isinstance(properties, list):
+            return None
+        for prop in properties:
+            if not isinstance(prop, dict):
+                continue
             if prop.get("name") == full_name:
-                value: str | None = prop.get("value")
-                return value
+                value = prop.get("value")
+                return value if isinstance(value, str) else None
         return None
 
     def _has_valid_cyclonedx_licence(self, component: dict[str, Any]) -> bool:
         """Check if CycloneDX component has valid distribution licence using SPDX identifier."""
-        for licence in component.get("licenses", []):
+        licenses = component.get("licenses") or []
+        if not isinstance(licenses, list):
+            return False
+        for licence in licenses:
+            if not isinstance(licence, dict):
+                continue
             # Check for expression (preferred per BSI)
             if licence.get("expression"):
                 return True
             # Check for license.id (SPDX identifier)
-            if licence.get("license", {}).get("id"):
+            nested = licence.get("license") or {}
+            if isinstance(nested, dict) and nested.get("id"):
                 return True
         return False
 
