@@ -970,6 +970,102 @@ class TestSPDXLifecycleFallback:
         cle_findings = [f for f in result.findings if "cle:" in f.id]
         assert all(f.status == "pass" for f in cle_findings)
 
+    def test_spdx_root_via_describes_relationship_fallback(self) -> None:
+        """When documentDescribes is absent, the root is inferred from a
+        DESCRIBES relationship with spdxElementId == SPDXRef-DOCUMENT."""
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "my-app",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/my-app",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: Example Corp"],
+            },
+            # No documentDescribes — root must be inferred from relationships.
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-my-app",
+                    "name": "my-app",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Example Corp",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/my-app@1.0.0",
+                        }
+                    ],
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-my-app",
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    "spdxElementId": "SPDXRef-Package-my-app",
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "pass" for f in cle_findings)
+
+    def test_spdx_unanchored_annotation_without_root_rejected(self) -> None:
+        """When the document declares no DESCRIBES target AND an annotation
+        has empty spdxElementId, the annotation is unanchored. The narrow
+        fallback must reject it so a crafted SBOM cannot inflate the
+        compliance score.
+        """
+        sbom_data = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "attack",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.com/x",
+            "creationInfo": {
+                "created": "2023-01-01T00:00:00Z",
+                "creators": ["Organization: Anon"],
+            },
+            # No documentDescribes, no DESCRIBES relationship.
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-x",
+                    "name": "x",
+                    "versionInfo": "1.0.0",
+                    "supplier": "Organization: Anon",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:pypi/x@1.0.0",
+                        }
+                    ],
+                }
+            ],
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                    # No spdxElementId -- unanchored.
+                    "comment": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
+                }
+            ],
+        }
+        result = self._assess_sbom(sbom_data)
+        cle_findings = [f for f in result.findings if "cle:" in f.id]
+        assert all(f.status == "fail" for f in cle_findings)
+
     def test_spdx_root_passes_with_doc_level_annotation(self) -> None:
         """When the SPDX DESCRIBES target has a doc-level CLE annotation,
         that target passes. Other packages still need their own data."""

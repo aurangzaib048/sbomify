@@ -68,6 +68,10 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
     get_spdx3_package_fields,
     is_spdx3,
 )
+from sbomify.apps.plugins.builtins._spdx_shared import (
+    spdx2_annotation_targets_document,
+    spdx2_root_spdxid,
+)
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
 from sbomify.apps.plugins.sdk.results import (
@@ -518,43 +522,14 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         return False
 
     def _spdx_root_spdxid(self, data: dict[str, Any]) -> str | None:
-        """Identify the SPDX root subject (BOM target).
-
-        Returns the SPDXID from documentDescribes[0] if present, else from
-        the first DESCRIBES relationship with spdxElementId == SPDXRef-DOCUMENT.
-        """
-        describes = data.get("documentDescribes")
-        if isinstance(describes, list) and describes:
-            first = describes[0]
-            if isinstance(first, str) and first:
-                return first
-
-        for rel in data.get("relationships") or []:
-            if not isinstance(rel, dict):
-                continue
-            if str(rel.get("relationshipType") or "").upper() != "DESCRIBES":
-                continue
-            if rel.get("spdxElementId") != "SPDXRef-DOCUMENT":
-                continue
-            related = rel.get("relatedSpdxElement")
-            if isinstance(related, str) and related:
-                return related
-
-        return None
+        """Deprecated thin wrapper kept for internal call sites — delegates
+        to the shared `_spdx_shared.spdx2_root_spdxid`."""
+        return spdx2_root_spdxid(data)
 
     def _spdx_annotation_targets_document(self, annotation: dict[str, Any], root_spdxid: str | None) -> bool:
-        """Return True if an SPDX top-level annotation's target is the
-        document or the BOM subject (root). Per SPDX 2.3 §12 an annotation
-        with an spdxElementId pointing at a specific package describes
-        that package, not the document, so it MUST NOT be counted as
-        "document-level" for the narrow root fallback.
-        """
-        subject = annotation.get("spdxElementId", "")
-        if not isinstance(subject, str):
-            return False
-        if subject == "" or subject == "SPDXRef-DOCUMENT":
-            return True
-        return root_spdxid is not None and subject == root_spdxid
+        """Deprecated thin wrapper — delegates to
+        `_spdx_shared.spdx2_annotation_targets_document`."""
+        return spdx2_annotation_targets_document(annotation, root_spdxid)
 
     def _spdx_doc_has_cle_token(self, data: dict[str, Any], token: str, root_spdxid: str | None) -> bool:
         """Check if any top-level OTHER annotation describing the document
@@ -847,13 +822,18 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
 
     def _spdx3_annotation_subject_matches(self, element: dict[str, Any], doc_subjects: set[str]) -> bool:
         """Return True if an SPDX 3.x Annotation element targets the
-        document or one of its rootElements. Annotations with no subject
-        are treated as document-level (per spec convention)."""
+        document or one of its rootElements.
+
+        Empty subject is accepted as document-scoped only when the @graph
+        has declared at least one SpdxDocument element; otherwise the
+        annotation is unanchored and must be rejected so a malformed /
+        attacker-crafted SBOM can't inflate the compliance score.
+        """
         subject = element.get("subject", element.get("annotationSubject", ""))
         if not isinstance(subject, str):
             return False
         if subject == "":
-            return True
+            return bool(doc_subjects)
         return subject in doc_subjects
 
     def _spdx3_doc_has_valid_support_status(self, data: dict[str, Any], doc_subjects: set[str]) -> bool:
@@ -1130,6 +1110,12 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
     # Accepted for backward compatibility with SBOMs that were generated
     # when the plugin used the unsanctioned cdx:cle:* convention. Prefer
     # the _STATUS_MILESTONES names for new data.
+    #
+    # Sunset plan: these aliases are retained for a two-release window
+    # (approx. six months from 2026-04). After that they may be removed
+    # — downstream SBOM producers should migrate to the sanctioned
+    # cdx:lifecycle:milestone:* taxonomy during that window. Track with
+    # `git log --follow -- this file` for the removal commit.
     _LEGACY_STATUS_PROP = "cdx:cle:supportStatus"
     _LEGACY_EOS_PROP = "cdx:cle:endOfSupport"
 

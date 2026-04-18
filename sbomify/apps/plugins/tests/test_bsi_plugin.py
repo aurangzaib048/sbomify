@@ -847,6 +847,196 @@ class TestAdditionalDataFields:
         assert finding is not None
         assert finding.status == "warning"
 
+    def test_cyclonedx_original_licences_pass_via_associatedLicences_bsi_property(self):
+        """BSI taxonomy legacy property bsi:component:associatedLicences is
+        also accepted as an original-licence signal, alongside the newer
+        bsi:component:effectiveLicence."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["components"][0]["properties"].append(
+            {"name": "bsi:component:associatedLicences", "value": "MIT"}
+        )
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    # --- SPDX 3.x BSI §5.2.3 / §5.2.4 paths --------------------------------
+
+    def test_spdx3_sbom_uri_pass_when_spdxdocument_has_id(self):
+        sbom = create_base_spdx3_sbom()
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx3_sbom_uri_warns_when_no_spdxdocument_present(self):
+        sbom = create_base_spdx3_sbom()
+        # Remove the SpdxDocument element entirely.
+        sbom["@graph"] = [e for e in sbom["@graph"] if e.get("type") != "SpdxDocument"]
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx3_source_code_uri_pass_via_software_sourceInfo(self):
+        sbom = create_base_spdx3_sbom()
+        for element in sbom["@graph"]:
+            if element.get("type") == "software_Package":
+                element["software_sourceInfo"] = "https://example.com/source"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx3_source_code_uri_pass_via_external_identifier(self):
+        sbom = create_base_spdx3_sbom()
+        for element in sbom["@graph"]:
+            if element.get("type") == "software_Package":
+                element.setdefault("externalIdentifiers", []).append(
+                    {
+                        "externalIdentifierType": "vcs",
+                        "identifier": "https://github.com/example/repo",
+                    }
+                )
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx3_source_code_uri_warns_when_absent(self):
+        sbom = create_base_spdx3_sbom()
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx3_deployable_uri_pass_via_software_downloadLocation(self):
+        sbom = create_base_spdx3_sbom()
+        for element in sbom["@graph"]:
+            if element.get("type") == "software_Package":
+                element["software_downloadLocation"] = "https://example.com/pkg.whl"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx3_deployable_uri_warns_when_absent(self):
+        sbom = create_base_spdx3_sbom()
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx3_original_licences_pass_via_hasDeclaredLicense(self):
+        sbom = create_base_spdx3_sbom()
+        sbom["@graph"].append(
+            {
+                "type": "Relationship",
+                "spdxId": "SPDXRef-Rel-Declared",
+                "from": "SPDXRef-Package-1",
+                "relationshipType": "hasDeclaredLicense",
+                "to": ["SPDXRef-License-1"],
+            }
+        )
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx3_original_licences_warns_when_only_concluded(self):
+        sbom = create_base_spdx3_sbom()
+        # Base fixture has hasConcludedLicense but no hasDeclaredLicense.
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    # --- SPDX 2.x BSI §5.2.3 / §5.2.4 paths --------------------------------
+
+    def test_spdx2_sbom_uri_pass_via_documentNamespace(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["documentNamespace"] = "https://example.com/docs/abc-1.0"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx2_sbom_uri_warns_without_documentNamespace(self):
+        sbom = create_base_spdx2_sbom()
+        sbom.pop("documentNamespace", None)
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx2_source_code_uri_pass_via_sourceInfo(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["sourceInfo"] = "https://github.com/example/repo"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx2_source_code_uri_pass_via_externalRefs_vcs(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0].setdefault("externalRefs", []).append(
+            {"referenceCategory": "SOURCE_CODE", "referenceType": "vcs",
+             "referenceLocator": "git+https://github.com/example/repo"}
+        )
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx2_source_code_uri_warns_when_absent(self):
+        sbom = create_base_spdx2_sbom()
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:source-code-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx2_deployable_uri_pass_via_downloadLocation(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["downloadLocation"] = "https://pypi.org/simple/example/"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx2_deployable_uri_rejects_noassertion_placeholder(self):
+        """NOASSERTION / NONE placeholders do not count as a deployable URI."""
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["downloadLocation"] = "NOASSERTION"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx2_deployable_uri_rejects_none_placeholder(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["downloadLocation"] = "NONE"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:uri-deployable-form")
+        assert finding is not None
+        assert finding.status == "warning"
+
+    def test_spdx2_original_licences_pass_via_licenseDeclared(self):
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["licenseDeclared"] = "MIT"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "pass"
+
+    def test_spdx2_original_licences_rejects_noassertion(self):
+        """licenseDeclared = NOASSERTION does not count as an original licence."""
+        sbom = create_base_spdx2_sbom()
+        sbom["packages"][0]["licenseDeclared"] = "NOASSERTION"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:original-licences")
+        assert finding is not None
+        assert finding.status == "warning"
+
 
 class TestVulnerabilityCheck:
     """Tests for vulnerability exclusion check (BSI §3.1)."""

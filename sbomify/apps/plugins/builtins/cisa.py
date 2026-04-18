@@ -67,6 +67,10 @@ from sbomify.apps.plugins.builtins._spdx3_helpers import (
     get_spdx3_package_fields,
     is_spdx3,
 )
+from sbomify.apps.plugins.builtins._spdx_shared import (
+    spdx2_annotation_targets_document,
+    spdx2_root_spdxid,
+)
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
 from sbomify.apps.plugins.sdk.results import (
@@ -491,36 +495,12 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         return findings
 
     def _spdx2_root_spdxid(self, data: dict[str, Any]) -> str | None:
-        """Identify the SPDX 2.x document subject (DESCRIBES target)."""
-        describes = data.get("documentDescribes")
-        if isinstance(describes, list) and describes:
-            first = describes[0]
-            if isinstance(first, str) and first:
-                return first
-        for rel in data.get("relationships") or []:
-            if not isinstance(rel, dict):
-                continue
-            if str(rel.get("relationshipType") or "").upper() != "DESCRIBES":
-                continue
-            if rel.get("spdxElementId") != "SPDXRef-DOCUMENT":
-                continue
-            related = rel.get("relatedSpdxElement")
-            if isinstance(related, str) and related:
-                return related
-        return None
+        """Deprecated thin wrapper — delegates to shared helper."""
+        return spdx2_root_spdxid(data)
 
     def _spdx2_annotation_targets_document(self, annotation: dict[str, Any], root_spdxid: str | None) -> bool:
-        """Per SPDX 2.3 §12, an annotation with spdxElementId pointing at a
-        specific package describes that package — not the document. The
-        generation-context fallback must therefore only count annotations
-        whose subject is the document or its DESCRIBES target.
-        """
-        subject = annotation.get("spdxElementId", "")
-        if not isinstance(subject, str):
-            return False
-        if subject == "" or subject == "SPDXRef-DOCUMENT":
-            return True
-        return root_spdxid is not None and subject == root_spdxid
+        """Deprecated thin wrapper — delegates to shared helper."""
+        return spdx2_annotation_targets_document(annotation, root_spdxid)
 
     def _spdx_has_generation_context(self, data: dict[str, Any]) -> bool:
         """Check if SPDX document has generation context information.

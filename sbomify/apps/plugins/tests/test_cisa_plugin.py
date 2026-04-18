@@ -407,6 +407,11 @@ class TestSPDXValidation:
             "annotations": [
                 {
                     "annotationType": "OTHER",
+                    # SPDX 2.3 §12 requires spdxElementId; the narrow doc-level
+                    # fallback rejects unanchored annotations when the
+                    # document has no DESCRIBES target. Use the explicit
+                    # SPDXRef-DOCUMENT form here.
+                    "spdxElementId": "SPDXRef-DOCUMENT",
                     "comment": "cisa:generationContext=build",
                     "annotator": "Tool: example-tool",
                     "annotationDate": "2023-01-01T00:00:00Z",
@@ -625,6 +630,9 @@ class TestSPDXValidation:
             "annotations": [
                 {
                     "annotationType": "OTHER",
+                    # SPDX 2.3 §12 requires spdxElementId. The doc-level
+                    # fallback now rejects unanchored annotations.
+                    "spdxElementId": "SPDXRef-DOCUMENT",
                     "comment": "cisa:generationContext=build",
                     "annotator": "Tool: example-tool",
                     "annotationDate": "2023-01-01T00:00:00Z",
@@ -672,6 +680,68 @@ class TestSPDXValidation:
                 "annotator": "Tool: example-tool",
                 "annotationDate": "2023-01-01T00:00:00Z",
                 "spdxElementId": "SPDXRef-DOCUMENT",
+                "comment": "cisa:generationContext=build",
+            }
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "pass"
+
+    def test_spdx_unanchored_annotation_without_root_rejected(self) -> None:
+        """When the document has no DESCRIBES target AND the generation-context
+        annotation has an empty spdxElementId, the annotation is unanchored
+        and must be rejected. Prevents a crafted SBOM from inflating the
+        CISA Generation Context check."""
+        sbom_data = self._create_base_spdx_sbom()
+        # Remove DESCRIBES and any documentDescribes.
+        sbom_data.pop("documentDescribes", None)
+        sbom_data["relationships"] = [
+            r for r in sbom_data.get("relationships", []) if r.get("relationshipType") != "DESCRIBES"
+        ]
+        sbom_data["creationInfo"].pop("comment", None)
+        sbom_data.pop("comment", None)
+        sbom_data["annotations"] = [
+            {
+                "annotationType": "OTHER",
+                "annotator": "Tool: x",
+                "annotationDate": "2023-01-01T00:00:00Z",
+                # No spdxElementId -- unanchored.
+                "comment": "cisa:generationContext=build",
+            }
+        ]
+
+        result = self._assess_sbom(sbom_data)
+
+        context_finding = next(f for f in result.findings if "generation-context" in f.id)
+        assert context_finding.status == "fail", (
+            "Unanchored annotation must not satisfy the generation context check"
+        )
+
+    def test_spdx_root_via_describes_relationship_fallback(self) -> None:
+        """When documentDescribes is absent, _spdx2_root_spdxid falls back to
+        a DESCRIBES relationship with spdxElementId == SPDXRef-DOCUMENT.
+        Verify the annotation subject filter then correctly accepts an
+        annotation scoped to that derived root."""
+        sbom_data = self._create_base_spdx_sbom()
+        sbom_data.pop("documentDescribes", None)
+        # Replace any existing relationships with a pure DESCRIBES.
+        sbom_data["relationships"] = [
+            {
+                "spdxElementId": "SPDXRef-DOCUMENT",
+                "relationshipType": "DESCRIBES",
+                "relatedSpdxElement": "SPDXRef-Package",
+            }
+        ]
+        sbom_data["creationInfo"].pop("comment", None)
+        sbom_data.pop("comment", None)
+        sbom_data["annotations"] = [
+            {
+                "annotationType": "OTHER",
+                "annotator": "Tool: x",
+                "annotationDate": "2023-01-01T00:00:00Z",
+                "spdxElementId": "SPDXRef-Package",
                 "comment": "cisa:generationContext=build",
             }
         ]
