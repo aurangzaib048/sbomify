@@ -51,7 +51,10 @@ def spdx2_root_spdxid(data: dict[str, Any]) -> str | None:
         first = describes[0]
         if isinstance(first, str) and first:
             return first
-    for rel in data.get("relationships") or []:
+    relationships = data.get("relationships") or []
+    if not isinstance(relationships, list):
+        return None
+    for rel in relationships:
         if not isinstance(rel, dict):
             continue
         if str(rel.get("relationshipType") or "").upper() != "DESCRIBES":
