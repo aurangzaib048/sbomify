@@ -1170,6 +1170,73 @@ class TestSPDXValidation:
         assert result.summary.fail_count == 0
         assert result.summary.pass_count == 9  # 7 NTIA + 2 CLE elements
 
+    def test_spdx_2_2_compliant_sbom_matches_2_3_behavior(self) -> None:
+        """FDA accepts SPDX 2.2 uploads identically to SPDX 2.3. The shared
+        schema module routes both through the same parsing + CLE logic;
+        pin the behaviour so the SPDX 2.2 on-ramp stays open as the plugin
+        evolves. The base document is fully compliant; the 2.2 variant
+        satisfies 2.2-specific package fields (copyrightText, licence
+        fields, documentNamespace).
+        """
+        shared_pkg = {
+            "SPDXID": "SPDXRef-Package",
+            "name": "example-package",
+            "supplier": "Organization: Example Corp",
+            "versionInfo": "1.0.0",
+            "externalRefs": [
+                {
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": "pkg:pypi/example-package@1.0.0",
+                }
+            ],
+            "validUntilDate": "2027-12-31T00:00:00Z",
+            "downloadLocation": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "annotations": [
+                {
+                    "annotationType": "OTHER",
+                    "comment": "cle:supportStatus=active",
+                    "annotator": "Tool: sbomify",
+                    "annotationDate": "2023-01-01T00:00:00Z",
+                }
+            ],
+        }
+
+        def _make(version: str) -> dict:
+            return {
+                "spdxVersion": version,
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "dataLicense": "CC0-1.0",
+                "name": "example-sbom",
+                "documentNamespace": "https://example.com/sbom/parity-test",
+                "packages": [dict(shared_pkg)],
+                "relationships": [
+                    {
+                        "spdxElementId": "SPDXRef-DOCUMENT",
+                        "relationshipType": "DEPENDS_ON",
+                        "relatedSpdxElement": "SPDXRef-Package",
+                    }
+                ],
+                "creationInfo": {
+                    "creators": ["Tool: example-tool"],
+                    "created": "2023-01-01T00:00:00Z",
+                },
+            }
+
+        result_22 = self._assess_sbom(_make("SPDX-2.2"))
+        result_23 = self._assess_sbom(_make("SPDX-2.3"))
+
+        findings_22 = {f.id: f.status for f in result_22.findings}
+        findings_23 = {f.id: f.status for f in result_23.findings}
+        assert findings_22 == findings_23, f"SPDX 2.2 vs 2.3 divergence for FDA: 22={findings_22}, 23={findings_23}"
+        # Both must be fully compliant — verifying equality alone would
+        # pass trivially if BOTH were broken in the same way.
+        assert result_22.summary.fail_count == 0
+        assert result_22.summary.pass_count == 9
+
     def test_spdx_missing_valid_until_date(self) -> None:
         """Test SPDX SBOM missing validUntilDate for end-of-support."""
         sbom_data = {

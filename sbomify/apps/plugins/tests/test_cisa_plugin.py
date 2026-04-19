@@ -595,6 +595,37 @@ class TestSPDXValidation:
             context_finding = next(f for f in result.findings if "generation-context" in f.id)
             assert context_finding.status == "pass", f"Lifecycle phase '{phase}' should be valid in comment"
 
+    def test_spdx_2_2_version_processed_same_as_2_3(self) -> None:
+        """A compliant SPDX 2.2 SBOM must produce the same pass/fail shape
+        as the same content with spdxVersion: "SPDX-2.3". SPDX 2.2 and 2.3
+        share a compatible core schema — the plugin dispatch already treats
+        them uniformly (schemas.get_spdx_module), but this pins the
+        behaviour end-to-end so a future divergence can't silently drop
+        SPDX 2.2 uploads from the compliance workflow.
+        """
+        baseline = self._create_base_spdx_sbom()
+        baseline_result = self._assess_sbom(baseline)
+
+        spdx22 = self._create_base_spdx_sbom()
+        spdx22["spdxVersion"] = "SPDX-2.2"
+        # SPDX 2.2 additionally requires documentNamespace (dropped in 2.3
+        # but valid when present). Also requires packages to carry the
+        # three licence-fields — the base fixture already satisfies these.
+        spdx22["documentNamespace"] = "https://example.com/sbom/example-package-1.0.0"
+        for pkg in spdx22.get("packages", []):
+            pkg.setdefault("downloadLocation", "NOASSERTION")
+            pkg.setdefault("copyrightText", "NOASSERTION")
+            pkg.setdefault("licenseDeclared", pkg.get("licenseConcluded", "NOASSERTION"))
+
+        spdx22_result = self._assess_sbom(spdx22)
+
+        # Same finding ids + status across the two versions.
+        baseline_map = {f.id: f.status for f in baseline_result.findings}
+        spdx22_map = {f.id: f.status for f in spdx22_result.findings}
+        assert spdx22_map == baseline_map, (
+            f"SPDX 2.2 assessment diverged from 2.3: 22={spdx22_map}, 23={baseline_map}"
+        )
+
     def _create_base_spdx_sbom(self) -> dict:
         """Create a base compliant SPDX SBOM for testing."""
         return {

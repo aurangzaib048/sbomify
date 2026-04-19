@@ -959,6 +959,34 @@ class TestAdditionalDataFields:
         assert finding is not None
         assert finding.status == "pass"
 
+    def test_spdx_2_2_assessed_same_as_2_3(self):
+        """An SPDX 2.2 document must produce the same finding IDs + statuses
+        as the same content under spdxVersion: "SPDX-2.3". The BSI plugin
+        dispatches both through the shared SPDX 2.x code path; pin the
+        behaviour so a future schema tightening on 2.2 doesn't silently
+        drop compliance signals from uploads that use that version.
+        """
+        sbom_23 = create_base_spdx2_sbom()
+        sbom_23["documentNamespace"] = "https://example.com/docs/same-base"
+        result_23 = assess_sbom(sbom_23)
+
+        sbom_22 = create_base_spdx2_sbom()
+        sbom_22["spdxVersion"] = "SPDX-2.2"
+        sbom_22["documentNamespace"] = "https://example.com/docs/same-base"
+        # SPDX 2.2 requires packages to carry the three licence fields
+        # (kept optional in 2.3). Populate them so the document validates
+        # against the 2.2-specific schema.
+        for pkg in sbom_22["packages"]:
+            pkg.setdefault("downloadLocation", "NOASSERTION")
+            pkg.setdefault("copyrightText", "NOASSERTION")
+            pkg.setdefault("licenseConcluded", "NOASSERTION")
+            pkg.setdefault("licenseDeclared", "NOASSERTION")
+        result_22 = assess_sbom(sbom_22)
+
+        findings_23 = {f.id: f.status for f in result_23.findings}
+        findings_22 = {f.id: f.status for f in result_22.findings}
+        assert findings_22 == findings_23, f"SPDX 2.2 vs 2.3 diverged: 22={findings_22}, 23={findings_23}"
+
     def test_spdx2_sbom_uri_warns_without_documentNamespace(self):
         sbom = create_base_spdx2_sbom()
         sbom.pop("documentNamespace", None)
