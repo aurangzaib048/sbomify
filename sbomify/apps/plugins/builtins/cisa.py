@@ -538,6 +538,10 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         root_spdxid = spdx2_root_spdxid(data)
         annotations = data.get("annotations") or []
         if not isinstance(annotations, list):
+            logger.debug(
+                "SPDX 2.x annotations has unexpected type %s; skipping generation-context scan",
+                type(annotations).__name__,
+            )
             return False
         for annotation in annotations:
             if not isinstance(annotation, dict):
@@ -1066,6 +1070,11 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         # Fallback properties
         properties = metadata.get("properties") or []
         if not isinstance(properties, list):
+            logger.debug(
+                "CycloneDX metadata.properties has unexpected type %s; "
+                "skipping property-based generation-context fallback",
+                type(properties).__name__,
+            )
             return False
         accepted_names = (self._GENERATION_CONTEXT_PROP, self._LEGACY_GENERATION_CONTEXT_PROP)
         for prop in properties:

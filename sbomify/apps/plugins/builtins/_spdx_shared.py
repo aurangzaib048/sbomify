@@ -10,16 +10,28 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+from sbomify.logging import getLogger
+
+logger = getLogger(__name__)
+
 
 def iter_spdx3_elements(data: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """Yield well-formed SPDX 3.x elements from `@graph` (or the `elements`
     alias). Non-dict entries and non-list containers are skipped rather
     than raised — a hostile / malformed SBOM cannot crash the plugin.
+
+    When the top-level container has the wrong shape (neither list nor
+    single node object), emit a single DEBUG log so operators can
+    correlate a "nothing matched" finding with malformed input.
     """
     raw_elements = data.get("@graph", data.get("elements", []))
     if isinstance(raw_elements, dict):
         raw_elements = [raw_elements]
     if not isinstance(raw_elements, list):
+        logger.debug(
+            "SPDX 3.x @graph/elements has unexpected type %s; treating as empty element list",
+            type(raw_elements).__name__,
+        )
         return
     for element in raw_elements:
         if isinstance(element, dict):
