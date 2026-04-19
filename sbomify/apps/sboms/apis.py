@@ -392,11 +392,15 @@ def sbom_upload_cyclonedx(
         sbom_dict = obj_extract(
             obj_in=payload,
             fields=[
-                ExtractSpec("metadata.component.name", required=True, rename_to="name"),
+                ExtractSpec("metadata.component.name", required=False, default="", rename_to="name"),
                 ExtractSpec("metadata.component.version", required=False, rename_to="version"),
                 ExtractSpec("specVersion", required=True, rename_to="format_version"),
             ],
         )
+
+        # metadata.component is optional in CycloneDX; fall back to the sbomify Component name
+        if not sbom_dict.get("name"):
+            sbom_dict["name"] = component.name
 
         # Version if present is a Version class and needs to be converted to string.
         if "version" in sbom_dict and not isinstance(sbom_dict["version"], str):
@@ -1011,11 +1015,15 @@ def sbom_upload_file(
             sbom_dict = obj_extract(
                 obj_in=cdx_payload,
                 fields=[
-                    ExtractSpec("metadata.component.name", required=True, rename_to="name"),
+                    ExtractSpec("metadata.component.name", required=False, default="", rename_to="name"),
                     ExtractSpec("metadata.component.version", required=False, rename_to="version"),
                     ExtractSpec("specVersion", required=True, rename_to="format_version"),
                 ],
             )
+
+            # metadata.component is optional in CycloneDX; fall back to the sbomify Component name
+            if not sbom_dict.get("name"):
+                sbom_dict["name"] = component.name
 
             # Version if present is a Version class and needs to be converted to string.
             if "version" in sbom_dict and not isinstance(sbom_dict["version"], str):
