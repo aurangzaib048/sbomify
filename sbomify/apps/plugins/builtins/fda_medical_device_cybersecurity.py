@@ -1087,10 +1087,11 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
     # the _STATUS_MILESTONES names for new data.
     #
     # Sunset plan: these aliases are retained for a two-release window
-    # (approx. six months from 2026-04). After that they may be removed
-    # — downstream SBOM producers should migrate to the sanctioned
-    # cdx:lifecycle:milestone:* taxonomy during that window. Track with
-    # `git log --follow -- this file` for the removal commit.
+    # (roughly six months after the legacy-name introduction) to give
+    # downstream producers time to migrate to the sanctioned
+    # cdx:lifecycle:milestone:* taxonomy. After that window they may be
+    # removed — track the removal commit via the git history of this
+    # module rather than an absolute wall-clock date.
     _LEGACY_STATUS_PROP = "cdx:cle:supportStatus"
     _LEGACY_EOS_PROP = "cdx:cle:endOfSupport"
 

@@ -151,6 +151,36 @@ class TestCycloneDXValidation:
         license_finding = next(f for f in result.findings if f.id == "cisa-2025:license")
         assert license_finding.status == "fail"
 
+    def test_cyclonedx_file_type_component_skipped_from_per_component_checks(self) -> None:
+        """CDX `type: file` components (lockfiles, config files, etc.) are
+        input metadata, not software packages — per-component CISA
+        requirements (producer, version, identifier, hash, licence) do
+        not apply. Parity with BSI / NTIA / FDA. Only Component Name is
+        still checked so a missing name on a file entry is still caught.
+        """
+        sbom_data = self._create_base_cyclonedx_sbom()
+        # Add a bare file-type component alongside the (compliant) software
+        # component. Its absence of supplier / purl / hash / licence /
+        # version MUST NOT cause any failing findings.
+        sbom_data["components"].append({"type": "file", "name": "uv.lock"})
+
+        result = self._assess_sbom(sbom_data)
+
+        # Every per-component element remains "pass" because the file entry
+        # is skipped and the real component still carries all fields.
+        for fid in (
+            "cisa-2025:software-producer",
+            "cisa-2025:component-version",
+            "cisa-2025:software-identifiers",
+            "cisa-2025:component-hash",
+            "cisa-2025:license",
+        ):
+            finding = next(f for f in result.findings if f.id == fid)
+            assert finding.status == "pass", (
+                f"CISA {fid} failed unexpectedly for a file-type component — it should be skipped. "
+                f"Details: {finding.description}"
+            )
+
     def test_cyclonedx_missing_dependencies(self) -> None:
         """Test CycloneDX SBOM missing dependency relationships."""
         sbom_data = self._create_base_cyclonedx_sbom()
@@ -434,6 +464,36 @@ class TestSPDXValidation:
         producer_finding = next(f for f in result.findings if "software-producer" in f.id)
         assert producer_finding.status == "fail"
 
+    def test_spdx_file_pkg_skipped_from_per_component_checks(self) -> None:
+        """SPDX packages whose SPDXID signals a file entry (e.g.
+        `SPDXRef-File-...`) are skipped from the per-component checks
+        other than Component Name, matching BSI's _is_file_pkg pattern.
+        Exercises lockfile-style packages that lack supplier, version,
+        external identifier, checksums, and licence fields.
+        """
+        sbom_data = self._create_base_spdx_sbom()
+        sbom_data["packages"].append(
+            {
+                "SPDXID": "SPDXRef-File-LockFile",
+                "name": "uv.lock",
+            }
+        )
+
+        result = self._assess_sbom(sbom_data)
+
+        for fid in (
+            "cisa-2025:software-producer",
+            "cisa-2025:component-version",
+            "cisa-2025:software-identifiers",
+            "cisa-2025:component-hash",
+            "cisa-2025:license",
+        ):
+            finding = next(f for f in result.findings if f.id == fid)
+            assert finding.status == "pass", (
+                f"CISA {fid} failed unexpectedly for an SPDX file package — it should be skipped. "
+                f"Details: {finding.description}"
+            )
+
     def test_spdx_missing_component_hash(self) -> None:
         """Test SPDX SBOM missing component hash (checksums)."""
         sbom_data = self._create_base_spdx_sbom()
@@ -622,9 +682,7 @@ class TestSPDXValidation:
         # Same finding ids + status across the two versions.
         baseline_map = {f.id: f.status for f in baseline_result.findings}
         spdx22_map = {f.id: f.status for f in spdx22_result.findings}
-        assert spdx22_map == baseline_map, (
-            f"SPDX 2.2 assessment diverged from 2.3: 22={spdx22_map}, 23={baseline_map}"
-        )
+        assert spdx22_map == baseline_map, f"SPDX 2.2 assessment diverged from 2.3: 22={spdx22_map}, 23={baseline_map}"
 
     def _create_base_spdx_sbom(self) -> dict:
         """Create a base compliant SPDX SBOM for testing."""

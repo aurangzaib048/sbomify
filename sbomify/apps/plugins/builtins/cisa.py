@@ -318,17 +318,27 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         hash_failures: list[str] = []
         license_failures: list[str] = []
 
+        # Packages whose SPDXID signals they are file entries (not software
+        # packages) are skipped from per-component checks other than Name.
+        # Parity with BSI's _is_file_pkg helper and with the CDX file-type
+        # skip above.
+        def _is_file_pkg(p: dict[str, Any]) -> bool:
+            return "-File-" in str(p.get("SPDXID") or "")
+
         # Check each package for required elements
         for i, package in enumerate(packages):
             package_name = package.get("name", f"Package {i + 1}")
 
+            # 3. Component name — applies to every entry including file pkgs.
+            if not package.get("name"):
+                component_name_failures.append(f"Package at index {i}")
+
+            if _is_file_pkg(package):
+                continue
+
             # 2. Software Producer (was Supplier Name)
             if not package.get("supplier"):
                 producer_failures.append(package_name)
-
-            # 3. Component name
-            if not package.get("name"):
-                component_name_failures.append(f"Package at index {i}")
 
             # 4. Component Version
             if not package.get("versionInfo"):
@@ -843,6 +853,21 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         for i, component in enumerate(components):
             component_name = component.get("name", f"Component {i + 1}")
 
+            # Skip type=file components (lockfiles, config files, etc.) —
+            # they're input metadata, not software packages. The per-component
+            # CISA fields (producer, version, identifier, hash, licence) apply
+            # to software components only. Parity with the BSI, NTIA, and
+            # FDA plugins. Component Name is still checked because a missing
+            # name on a file entry is still a data-quality issue.
+            is_file_type = str(component.get("type", "")).lower() == "file"
+
+            # 3. Component name (applies to all component types)
+            if not component.get("name"):
+                component_name_failures.append(f"Component at index {i}")
+
+            if is_file_type:
+                continue
+
             # 2. Software Producer (publisher or supplier.name)
             supplier_field = component.get("supplier")
             supplier = component.get("publisher") or (
@@ -850,10 +875,6 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
             )
             if not supplier:
                 producer_failures.append(component_name)
-
-            # 3. Component name
-            if not component.get("name"):
-                component_name_failures.append(f"Component at index {i}")
 
             # 4. Component Version
             if not component.get("version"):

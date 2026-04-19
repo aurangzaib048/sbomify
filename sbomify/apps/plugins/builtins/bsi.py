@@ -58,7 +58,7 @@ from typing import Any
 
 from packaging import version as pkg_version
 
-from sbomify.apps.plugins.builtins._spdx_shared import iter_spdx3_elements
+from sbomify.apps.plugins.builtins._spdx_shared import spdx3_document_subjects
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, SBOMContext
 from sbomify.apps.plugins.sdk.enums import AssessmentCategory
 from sbomify.apps.plugins.sdk.results import (
@@ -466,10 +466,18 @@ class BSICompliancePlugin(AssessmentPlugin):
             List of findings for each BSI element.
         """
         findings: list[Finding] = []
-        components = data.get("components", [])
-        dependencies = data.get("dependencies", [])
-        compositions = data.get("compositions", [])
-        metadata = data.get("metadata", {})
+        # Defensively coerce top-level containers. A hostile CDX SBOM with
+        # `"components": null` / `"metadata": "string"` would otherwise
+        # crash the assessment instead of producing a clean fail finding.
+        # Mirrors the guard pattern already used in CISA and FDA.
+        components_raw = data.get("components") or []
+        components = [c for c in components_raw if isinstance(c, dict)] if isinstance(components_raw, list) else []
+        dependencies_raw = data.get("dependencies") or []
+        dependencies = dependencies_raw if isinstance(dependencies_raw, list) else []
+        compositions_raw = data.get("compositions") or []
+        compositions = compositions_raw if isinstance(compositions_raw, list) else []
+        metadata_raw = data.get("metadata") or {}
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
 
         # === SBOM-level required fields (§5.2.1) ===
 
@@ -1199,12 +1207,20 @@ class BSICompliancePlugin(AssessmentPlugin):
             List of findings with warnings about SPDX 2.x limitations.
         """
         findings: list[Finding] = []
-        packages = data.get("packages", [])
-        relationships = data.get("relationships", [])
-        creation_info = data.get("creationInfo", {})
+        # Same defensive coercion as the CDX branch — malformed SPDX 2.x
+        # top-level keys produce clean findings rather than crashes.
+        packages_raw = data.get("packages") or []
+        packages = [p for p in packages_raw if isinstance(p, dict)] if isinstance(packages_raw, list) else []
+        relationships_raw = data.get("relationships") or []
+        relationships = (
+            [r for r in relationships_raw if isinstance(r, dict)] if isinstance(relationships_raw, list) else []
+        )
+        creation_info_raw = data.get("creationInfo") or {}
+        creation_info = creation_info_raw if isinstance(creation_info_raw, dict) else {}
 
         # SBOM Creator
-        creators = creation_info.get("creators", [])
+        creators_raw = creation_info.get("creators") or []
+        creators = [c for c in creators_raw if isinstance(c, str)] if isinstance(creators_raw, list) else []
         has_creator_contact = False
         for creator in creators:
             if "@" in creator or "http" in creator.lower():
@@ -1486,18 +1502,30 @@ class BSICompliancePlugin(AssessmentPlugin):
         return None
 
     def _get_cyclonedx_component_creator(self, component: dict[str, Any]) -> str | None:
-        """Extract component creator email or URL from CycloneDX component."""
-        manufacturer = component.get("manufacturer", {})
+        """Extract component creator email or URL from CycloneDX component.
+
+        Defensive: a hostile SBOM may set `manufacturer` to a string or
+        `contact` to a list of non-dicts. Guard each access to stay
+        consistent with the sibling _get_cyclonedx_sbom_creator helper.
+        """
+        manufacturer = component.get("manufacturer") or {}
+        if not isinstance(manufacturer, dict):
+            return None
 
         # Check for URL
-        url: str = manufacturer.get("url", "")
-        if _is_valid_url(url):
+        url = manufacturer.get("url", "")
+        if isinstance(url, str) and _is_valid_url(url):
             return url
 
         # Check for email in contacts
-        for contact in manufacturer.get("contact", []):
-            email: str = contact.get("email", "")
-            if _is_valid_email(email):
+        contacts = manufacturer.get("contact") or []
+        if not isinstance(contacts, list):
+            return None
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+            email = contact.get("email", "")
+            if isinstance(email, str) and _is_valid_email(email):
                 return email
 
         return None
@@ -1727,16 +1755,12 @@ class BSICompliancePlugin(AssessmentPlugin):
     def _spdx3_has_sbom_uri(self, data: dict[str, Any]) -> bool:
         """Per BSI §5.2.3, the SBOM itself MUST expose a URI when the format
         supports one. SPDX 3.x exposes the document identity via the
-        SpdxDocument element's spdxId.
+        SpdxDocument element's spdxId — delegate to the shared
+        spdx3_document_subjects helper (which already filters for
+        non-empty string spdxIds and guards against malformed @graph).
         """
-        for element in iter_spdx3_elements(data):
-            elem_type = element.get("type", element.get("@type", ""))
-            if not isinstance(elem_type, str) or "SpdxDocument" not in elem_type:
-                continue
-            doc_id = element.get("spdxId", element.get("@id", ""))
-            if isinstance(doc_id, str) and doc_id.strip():
-                return True
-        return False
+        doc_ids, _ = spdx3_document_subjects(data)
+        return bool(doc_ids)
 
     def _spdx3_has_source_code_uri(self, package: dict[str, Any]) -> bool:
         """Per BSI §5.2.4. Accept any non-empty software_sourceInfo or an
