@@ -533,7 +533,11 @@ def sbom_upload_spdx(request: HttpRequest, component_id: str, bom_type: str = "s
                 ExtractSpec("name", required=False, default=""),
             ],
         )
-        if not sbom_dict.get("name"):
+        # Treat non-string and whitespace-only names as missing so the
+        # stored SBOM identifier cannot be persisted as an effectively
+        # empty string. Whitespace-only passes the plain `not ...` check.
+        sbom_name = sbom_dict.get("name")
+        if not isinstance(sbom_name, str) or not sbom_name.strip():
             sbom_dict["name"] = component.name
 
         sbom_format = "spdx"
@@ -954,7 +958,11 @@ def sbom_upload_file(
                     ExtractSpec("name", required=False, default=""),
                 ],
             )
-            if not sbom_dict.get("name"):
+            # Treat non-string and whitespace-only names as missing so the
+            # stored SBOM identifier cannot be persisted as an effectively
+            # empty string.
+            sbom_name = sbom_dict.get("name")
+            if not isinstance(sbom_name, str) or not sbom_name.strip():
                 sbom_dict["name"] = component.name
 
             sbom_format = "spdx"

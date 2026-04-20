@@ -539,7 +539,10 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         """Check if any top-level OTHER annotation describing the document
         (or its DESCRIBES target) contains the given CLE token.
         """
-        for annotation in data.get("annotations") or []:
+        annotations = data.get("annotations")
+        if not isinstance(annotations, list):
+            return False
+        for annotation in annotations:
             if not isinstance(annotation, dict):
                 continue
             if annotation.get("annotationType") != "OTHER":
@@ -555,7 +558,10 @@ class FDAMedicalDevicePlugin(AssessmentPlugin):
         """Check if any top-level OTHER annotation describing the document
         (or its DESCRIBES target) carries a valid CLE support status value
         (active/deprecated/eol/abandoned/unknown)."""
-        for annotation in data.get("annotations") or []:
+        annotations = data.get("annotations")
+        if not isinstance(annotations, list):
+            return False
+        for annotation in annotations:
             if not isinstance(annotation, dict):
                 continue
             if not spdx2_annotation_targets_document(annotation, root_spdxid):

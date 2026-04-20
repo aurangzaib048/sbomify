@@ -396,3 +396,17 @@ class TestIterSpdx3Elements:
 
     def test_missing_graph_and_elements_yields_nothing(self) -> None:
         assert list(iter_spdx3_elements({})) == []
+
+    @pytest.mark.parametrize("bad", ["str", 42, None])
+    def test_malformed_graph_falls_back_to_elements(self, bad: Any) -> None:
+        """If `@graph` is present but unusable, the well-formed `elements`
+        alias must still be honoured — otherwise a legacy emitter that
+        set `@graph: null` alongside a valid `elements` payload would be
+        treated as empty."""
+        data = {"@graph": bad, "elements": [{"type": "FromElements"}]}
+        assert [e["type"] for e in iter_spdx3_elements(data)] == ["FromElements"]
+
+    def test_malformed_graph_and_malformed_elements_yields_nothing(self) -> None:
+        """Both containers unusable → empty iteration, no raise."""
+        data = {"@graph": "broken", "elements": 42}
+        assert list(iter_spdx3_elements(data)) == []

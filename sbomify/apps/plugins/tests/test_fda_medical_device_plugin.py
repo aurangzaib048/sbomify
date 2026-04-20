@@ -359,10 +359,11 @@ class TestCycloneDXValidation:
 
         result = self._assess_sbom(sbom_data)
 
-        # NTIA elements should fail: version, supplier, unique_ids, dependencies, author, timestamp
-        # CLE elements should pass
-        assert result.summary.fail_count >= 5  # At least 5 NTIA failures
-        assert result.summary.pass_count >= 2  # CLE elements pass
+        # NTIA elements fail: version, supplier, unique_ids, dependencies,
+        # sbom-author, timestamp (6 total). Passing checks are component
+        # name plus the 2 CLE elements.
+        assert result.summary.fail_count == 6
+        assert result.summary.pass_count == 3
 
     def _assess_sbom(self, sbom_data: dict) -> AssessmentResult:
         """Helper to write SBOM to temp file and assess it."""

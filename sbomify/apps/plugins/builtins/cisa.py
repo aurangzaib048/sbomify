@@ -546,7 +546,7 @@ class CISAMinimumElementsPlugin(AssessmentPlugin):
         # points at the document or its DESCRIBES target — annotations
         # targeting specific packages describe those packages, not the BOM.
         root_spdxid = spdx2_root_spdxid(data)
-        annotations = data.get("annotations") or []
+        annotations = data.get("annotations")
         if not isinstance(annotations, list):
             logger.debug(
                 "SPDX 2.x annotations has unexpected type %s; skipping generation-context scan",

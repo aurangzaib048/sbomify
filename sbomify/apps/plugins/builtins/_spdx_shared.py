@@ -20,18 +20,36 @@ def iter_spdx3_elements(data: dict[str, Any]) -> Iterator[dict[str, Any]]:
     alias). Non-dict entries and non-list containers are skipped rather
     than raised — a hostile / malformed SBOM cannot crash the plugin.
 
-    When the top-level container has the wrong shape (neither list nor
-    single node object), emit a single DEBUG log so operators can
-    correlate a "nothing matched" finding with malformed input.
+    Container selection: prefer `@graph` when it is a list or single-node
+    dict; otherwise fall back to the `elements` alias when *it* is a list
+    or single-node dict. Only when both containers are unusable do we
+    emit a single DEBUG log so operators can correlate a "nothing matched"
+    finding with malformed input. This prevents a malformed `@graph`
+    (``null``, string, int) from hiding a perfectly valid ``elements``
+    container — the behaviour the docstring promises.
     """
-    raw_elements = data.get("@graph", data.get("elements", []))
-    if isinstance(raw_elements, dict):
-        raw_elements = [raw_elements]
-    if not isinstance(raw_elements, list):
-        logger.debug(
-            "SPDX 3.x @graph/elements has unexpected type %s; treating as empty element list",
-            type(raw_elements).__name__,
-        )
+    graph_container = data.get("@graph")
+    alias_container = data.get("elements")
+
+    def _normalise(container: Any) -> list[dict[str, Any]] | None:
+        if isinstance(container, list):
+            return container
+        if isinstance(container, dict):
+            return [container]
+        return None
+
+    raw_elements = _normalise(graph_container)
+    if raw_elements is None:
+        raw_elements = _normalise(alias_container)
+    if raw_elements is None:
+        # Only log when BOTH containers are unusable. Missing `@graph` with
+        # a valid `elements` is a legacy SPDX 3.0 emitter, not an error.
+        if graph_container is not None or alias_container is not None:
+            logger.debug(
+                "SPDX 3.x @graph/elements has unexpected types @graph=%s elements=%s; treating as empty element list",
+                type(graph_container).__name__,
+                type(alias_container).__name__,
+            )
         return
     for element in raw_elements:
         if isinstance(element, dict):
