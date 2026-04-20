@@ -8,7 +8,15 @@ import pytest
 
 from sbomify.apps.compliance.models import CRAExportPackage
 from sbomify.apps.compliance.services.document_generation_service import regenerate_all
-from sbomify.apps.compliance.services.export_service import build_export_package, get_download_url
+from sbomify.apps.compliance.services.export_service import (
+    _article_14_reporting_readme,
+    _get_generated_doc_content,
+    _get_sbom_content,
+    _integrity_readme,
+    _is_placeholder_manufacturer,
+    build_export_package,
+    get_download_url,
+)
 from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
 from sbomify.apps.core.models import Product
 from sbomify.apps.teams.models import ContactEntity, ContactProfile, ContactProfileContact
@@ -209,6 +217,165 @@ class TestBuildExportPackage:
 
     @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_bundle_survives_missing_harmonised_standards_file(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user, tmp_path
+    ):
+        """If the bundled reference JSON somehow vanishes at runtime
+        (broken install, packaging bug) the export must still produce
+        a valid bundle — the file is logged and skipped, not fatal."""
+        mock_get_content.return_value = b"mock content"
+
+        with patch(
+            "sbomify.apps.compliance.services.export_service._HARMONISED_STANDARDS_PATH",
+            tmp_path / "does-not-exist.json",
+        ):
+            result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        paths = [f["path"] for f in result.value.manifest["files"]]
+        assert not any("harmonised-standards.json" in p for p in paths)
+        # Article 14 + integrity files still present — demonstrating
+        # graceful degradation rather than all-or-nothing export.
+        assert any("README_REPORTING.md" in p for p in paths)
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_manifest_format_version_bump(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Manifest format bumped to 1.1 when the integrity block +
+        is_placeholder field were added; downstream consumers pin on
+        this version to decide whether to expect the new fields."""
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.value.manifest["format_version"] == "1.1"
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_integrity_readme_cites_the_expected_hash(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """INTEGRITY.md cites the manifest SHA-256 verbatim, so a
+        diligent auditor can cross-check the value declared in the
+        README against the value in manifest.sha256."""
+        import io
+        import zipfile
+
+        mock_get_content.return_value = b"mock content"
+
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):  # pragma: no cover
+                return b""
+
+            def get_sbom_data(self, filename):  # pragma: no cover
+                return b""
+
+        mock_s3_cls.return_value = _Capture()
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            readme_name = next(n for n in zf.namelist() if n.endswith("metadata/INTEGRITY.md"))
+            sha_name = next(n for n in zf.namelist() if n.endswith("metadata/manifest.sha256"))
+            readme = zf.read(readme_name).decode()
+            declared = zf.read(sha_name).decode().split()[0]
+            assert declared in readme, "INTEGRITY.md must echo the SHA from manifest.sha256"
+            assert "sha256sum -c metadata/manifest.sha256" in readme
+            assert "cosign" in readme  # signing guidance reference
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_article_14_readme_cites_deadline_and_srp_url(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Readme carries the 2026-09-11 deadline + the EC reporting
+        portal URL verbatim so operators can't miss either."""
+        import io
+        import zipfile
+
+        mock_get_content.return_value = b"mock content"
+
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):  # pragma: no cover
+                return b""
+
+            def get_sbom_data(self, filename):  # pragma: no cover
+                return b""
+
+        mock_s3_cls.return_value = _Capture()
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            name = next(n for n in zf.namelist() if n.endswith("article-14/README_REPORTING.md"))
+            content = zf.read(name).decode()
+            assert "2026-09-11" in content
+            assert "ENISA" in content
+            assert "Article 14" in content
+            assert "digital-strategy.ec.europa.eu/en/policies/cra-reporting" in content
+            # Deadlines table — all four rows present.
+            for deadline in ("≤24 h", "≤72 h", "≤14 d", "≤1 mo"):
+                assert deadline in content
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_bundle_skips_unknown_doc_kind(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """A CRAGeneratedDocument with an unmapped kind (forward-compat
+        ingestion of newer DB rows) must be silently skipped, not
+        crash the export."""
+        from sbomify.apps.compliance.models import CRAGeneratedDocument
+
+        # Inject a doc with a kind the export map doesn't know.
+        CRAGeneratedDocument.objects.create(
+            assessment=assessment_with_docs,
+            document_kind="unknown_future_kind",
+            storage_key="compliance/whatever.md",
+            content_hash="a" * 64,
+            version=1,
+            is_stale=False,
+        )
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+        paths = [f["path"] for f in result.value.manifest["files"]]
+        assert not any("unknown_future_kind" in p for p in paths)
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_get_generated_doc_returning_none_does_not_break_bundle(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Fetch failures from S3 (network blip, missing object) must
+        not fail the whole export — the document is simply omitted
+        from the manifest."""
+        # Simulate all documents failing to fetch.
+        mock_get_content.return_value = None
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+        # No document files in manifest, but OSCAL + integrity + Article 14
+        # README + harmonised-standards are still present.
+        paths = [f["path"] for f in result.value.manifest["files"]]
+        assert any("oscal/catalog.json" in p for p in paths)
+        assert any("harmonised-standards.json" in p for p in paths)
+        assert not any("vulnerability-disclosure-policy.md" in p for p in paths)
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_manifest_flags_placeholder_manufacturer(
         self, mock_get_content, mock_s3_cls, sample_team_with_owner_member, sample_user
     ):
@@ -263,3 +430,130 @@ class TestGetDownloadUrl:
 
         assert not result.ok
         assert result.status_code == 500
+
+
+class TestExportHelpers:
+    """Unit-level coverage for the small helpers used by the export
+    pipeline. Keeps them under test without needing the full build /
+    S3 / ZIP round-trip."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, True),
+            ("", True),
+            ("   ", True),
+            ("ABC", True),
+            ("xyz", True),
+            ("TEST", True),
+            ("  foo  ", True),
+            ("Acme Corp", False),
+            ("Contoso GmbH", False),
+            ("abc123", False),
+        ],
+    )
+    def test_is_placeholder_manufacturer(self, value, expected):
+        assert _is_placeholder_manufacturer(value) is expected
+
+    def test_integrity_readme_interpolates_hash(self):
+        """The one-argument builder echoes the hash + standard sha256sum
+        verification line. Guarantees the rendered README isn't a
+        hard-coded stub."""
+        content = _integrity_readme("a" * 64)
+        assert "a" * 64 in content
+        assert "sha256sum -c metadata/manifest.sha256" in content
+        assert "manifest.json" in content
+
+    def test_article_14_reporting_readme_contains_all_deadlines(self):
+        """Readme enumerates all four Article 14 deadlines."""
+        content = _article_14_reporting_readme()
+        for token in ("≤24 h", "≤72 h", "≤14 d", "≤1 mo", "2026-09-11", "ENISA"):
+            assert token in content
+
+    def test_article_14_readme_references_ec_portal(self):
+        """Readme points operators at the EC CRA reporting page."""
+        content = _article_14_reporting_readme()
+        assert "digital-strategy.ec.europa.eu/en/policies/cra-reporting" in content
+
+
+class TestGetGeneratedDocContent:
+    """Error-path coverage for the S3 fetch helper."""
+
+    def test_returns_none_on_s3_failure(self):
+        """A broken S3 fetch must return None (so the caller omits the
+        doc from the bundle) rather than raising."""
+        from sbomify.apps.compliance.models import CRAGeneratedDocument
+
+        mock_doc = MagicMock(spec=CRAGeneratedDocument)
+        mock_doc.storage_key = "compliance/missing.md"
+        s3 = MagicMock()
+        s3.get_file_data.side_effect = Exception("boom")
+
+        assert _get_generated_doc_content(mock_doc, s3_client=s3) is None
+
+    def test_returns_bytes_on_success(self):
+        from sbomify.apps.compliance.models import CRAGeneratedDocument
+
+        mock_doc = MagicMock(spec=CRAGeneratedDocument)
+        mock_doc.storage_key = "compliance/ok.md"
+        s3 = MagicMock()
+        s3.get_file_data.return_value = b"payload"
+
+        assert _get_generated_doc_content(mock_doc, s3_client=s3) == b"payload"
+
+    def test_creates_default_s3_client_when_none_provided(self):
+        """When no client is passed, the helper constructs its own."""
+        from sbomify.apps.compliance.models import CRAGeneratedDocument
+
+        mock_doc = MagicMock(spec=CRAGeneratedDocument)
+        mock_doc.storage_key = "compliance/ok.md"
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            inst = MagicMock()
+            inst.get_file_data.return_value = b"payload"
+            mock_s3_cls.return_value = inst
+
+            result = _get_generated_doc_content(mock_doc)
+
+        assert result == b"payload"
+        mock_s3_cls.assert_called_once_with("DOCUMENTS")
+
+
+class TestGetSbomContent:
+    """SBOM fetch helper — covers the missing-filename shortcut and
+    the S3-failure fallback."""
+
+    def test_returns_none_when_sbom_filename_missing(self):
+        sbom = MagicMock()
+        sbom.sbom_filename = None
+        assert _get_sbom_content(sbom) is None
+
+    def test_returns_none_on_s3_failure(self):
+        sbom = MagicMock()
+        sbom.sbom_filename = "lithium.cdx.json"
+        s3 = MagicMock()
+        s3.get_sbom_data.side_effect = Exception("boom")
+
+        assert _get_sbom_content(sbom, s3_client=s3) is None
+
+    def test_returns_bytes_on_success(self):
+        sbom = MagicMock()
+        sbom.sbom_filename = "lithium.cdx.json"
+        s3 = MagicMock()
+        s3.get_sbom_data.return_value = b"{...}"
+
+        assert _get_sbom_content(sbom, s3_client=s3) == b"{...}"
+
+    def test_creates_default_s3_client_when_none_provided(self):
+        sbom = MagicMock()
+        sbom.sbom_filename = "lithium.cdx.json"
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            inst = MagicMock()
+            inst.get_sbom_data.return_value = b"{...}"
+            mock_s3_cls.return_value = inst
+
+            result = _get_sbom_content(sbom)
+
+        assert result == b"{...}"
+        mock_s3_cls.assert_called_once_with("SBOMS")

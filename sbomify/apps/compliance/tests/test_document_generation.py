@@ -11,6 +11,9 @@ from sbomify.apps.compliance.models import (
     OSCALFinding,
 )
 from sbomify.apps.compliance.services.document_generation_service import (
+    _is_placeholder_manufacturer,
+    _load_harmonised_standards,
+    _select_applied_standards,
     generate_document,
     get_document_preview,
     regenerate_all,
@@ -188,6 +191,36 @@ class TestSecurityTxtFormat:
         assert "en" in content
         assert "fr" in content
 
+    def test_expires_is_support_period_plus_one_year(self, assessment):
+        """RFC 9116 Expires is support_period_end + 1 year."""
+        from datetime import date
+
+        assessment.support_period_end = date(2027, 5, 20)
+        assessment.save()
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.SECURITY_TXT)
+        assert "Expires: 2028-05-20T00:00:00.000Z" in result.value
+
+    def test_expires_leap_day_rolls_to_feb_28(self, assessment):
+        """Feb 29 support_period_end rolls to Feb 28 next year (non-
+        leap) so the .replace(year=...) ValueError branch is covered."""
+        from datetime import date
+
+        assessment.support_period_end = date(2028, 2, 29)
+        assessment.save()
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.SECURITY_TXT)
+        assert "Expires: 2029-02-28T00:00:00.000Z" in result.value
+
+    def test_expires_empty_when_support_period_not_set(self, assessment):
+        """No support period → Expires line is blank; operator sees
+        the gap rather than a bogus date."""
+        assessment.support_period_end = None
+        assessment.save()
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.SECURITY_TXT)
+        # The raw template emits `Expires: ` with an empty value; the
+        # important regression is that no past date / "None" leaks.
+        assert "Expires: None" not in result.value
+        assert "Expires: 1970" not in result.value
+
 
 @pytest.mark.django_db
 class TestDeclarationOfConformity:
@@ -315,6 +348,145 @@ class TestDeclarationManufacturerPlaceholder:
         content = result.value
         assert "Acme Corp" in content
         assert "not configured" not in content
+
+
+class TestIsPlaceholderManufacturer:
+    """Unit-level coverage of the placeholder predicate. Class-based
+    parametrise below exercises the full matcher contract so a future
+    edit to ``_PLACEHOLDER_MANUFACTURER_VALUES`` can't silently leak
+    stub data into a DoC."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            "",
+            " ",
+            "   ",
+            "\t",
+            "\n",
+            "abc",
+            "ABC",
+            "  abc  ",
+            "Abc",
+            "xyz",
+            "test",
+            "example",
+            "acme",
+            "foo",
+            "bar",
+            "tbd",
+            "TODO",
+            "n/a",
+            "N/A",
+            "na",
+            "none",
+            "NONE",
+            "null",
+        ],
+    )
+    def test_values_recognised_as_placeholder(self, value):
+        assert _is_placeholder_manufacturer(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Acme Corp",
+            "Acme, Inc.",
+            "Contoso GmbH",
+            "Siemens AG",
+            "The Acme Company",
+            "abc123",
+            "XYZ Industries",
+            "Test Manufacturing Ltd.",
+            "Lithium Project",
+        ],
+    )
+    def test_legitimate_names_pass(self, value):
+        assert _is_placeholder_manufacturer(value) is False
+
+
+class TestLoadHarmonisedStandards:
+    """Reference-data integrity tests — if the JSON structure drifts
+    the DoC rendering silently breaks, so we pin the shape here."""
+
+    def test_loads_without_raising(self):
+        """File is shipped with the app — must parse every time."""
+        data = _load_harmonised_standards()
+        assert isinstance(data, dict)
+        assert "standards" in data
+        assert "sources" in data
+
+    def test_required_top_level_fields_present(self):
+        data = _load_harmonised_standards()
+        assert data["format_version"]
+        assert data["description"]
+        assert isinstance(data["standards"], list)
+        assert len(data["standards"]) >= 2, "CRA + BSI minimum"
+
+    def test_every_standard_has_minimum_fields(self):
+        data = _load_harmonised_standards()
+        for std in data["standards"]:
+            assert std.get("id"), f"standard missing id: {std}"
+            assert std.get("citation"), f"standard missing citation: {std}"
+            # Either URL present or explicitly blank — never missing key.
+            assert "url" in std
+            # Harmonised flag must be a bool.
+            assert isinstance(std.get("harmonised", False), bool)
+            # cra_requirements_covered is always a list (may be empty).
+            assert isinstance(std.get("cra_requirements_covered", []), list)
+
+    def test_always_applicable_set_includes_cra_and_bsi(self):
+        """These two anchor every DoC and cannot be removed."""
+        data = _load_harmonised_standards()
+        always = {s["id"] for s in data["standards"] if s.get("always_applicable")}
+        assert "cra" in always
+        assert "bsi-tr-03183-2" in always
+
+
+@pytest.mark.django_db
+class TestSelectAppliedStandards:
+    """Unit coverage for the selection predicate used by the DoC
+    context. Keeps the conservative default (always_applicable only)
+    honest; a future opt-in for EN 18031 needs to add a test here."""
+
+    def test_selects_only_always_applicable_for_default_assessment(self, assessment):
+        standards = _select_applied_standards(assessment)
+        ids_in_citation = [s["citation"] for s in standards]
+        # CRA regulation and BSI TR-03183-2 always appear.
+        assert any("Regulation (EU) 2024/2847" in c for c in ids_in_citation)
+        assert any("BSI TR-03183-2" in c for c in ids_in_citation)
+        # EN 18031-1/-2/-3 are NOT always_applicable by default.
+        assert not any("EN 18031-1" in c for c in ids_in_citation)
+        assert not any("EN 18031-2" in c for c in ids_in_citation)
+        assert not any("EN 18031-3" in c for c in ids_in_citation)
+        # Draft CRA-specific standards (not yet harmonised) also excluded.
+        assert not any("EN 304 626" in c for c in ids_in_citation)
+
+    def test_selected_entries_carry_cra_mapping_when_documented(self, assessment):
+        standards = _select_applied_standards(assessment)
+        bsi = next(s for s in standards if "BSI TR-03183-2" in s["citation"])
+        assert bsi["cra_requirements_covered"], "BSI must map to CRA Annex I Part II(1)"
+        assert bsi["harmonised"] is False
+        assert "Annex I, Part II, §1" in {
+            req["cra_reference"] for req in bsi["cra_requirements_covered"]
+        }
+
+
+@pytest.mark.django_db
+class TestDocUrlsInRendering:
+    """Regression: the DoC must render URLs as inline markdown refs so
+    a notified body can click straight through to each authority."""
+
+    def test_bsi_url_rendered(self, assessment):
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "bsi.bund.de" in content
+
+    def test_cra_url_rendered(self, assessment):
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "eur-lex.europa.eu/eli/reg/2024/2847" in content
 
 
 @pytest.mark.django_db
