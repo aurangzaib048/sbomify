@@ -122,6 +122,119 @@ class TestBuildExportPackage:
         assert result.value.manifest["product_category"] == "default"
         assert result.value.manifest["conformity_procedure"] == "module_a"
 
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_bundle_contains_harmonised_standards_reference(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """The bundle must embed the harmonised-standards mapping so
+        downstream auditors don't need to chase it in the sbomify repo."""
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        paths = [f["path"] for f in result.value.manifest["files"]]
+        assert any("metadata/harmonised-standards.json" in p for p in paths)
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_bundle_contains_article_14_reporting_readme(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """README documents the 2026-09-11 deadline + SRP submission
+        channel so operators don't misread Article 14 obligations."""
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        paths = [f["path"] for f in result.value.manifest["files"]]
+        assert any("article-14/README_REPORTING.md" in p for p in paths)
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_manifest_declares_integrity_metadata(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Manifest self-describes its integrity regime: hash algorithm
+        plus the paths of manifest.sha256 and INTEGRITY.md."""
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        integrity = result.value.manifest.get("integrity")
+        assert integrity is not None
+        assert integrity["hash_algorithm"] == "sha256"
+        assert integrity["manifest_hash_file"] == "metadata/manifest.sha256"
+        assert integrity["verification_doc"] == "metadata/INTEGRITY.md"
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_bundle_contains_manifest_self_hash_and_integrity_doc(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """ZIP must physically carry ``manifest.sha256`` and
+        ``INTEGRITY.md`` — verified by extracting the uploaded bytes.
+        The S3 upload is mocked so we introspect the call payload."""
+        import io
+        import zipfile
+
+        mock_get_content.return_value = b"mock content"
+
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):  # pragma: no cover - unused path
+                return b""
+
+            def get_sbom_data(self, filename):  # pragma: no cover - unused path
+                return b""
+
+        mock_s3_cls.return_value = _Capture()
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+        assert "bytes" in captured, "S3 upload was not invoked"
+
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            names = zf.namelist()
+            assert any(n.endswith("metadata/manifest.sha256") for n in names)
+            assert any(n.endswith("metadata/INTEGRITY.md") for n in names)
+            # Self-hash must match the in-ZIP manifest exactly.
+            manifest_name = next(n for n in names if n.endswith("metadata/manifest.json"))
+            sha_name = next(n for n in names if n.endswith("metadata/manifest.sha256"))
+            import hashlib
+
+            expected = hashlib.sha256(zf.read(manifest_name)).hexdigest()
+            assert expected in zf.read(sha_name).decode("utf-8")
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_manifest_flags_placeholder_manufacturer(
+        self, mock_get_content, mock_s3_cls, sample_team_with_owner_member, sample_user
+    ):
+        """Manifest surface carries ``is_placeholder`` so a downstream
+        consumer (notified body, auditor, CI gate) can reject a bundle
+        that still has a stub manufacturer."""
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="ABC",  # obvious placeholder
+            email="info@abc.test",
+            address="",
+            is_manufacturer=True,
+        )
+        p = Product.objects.create(name="Placeholder Export", team=team)
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        with patch("sbomify.apps.core.object_store.S3Client"):
+            regenerate_all(ares.value)
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(ares.value, sample_user)
+        assert result.ok
+        mfr = result.value.manifest["manufacturer"]
+        assert mfr["is_placeholder"] is True
+
 
 @pytest.mark.django_db
 class TestGetDownloadUrl:

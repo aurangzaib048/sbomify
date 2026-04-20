@@ -219,6 +219,103 @@ class TestDeclarationOfConformity:
         content = result.value
         assert "Signature:" in content
 
+    def test_lists_harmonised_standards_applied(self, assessment):
+        """Annex V item 6 — the DoC must cite the standards applied.
+        Every DoC always cites the CRA itself and BSI TR-03183-2 (SBOM
+        format reference). Lists each standard's CRA mapping entries so
+        notified bodies see the clause-level correspondence."""
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "Regulation (EU) 2024/2847" in content
+        assert "BSI TR-03183-2" in content
+        assert "Annex I, Part II, §1" in content  # BSI → CRA SBOM mapping
+        assert "eur-lex.europa.eu/eli/reg/2024/2847" in content
+
+    def test_includes_support_period_when_set(self, assessment):
+        """Article 13(8) support period must appear on the DoC, not only
+        on the risk assessment."""
+        from datetime import date
+
+        assessment.support_period_end = date(2031, 4, 21)
+        assessment.save()
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "Support Period Ends" in content
+        assert "2031-04-21" in content
+        assert "Article 13(8)" in content
+
+    def test_omits_support_period_when_not_set(self, assessment):
+        """If the operator hasn't declared a support period yet, the
+        Article 13(8) block is simply absent — not a silent 'None'."""
+        assessment.support_period_end = None
+        assessment.save()
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "Support Period Ends" not in content
+        assert "None" not in content.split("## 7.")[1].split("## 8.")[0]
+
+    def test_lists_supporting_documentation_section(self, assessment):
+        """Annex VII — DoC references the evidence files that back it."""
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "Supporting Documentation" in content
+        assert "sboms/*.cdx.json" in content
+        assert "vulnerability-disclosure-policy.md" in content
+        assert "oscal/*.json" in content
+        assert "metadata/manifest.sha256" in content
+
+
+@pytest.mark.django_db
+class TestDeclarationManufacturerPlaceholder:
+    """Placeholder-manufacturer guard: Annex V item 2 requires the
+    legal name. When the team profile is empty / filled with a stub,
+    the DoC must render a visible warning rather than ship invalid."""
+
+    @pytest.mark.parametrize("placeholder", ["ABC", "xyz", "Test", "foo", "TBD", "None"])
+    def test_placeholder_renders_warning(self, sample_team_with_owner_member, sample_user, placeholder):
+        """Case-insensitive placeholder names always trigger the warning.
+
+        Empty / whitespace-only values are covered by
+        ``test_missing_manufacturer_renders_warning`` — ``ContactEntity``
+        rejects empty names at the ORM level, so we can't parametrise
+        over them here.
+        """
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name=placeholder,
+            email="info@example.test",
+            address="",
+            is_manufacturer=True,
+        )
+        p = Product.objects.create(name="Placeholder Product", team=team)
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+        result = get_document_preview(ares.value, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "[Manufacturer Name — not configured]" in content
+        assert "Annex V item 2 requires" in content
+
+    def test_missing_manufacturer_renders_warning(self, sample_team_with_owner_member, sample_user):
+        """No manufacturer entity at all → same warning. The wizard must
+        not silently emit a DoC with an empty ``**Name:**`` field."""
+        team = sample_team_with_owner_member.team
+        p = Product.objects.create(name="Manufacturer-less Product", team=team)
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+        result = get_document_preview(ares.value, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "[Manufacturer Name — not configured]" in content
+
+    def test_real_manufacturer_does_not_trigger_warning(self, assessment):
+        """Existing fixture uses 'Acme Corp' which is a legal-looking
+        name; the placeholder warning must not appear for it."""
+        result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        content = result.value
+        assert "Acme Corp" in content
+        assert "not configured" not in content
+
 
 @pytest.mark.django_db
 class TestRiskAssessment:

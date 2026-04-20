@@ -7,6 +7,7 @@ import json
 import logging
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.conf import settings as django_settings
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from sbomify.apps.core.models import User
 
 logger = logging.getLogger(__name__)
+
+_HARMONISED_STANDARDS_PATH = Path(__file__).resolve().parent.parent / "oscal_data" / "cra-harmonised-standards.json"
 
 # Map document kinds to their paths inside the ZIP
 _DOC_PATH_MAP: dict[str, str] = {
@@ -57,6 +60,85 @@ _DOC_CRA_REF: dict[str, str] = {
 
 # SBOM format → file extension for ZIP packaging
 _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
+
+
+# Placeholder names that have shown up in operator test data and should
+# be flagged in the bundle manifest rather than silently published as the
+# manufacturer identity. Shared with document_generation_service via
+# behavioural parity; kept as a small local list here to avoid creating a
+# cross-service utility for a six-line predicate.
+_PLACEHOLDER_MANUFACTURER_VALUES = frozenset(
+    {"", "abc", "xyz", "test", "example", "acme", "foo", "bar", "tbd", "todo", "n/a", "na", "none", "null"}
+)
+
+
+def _is_placeholder_manufacturer(name: str | None) -> bool:
+    if not name:
+        return True
+    return name.strip().lower() in _PLACEHOLDER_MANUFACTURER_VALUES
+
+
+def _integrity_readme(manifest_sha256: str) -> str:
+    """Human-readable bundle verification guide embedded in the export."""
+    return (
+        "# Bundle Integrity\n\n"
+        "This CRA export bundle is accompanied by:\n\n"
+        "- `manifest.json` — per-file SHA-256 hashes for every artefact in the ZIP\n"
+        "- `manifest.sha256` — SHA-256 of `manifest.json` itself, so the manifest "
+        "cannot be tampered with without detection\n\n"
+        "## Verifying the manifest\n\n"
+        "```sh\n"
+        "# From the root of the extracted bundle:\n"
+        "sha256sum -c metadata/manifest.sha256\n"
+        "```\n\n"
+        f"Expected digest: `{manifest_sha256}`\n\n"
+        "## Verifying individual artefacts\n\n"
+        "```sh\n"
+        "# Each entry in manifest.json includes a sha256 field:\n"
+        "jq -r '.files[] | \"\\(.sha256)  \\(.path)\"' metadata/manifest.json "
+        "| sed 's|cra-package-[^/]*/||' > /tmp/checksums.txt\n"
+        "( cd .. && sha256sum -c /tmp/checksums.txt )\n"
+        "```\n\n"
+        "## About signatures\n\n"
+        "sbomify does not sign the bundle itself. Operators that need a "
+        "stronger integrity / provenance guarantee for regulatory filings "
+        "should sign the whole ZIP downstream (e.g. with `cosign sign-blob` "
+        "or `gpg --detach-sign`) and distribute the detached signature "
+        "alongside the bundle. The self-hash above bounds the manifest's "
+        "integrity; a downstream signature bounds the whole package.\n"
+    )
+
+
+def _article_14_reporting_readme() -> str:
+    """Article 14 deadlines + ENISA Single Reporting Platform pointers."""
+    return (
+        "# CRA Article 14 — Reporting Obligations\n\n"
+        "Article 14 of Regulation (EU) 2024/2847 requires manufacturers to "
+        "notify the competent CSIRT and ENISA when they become aware of an "
+        "actively exploited vulnerability or a severe incident. **The "
+        "reporting obligations apply from 2026-09-11**; until then, "
+        "submissions are voluntary.\n\n"
+        "## Deadlines\n\n"
+        "| Deadline | Requirement | Template |\n"
+        "| --- | --- | --- |\n"
+        "| ≤24 h | Early warning: what, affected Member States, malicious?"
+        " | `early-warning-template.md` |\n"
+        "| ≤72 h | Vulnerability / incident notification with corrective"
+        " measures taken | `vulnerability-notification-template.md` |\n"
+        "| ≤14 d | Final report (vulnerability — after corrective measure"
+        " applied) | `final-report-template.md` |\n"
+        "| ≤1 mo | Final report (severe incident)"
+        " | `final-report-template.md` |\n\n"
+        "## Submission channel\n\n"
+        "Article 16 designates ENISA to operate the Single Reporting Platform "
+        "(SRP). The SRP consumes the notifications above and routes them to "
+        "the competent CSIRTs automatically. Submission interface:\n\n"
+        "- EC portal: https://digital-strategy.ec.europa.eu/en/policies/cra-reporting\n\n"
+        "sbomify does not yet auto-submit on the operator's behalf — templates "
+        "are provided for manual filing. An automated pipeline will land once "
+        "the SRP technical interface is publicly documented (tracked against "
+        "the 2026-09-11 obligation date).\n"
+    )
 
 
 def _get_generated_doc_content(doc: CRAGeneratedDocument, s3_client: S3Client | None = None) -> bytes | None:
@@ -166,30 +248,84 @@ def build_export_package(
                 sbom_path = f"{prefix}/sboms/{slugify(component.name)}-{component.id}.{ext}"
                 _write_to_zip(zf, sbom_path, sbom_content, manifest_files, "Annex VII, §2")
 
-        # 5. Manifest — built after all other files are written so manifest_files
-        #    is complete. The manifest itself is NOT included in its own files list.
+        # 5. Harmonised-standards reference copy — so the bundle is
+        # self-contained and auditors / notified bodies don't have to
+        # chase the source JSON inside the sbomify codebase.
+        try:
+            standards_bytes = _HARMONISED_STANDARDS_PATH.read_bytes()
+            _write_to_zip(
+                zf,
+                f"{prefix}/metadata/harmonised-standards.json",
+                standards_bytes,
+                manifest_files,
+                "CRA standards reference",
+            )
+        except OSError:
+            # Reference data is shipped with the app so an OSError here
+            # is an install-time bug, not a runtime one. Log and carry on
+            # rather than failing the whole export.
+            logger.exception("harmonised-standards.json missing from installed app")
+
+        # 6. Article 14 reporting README — documents the 2026-09-11
+        # reporting deadline, the ENISA Single Reporting Platform, and
+        # which template to use for each deadline.
+        _write_to_zip(
+            zf,
+            f"{prefix}/article-14/README_REPORTING.md",
+            _article_14_reporting_readme().encode("utf-8"),
+            manifest_files,
+            "Article 14 / Article 16",
+        )
+
+        # 7. Manifest — built after all other files are written so manifest_files
+        # is complete. The manifest itself is NOT included in its own files list.
         manufacturer = ContactEntity.objects.filter(profile__team=assessment.team, is_manufacturer=True).first()
+        manufacturer_name = manufacturer.name if manufacturer else ""
+        manufacturer_name_is_placeholder = _is_placeholder_manufacturer(manufacturer_name)
 
         manifest = {
-            "format_version": "1.0",
+            "format_version": "1.1",
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "product": {
                 "id": product.id,
                 "name": product.name,
             },
             "manufacturer": {
-                "name": manufacturer.name if manufacturer else "",
+                "name": manufacturer_name,
                 "address": manufacturer.address if manufacturer else "",
+                "is_placeholder": manufacturer_name_is_placeholder,
             },
             "assessment_id": assessment.id,
             "cra_regulation": "EU 2024/2847",
             "product_category": assessment.product_category,
             "conformity_procedure": assessment.conformity_assessment_procedure,
+            "integrity": {
+                "hash_algorithm": "sha256",
+                "manifest_hash_file": "metadata/manifest.sha256",
+                "verification_doc": "metadata/INTEGRITY.md",
+            },
             "files": manifest_files,
         }
         manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
         manifest_path = f"{prefix}/metadata/manifest.json"
         zf.writestr(manifest_path, manifest_bytes)
+
+        # 8. Self-hash of the manifest so a consumer can verify the
+        # manifest hasn't been altered before trusting its per-file
+        # hashes. We don't ship a cryptographic signature (operators
+        # that need one apply cosign / PGP over the whole ZIP downstream),
+        # but a self-hash is the minimum useful integrity signal.
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        zf.writestr(
+            f"{prefix}/metadata/manifest.sha256",
+            f"{manifest_sha256}  manifest.json\n".encode("utf-8"),
+        )
+
+        # 9. INTEGRITY.md — human-readable verification guide.
+        zf.writestr(
+            f"{prefix}/metadata/INTEGRITY.md",
+            _integrity_readme(manifest_sha256).encode("utf-8"),
+        )
 
     # Read entire ZIP into memory for hashing and upload. This is acceptable because
     # CRA export packages are typically <1MB (documents + SBOMs). The SpooledTemporaryFile

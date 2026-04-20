@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import json
 import logging
 from datetime import date
 from pathlib import Path
@@ -24,6 +26,76 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "document_templates"
+_HARMONISED_STANDARDS_PATH = Path(__file__).resolve().parent.parent / "oscal_data" / "cra-harmonised-standards.json"
+
+# Placeholder / clearly-bogus manufacturer names that should never land in a
+# rendered EU Declaration of Conformity. Annex V item 2 requires the
+# manufacturer's legal name; when the team profile hasn't been filled in we
+# prefer to render a visible ``[Manufacturer Name — not configured]`` marker
+# so operators immediately notice, rather than emit an invalid DoC.
+_PLACEHOLDER_MANUFACTURER_VALUES = frozenset(
+    {
+        "",
+        "abc",
+        "xyz",
+        "test",
+        "example",
+        "acme",
+        "foo",
+        "bar",
+        "tbd",
+        "todo",
+        "n/a",
+        "na",
+        "none",
+        "null",
+    }
+)
+
+
+def _is_placeholder_manufacturer(name: str | None) -> bool:
+    """Return True when the manufacturer name looks like a placeholder.
+
+    Guards the DoC from rendering ``Manufacturer: ABC`` when the operator
+    hasn't set up their team profile. Case-insensitive; whitespace-only
+    input is also treated as a placeholder.
+    """
+    if not name:
+        return True
+    return name.strip().lower() in _PLACEHOLDER_MANUFACTURER_VALUES
+
+
+@functools.cache
+def _load_harmonised_standards() -> dict[str, Any]:
+    """Load and cache the CRA harmonised-standards reference JSON."""
+    data: dict[str, Any] = json.loads(_HARMONISED_STANDARDS_PATH.read_text(encoding="utf-8"))
+    return data
+
+
+def _select_applied_standards(assessment: CRAAssessment) -> list[dict[str, Any]]:
+    """Select the standards applicable to this assessment.
+
+    Always includes the CRA regulation itself and BSI TR-03183-2 (SBOM
+    format reference). Harmonised RED standards (EN 18031-1/-2/-3) are
+    included when the product category signals radio equipment — this
+    pipeline doesn't yet auto-detect that, so the ``applies_when`` rules
+    here conservatively include only the ``always_applicable`` entries.
+    Future work: read a per-assessment opt-in flag and expand accordingly.
+    """
+    data = _load_harmonised_standards()
+    applied: list[dict[str, Any]] = []
+    for std in data.get("standards", []):
+        if std.get("always_applicable"):
+            applied.append(
+                {
+                    "citation": std.get("citation", ""),
+                    "url": std.get("url", ""),
+                    "harmonised": bool(std.get("harmonised", False)),
+                    "cra_requirements_covered": std.get("cra_requirements_covered", []),
+                }
+            )
+    return applied
+
 
 _engine = Engine(dirs=[str(_TEMPLATE_DIR)], autoescape=False)
 
@@ -103,6 +175,16 @@ def _build_common_context(assessment: CRAAssessment) -> dict[str, Any]:
         is_security_contact=True,
     ).first()
 
+    raw_manufacturer_name = _sanitize(manufacturer.name) if manufacturer else ""
+    manufacturer_is_placeholder = _is_placeholder_manufacturer(raw_manufacturer_name)
+    # Render a visible marker rather than silently emitting a DoC with
+    # "Manufacturer: ABC" — Annex V item 2 requires the legal name. The
+    # template keeps the label visible so the gap is immediately obvious
+    # to whoever reviews / signs the exported package.
+    manufacturer_name = (
+        raw_manufacturer_name if not manufacturer_is_placeholder else "[Manufacturer Name — not configured]"
+    )
+
     return {
         "product_name": _sanitize(product.name),
         "product_description": _sanitize(product.description or ""),
@@ -110,7 +192,8 @@ def _build_common_context(assessment: CRAAssessment) -> dict[str, Any]:
         "intended_use": _sanitize(assessment.intended_use),
         "target_eu_markets": [_sanitize(m)[:2].upper() for m in (assessment.target_eu_markets or [])],
         "support_period_end": (assessment.support_period_end.isoformat() if assessment.support_period_end else None),
-        "manufacturer_name": _sanitize(manufacturer.name) if manufacturer else "[Manufacturer Name]",
+        "manufacturer_name": manufacturer_name,
+        "manufacturer_is_placeholder": manufacturer_is_placeholder,
         "manufacturer_address": _sanitize(manufacturer.address) if manufacturer else "",
         "manufacturer_email": _sanitize(manufacturer.email) if manufacturer else "",
         "manufacturer_website": (
@@ -205,7 +288,14 @@ def _build_declaration_context(assessment: CRAAssessment, base: dict[str, Any]) 
     """Build context for declaration of conformity."""
     base["product_category_display"] = assessment.get_product_category_display()
     base["conformity_procedure_display"] = assessment.get_conformity_assessment_procedure_display()
-    base["applied_standards"] = []
+    # Annex V item 6 requires the DoC to list the standards and
+    # specifications applied. Populate from the reference JSON so every
+    # DoC cites the CRA itself, the SBOM-format reference (BSI TR-03183-2),
+    # and any harmonised standards the operator has opted into.
+    base["applied_standards"] = _select_applied_standards(assessment)
+    # Annex V item 7 — support period is part of the declaration scope
+    # and must be visible on the DoC, not only in the risk assessment.
+    base["support_period_end"] = assessment.support_period_end.isoformat() if assessment.support_period_end else None
     return base
 
 
