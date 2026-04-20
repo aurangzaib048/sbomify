@@ -520,12 +520,25 @@ def sbom_upload_spdx(request: HttpRequest, component_id: str, bom_type: str = "s
         # Compute SHA256 hash of the SBOM content
         sha256_hash = hashlib.sha256(request.body).hexdigest()
 
+        # SpdxDocument.name is required in SPDX 2.x (enforced by the version-
+        # specific Pydantic model above) but OPTIONAL in SPDX 3.0.1 per the
+        # Core.SpdxDocument model — `name` has min-cardinality 0. Extract
+        # with required=False so SPDX 3 documents without a SpdxDocument.name
+        # are accepted, and fall back to the sbomify Component name to keep
+        # the stored SBOM identifier non-empty. SPDX 2.x already failed
+        # earlier if name was missing, so this fallback only fires for 3.x.
         sbom_dict = obj_extract(
             obj_in=payload,
             fields=[
-                ExtractSpec("name", required=True),
+                ExtractSpec("name", required=False, default=""),
             ],
         )
+        # Treat non-string and whitespace-only names as missing so the
+        # stored SBOM identifier cannot be persisted as an effectively
+        # empty string. Whitespace-only passes the plain `not ...` check.
+        sbom_name = sbom_dict.get("name")
+        if not isinstance(sbom_name, str) or not sbom_name.strip():
+            sbom_dict["name"] = component.name
 
         sbom_format = "spdx"
         sbom_dict["format"] = sbom_format
@@ -934,12 +947,23 @@ def sbom_upload_file(
                 spdx_version_str = sbom_data.get("spdxVersion", "unknown")
                 return 400, {"detail": f"Invalid SPDX format for {spdx_version_str}: {str(e)}"}
 
+            # SpdxDocument.name is required in SPDX 2.x but OPTIONAL in
+            # SPDX 3.0.1 per Core.SpdxDocument (min-cardinality 0). Accept
+            # missing name on the SPDX 3 path and fall back to the sbomify
+            # Component name so the stored SBOM identifier stays non-empty.
+            # SPDX 2.x rejects missing name earlier via the Pydantic model.
             sbom_dict = obj_extract(
                 obj_in=payload,
                 fields=[
-                    ExtractSpec("name", required=True),
+                    ExtractSpec("name", required=False, default=""),
                 ],
             )
+            # Treat non-string and whitespace-only names as missing so the
+            # stored SBOM identifier cannot be persisted as an effectively
+            # empty string.
+            sbom_name = sbom_dict.get("name")
+            if not isinstance(sbom_name, str) or not sbom_name.strip():
+                sbom_dict["name"] = component.name
 
             sbom_format = "spdx"
             sbom_dict["format"] = sbom_format
