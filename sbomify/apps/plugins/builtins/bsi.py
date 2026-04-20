@@ -82,6 +82,15 @@ BSI_PROPERTY_PREFIX = "bsi:component:"
 EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 URL_PATTERN = re.compile(r"^https?://[^\s/$.?#].[^\s]*$", re.IGNORECASE)
 
+# CycloneDX spec (1.2+) constrains serialNumber to an RFC-4122 UUID URN.
+# The schema pattern is:
+#   ^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+# Validating against this keeps _cyclonedx_has_sbom_uri from passing on
+# arbitrary non-URN strings.
+CYCLONEDX_SERIAL_NUMBER_URN = re.compile(
+    r"^urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 
 def _is_valid_email(value: str) -> bool:
     """Check if value is a valid email address."""
@@ -1432,7 +1441,10 @@ class BSICompliancePlugin(AssessmentPlugin):
         source_info = package.get("sourceInfo")
         if isinstance(source_info, str) and source_info.strip():
             return True
-        for ref in package.get("externalRefs", []) or []:
+        external_refs = package.get("externalRefs")
+        if not isinstance(external_refs, list):
+            return False
+        for ref in external_refs:
             if not isinstance(ref, dict):
                 continue
             ref_type = str(ref.get("referenceType") or "").strip().lower()
@@ -1568,15 +1580,23 @@ class BSICompliancePlugin(AssessmentPlugin):
 
     def _cyclonedx_has_sbom_uri(self, data: dict[str, Any]) -> bool:
         """Per BSI §5.2.3, the SBOM MUST expose a URI if the format allows.
-        CycloneDX provides this via the top-level serialNumber (URN form).
+        CycloneDX provides this via the top-level serialNumber, which the
+        schema constrains to an RFC-4122 UUID URN (``urn:uuid:<uuid>``).
+        Only treat serialNumber as a valid SBOM URI when it matches that
+        pattern — otherwise the check can pass on arbitrary strings.
         """
         serial = data.get("serialNumber")
-        return isinstance(serial, str) and bool(serial.strip())
+        if not isinstance(serial, str):
+            return False
+        return bool(CYCLONEDX_SERIAL_NUMBER_URN.match(serial.strip()))
 
     def _cyclonedx_component_has_external_ref(self, component: dict[str, Any], ref_types: tuple[str, ...]) -> bool:
         """True if the component has any externalReferences entry whose
         normalized type is in ref_types."""
-        for ref in component.get("externalReferences", []) or []:
+        external_refs = component.get("externalReferences")
+        if not isinstance(external_refs, list):
+            return False
+        for ref in external_refs:
             if not isinstance(ref, dict):
                 continue
             ref_type = str(ref.get("type") or "").strip().lower()
@@ -1603,12 +1623,14 @@ class BSICompliancePlugin(AssessmentPlugin):
           - BSI taxonomy properties bsi:component:associatedLicences /
             bsi:component:effectiveLicence.
         """
-        for licence in component.get("licenses", []) or []:
-            if not isinstance(licence, dict):
-                continue
-            ack = str(licence.get("acknowledgement") or "").strip().lower()
-            if ack == "declared":
-                return True
+        licences = component.get("licenses")
+        if isinstance(licences, list):
+            for licence in licences:
+                if not isinstance(licence, dict):
+                    continue
+                ack = str(licence.get("acknowledgement") or "").strip().lower()
+                if ack == "declared":
+                    return True
         for prop_name in ("associatedLicences", "effectiveLicence"):
             value = self._get_bsi_property(component, prop_name)
             if isinstance(value, str) and value.strip():
@@ -1675,9 +1697,18 @@ class BSICompliancePlugin(AssessmentPlugin):
             return None
 
         created_by = creation_info.get("createdBy", [])
+        if not isinstance(created_by, list):
+            return None
         for ref in created_by:
             entity = persons_orgs.get(ref, {})
-            for ext_id in entity.get("externalIdentifiers", []):
+            if not isinstance(entity, dict):
+                continue
+            ext_ids = entity.get("externalIdentifiers")
+            if not isinstance(ext_ids, list):
+                continue
+            for ext_id in ext_ids:
+                if not isinstance(ext_id, dict):
+                    continue
                 id_type: str = ext_id.get("externalIdentifierType", "")
                 identifier: str = ext_id.get("identifier", "")
                 if id_type == "email" and _is_valid_email(identifier):
@@ -1691,9 +1722,18 @@ class BSICompliancePlugin(AssessmentPlugin):
     ) -> str | None:
         """Extract component creator email or URL from SPDX 3.x package."""
         originated_by = package.get("originatedBy", [])
+        if not isinstance(originated_by, list):
+            return None
         for ref in originated_by:
             entity = persons_orgs.get(ref, {})
-            for ext_id in entity.get("externalIdentifiers", []):
+            if not isinstance(entity, dict):
+                continue
+            ext_ids = entity.get("externalIdentifiers")
+            if not isinstance(ext_ids, list):
+                continue
+            for ext_id in ext_ids:
+                if not isinstance(ext_id, dict):
+                    continue
                 id_type: str = ext_id.get("externalIdentifierType", "")
                 identifier: str = ext_id.get("identifier", "")
                 if id_type == "email" and _is_valid_email(identifier):
@@ -1746,7 +1786,12 @@ class BSICompliancePlugin(AssessmentPlugin):
 
     def _has_spdx3_identifier(self, package: dict[str, Any]) -> bool:
         """Check if SPDX 3.x package has unique identifier."""
-        for ext_id in package.get("externalIdentifiers", []):
+        ext_ids = package.get("externalIdentifiers")
+        if not isinstance(ext_ids, list):
+            return False
+        for ext_id in ext_ids:
+            if not isinstance(ext_id, dict):
+                continue
             id_type = ext_id.get("externalIdentifierType", "")
             if id_type in ("cpe22", "cpe23", "swid", "packageURL"):
                 return True
@@ -1769,7 +1814,10 @@ class BSICompliancePlugin(AssessmentPlugin):
         source_info = package.get("software_sourceInfo")
         if isinstance(source_info, str) and source_info.strip():
             return True
-        for ext_id in package.get("externalIdentifiers", []) or []:
+        ext_ids = package.get("externalIdentifiers")
+        if not isinstance(ext_ids, list):
+            return False
+        for ext_id in ext_ids:
             if not isinstance(ext_id, dict):
                 continue
             id_type = str(ext_id.get("externalIdentifierType") or "").strip().lower()

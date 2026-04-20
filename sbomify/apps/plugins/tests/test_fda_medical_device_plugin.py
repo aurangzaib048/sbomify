@@ -1832,7 +1832,15 @@ class TestSPDX3Validation:
     def test_spdx3_doc_level_annotation_passes_root_only(self) -> None:
         """A doc-level Annotation whose subject is the SpdxDocument lets the
         root package inherit CLE data; dependencies without their own data
-        must still fail (parity with the SPDX 2.3 narrow fallback)."""
+        must still fail (parity with the SPDX 2.3 narrow fallback).
+
+        The fixture adds a non-root dependency package so the test actually
+        guards the intended regression: if the doc-level fallback leaked to
+        non-root packages, the dep's CLE findings would pass too. The
+        Annotation's subject is the SpdxDocument spdxId (not the rootElement
+        id) so this also exercises the "subject == doc id" arm of
+        spdx3_annotation_subject_matches.
+        """
         sbom_data = _create_base_spdx3_sbom()
         # Remove the package-level annotation and software_validUntilDate so
         # the only CLE signal is a doc-level annotation.
@@ -1840,6 +1848,24 @@ class TestSPDX3Validation:
         for e in sbom_data["@graph"]:
             if e.get("type") == "software_Package":
                 e.pop("software_validUntilDate", None)
+        # Introduce a dependency package with no CLE data and a dependsOn
+        # relationship so the root's fallback does not accidentally shield
+        # unrelated packages.
+        sbom_data["@graph"].append(
+            {
+                "type": "software_Package",
+                "spdxId": "SPDXRef-Package-2",
+                "name": "dep-package",
+                "software_packageVersion": "2.0.0",
+                "originatedBy": ["SPDXRef-Supplier"],
+                "externalIdentifiers": [
+                    {"externalIdentifierType": "packageURL", "identifier": "pkg:pypi/dep@2.0.0"}
+                ],
+            }
+        )
+        for e in sbom_data["@graph"]:
+            if e.get("type") == "Relationship" and e.get("from") == "SPDXRef-Package-1":
+                e["to"] = ["SPDXRef-Package-2"]
         sbom_data["@graph"].append(
             {
                 "type": "SpdxDocument",
@@ -1850,17 +1876,29 @@ class TestSPDX3Validation:
         sbom_data["@graph"].append(
             {
                 "type": "Annotation",
-                "spdxId": "SPDXRef-Annotation-Root",
-                "subject": "SPDXRef-Package-1",  # == rootElement → document subject
+                "spdxId": "SPDXRef-Annotation-Doc",
+                # Subject is the SpdxDocument's own spdxId — true doc scope.
+                "subject": "SPDXRef-Document",
                 "statement": "cle:supportStatus=active cle:endOfSupport=2027-12-31",
             }
         )
 
         result = self._assess_sbom(sbom_data)
 
-        cle_findings = [f for f in result.findings if "cle:" in f.id]
-        assert all(f.status == "pass" for f in cle_findings), (
-            f"Root should pass via doc-level annotation: {[(f.id, f.status) for f in cle_findings]}"
+        # Dependency has no CLE data, so the aggregated CLE findings MUST
+        # fail — and the failure must name the dep, not the root, proving
+        # the fallback only inflated the root.
+        support = next(f for f in result.findings if "support-status" in f.id)
+        eos = next(f for f in result.findings if "end-of-support" in f.id)
+        assert support.status == "fail", "dep should fail support-status"
+        assert eos.status == "fail", "dep should fail end-of-support"
+        assert "dep-package" in support.description, support.description
+        assert "dep-package" in eos.description, eos.description
+        assert "example-package" not in support.description, (
+            f"root must inherit doc-level annotation, not be listed as failing: {support.description}"
+        )
+        assert "example-package" not in eos.description, (
+            f"root must inherit doc-level end-of-support, not be listed as failing: {eos.description}"
         )
 
     def _build_spdx3_with_empty_subject_annotation(self, *, root_elements: list[str] | None) -> dict:

@@ -781,6 +781,16 @@ class TestAdditionalDataFields:
         assert finding is not None
         assert finding.status == "warning"
 
+    def test_cyclonedx_sbom_uri_warns_on_non_urn_serialnumber(self):
+        """Per CDX schema, serialNumber MUST be ``urn:uuid:<uuid>``. Arbitrary
+        strings must not be treated as a valid SBOM URI."""
+        sbom = create_base_cyclonedx_sbom()
+        sbom["serialNumber"] = "not-a-urn-uuid"
+        result = assess_sbom(sbom)
+        finding = get_finding(result, "bsi-tr03183:sbom-uri")
+        assert finding is not None
+        assert finding.status == "warning"
+
     # --- Source code URI (§5.2.4) ---
 
     def test_cyclonedx_source_code_uri_pass_via_vcs_ref(self):
