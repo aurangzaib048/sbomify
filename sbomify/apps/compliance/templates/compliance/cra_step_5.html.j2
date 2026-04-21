@@ -94,6 +94,13 @@
                                 <span x-show="!isRefreshing"><i class="fas fa-sync mr-2"></i> Refresh Stale Documents</span>
                                 <span x-show="isRefreshing" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Refreshing...</span>
                             </button>
+                            {# Prominent DoC preview — CRA Article 28 declaration must be reviewed before signing #}
+                            <button type="button"
+                                    @click="previewDocument('declaration_of_conformity', 'Declaration of Conformity')"
+                                    data-testid="preview-doc-btn"
+                                    class="tw-btn-secondary w-full">
+                                <i class="fas fa-eye mr-2"></i> Preview Declaration of Conformity
+                            </button>
                             <button @click="exportBundle()"
                                     :disabled="isExporting || !exportAvailable"
                                     class="tw-btn-primary w-full">
@@ -105,6 +112,67 @@
                             </template>
                         </div>
                     </div>
+                    {# Bundle manifest preview — what's actually in the ZIP #}
+                    <template x-if="lastExport">
+                        <div class="tw-card" data-testid="bundle-manifest-card">
+                            <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+                                <div>
+                                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                                        <i class="fas fa-box-open text-primary"></i>
+                                        Last Export Bundle
+                                    </h2>
+                                    <p class="text-sm text-text-muted mt-1">
+                                        <span x-text="lastExport.files?.length || 0"></span> files · format_version
+                                        <code class="text-xs" x-text="lastExport.format_version || '—'"></code>
+                                    </p>
+                                </div>
+                                <template x-if="lastExport.manufacturer_is_placeholder">
+                                    <span class="tw-badge-danger text-xs"
+                                          data-testid="bundle-placeholder-badge"
+                                          title="Manufacturer field is still a placeholder in this bundle. Re-export after configuring a real manufacturer.">
+                                        <i class="fas fa-triangle-exclamation mr-1"></i>
+                                        Placeholder manufacturer
+                                    </span>
+                                </template>
+                            </div>
+                            <div class="p-6 space-y-4">
+                                {# Integrity block #}
+                                <template x-if="lastExport.integrity">
+                                    <div class="text-xs text-text-muted space-y-1">
+                                        <p class="m-0">
+                                            <i class="fas fa-shield-halved text-text-muted mr-1"></i>
+                                            Verify from the extracted bundle root:
+                                        </p>
+                                        <pre class="bg-surface-hover text-text rounded p-2 overflow-x-auto text-xs m-0"><code>sha256sum -c metadata/manifest.sha256</code></pre>
+                                        <p class="m-0 mt-1">Manifest SHA-256:</p>
+                                        <code class="font-mono text-xs break-all"
+                                              data-testid="bundle-content-hash"
+                                              x-text="lastExport.content_hash"></code>
+                                    </div>
+                                </template>
+                                {# Per-file manifest summary #}
+                                <div class="border border-border rounded-lg overflow-hidden">
+                                    <div class="px-3 py-2 bg-surface-hover text-xs font-medium text-text-muted flex items-center justify-between">
+                                        <span>Files in bundle</span>
+                                        <span class="font-mono"
+                                              x-text="(lastExport.files?.length || 0) + ' entries'"></span>
+                                    </div>
+                                    <div class="divide-y divide-border max-h-64 overflow-y-auto">
+                                        <template x-for="f in lastExport.files || []" :key="f.path">
+                                            <div class="px-3 py-2 text-xs flex items-start gap-3">
+                                                <code class="font-mono text-text flex-1 break-all"
+                                                      data-testid="bundle-file-path"
+                                                      x-text="f.path"></code>
+                                                <span class="shrink-0 text-text-muted"
+                                                      x-text="f.cra_reference"
+                                                      :title="f.cra_reference"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
                     {# Mark Assessment Complete — prominent treatment #}
                     <template x-if="overallReady">
                         <div class="tw-card border-green-300 dark:border-green-700">

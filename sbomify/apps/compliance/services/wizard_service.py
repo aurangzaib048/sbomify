@@ -174,6 +174,8 @@ def get_step_context(
 
 def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
     """Step 1: Product Profile & Classification."""
+    from sbomify.apps.compliance.services._manufacturer_policy import is_placeholder_manufacturer
+
     product = assessment.product
 
     manufacturer = ContactEntity.objects.filter(
@@ -188,6 +190,14 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "email": manufacturer.email,
             "website_urls": manufacturer.website_urls,
         }
+    # Annex V item 2 — DoC requires the manufacturer's legal name.
+    # Surface a boolean the wizard UI can use to render a prevention
+    # banner BEFORE the operator discovers "[Manufacturer Name — not
+    # configured]" on the generated DoC. This is the wizard-side guard
+    # that complements the render-time safety net in
+    # document_generation_service._build_common_context.
+    manufacturer_name = manufacturer.name if manufacturer else ""
+    manufacturer_is_placeholder = is_placeholder_manufacturer(manufacturer_name)
 
     return ServiceResult.success(
         {
@@ -200,6 +210,7 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
                 "end_of_life": product.end_of_life.isoformat() if product.end_of_life else None,
             },
             "manufacturer": manufacturer_data,
+            "manufacturer_is_placeholder": manufacturer_is_placeholder,
             "intended_use": assessment.intended_use,
             "target_eu_markets": assessment.target_eu_markets,
             "support_period_end": assessment.support_period_end.isoformat() if assessment.support_period_end else None,
@@ -352,14 +363,31 @@ def _compute_compliance_summary(assessment: CRAAssessment) -> dict[str, Any]:
     docs_generated = docs.count()
     docs_stale = docs.filter(is_stale=True).count()
 
-    # Export status
+    # Export status — includes the full manifest of the last exported
+    # bundle so the Step 5 UI can show what was actually packaged
+    # (files, CRA references, per-file hashes) without re-downloading
+    # the ZIP. The ``integrity`` block surfaces the hash algorithm and
+    # the verification-doc paths so the operator can cross-check the
+    # bundle without reading our code.
     last_export = assessment.export_packages.order_by("-created_at").first()
     export_data = None
     if last_export:
+        manifest = last_export.manifest or {}
         export_data = {
             "id": last_export.id,
             "content_hash": last_export.content_hash,
             "created_at": last_export.created_at.isoformat(),
+            "format_version": manifest.get("format_version"),
+            "manufacturer_is_placeholder": bool((manifest.get("manufacturer") or {}).get("is_placeholder", False)),
+            "integrity": manifest.get("integrity"),
+            "files": [
+                {
+                    "path": f.get("path", "").split("/", 1)[-1] if "/" in f.get("path", "") else f.get("path", ""),
+                    "sha256": f.get("sha256", ""),
+                    "cra_reference": f.get("cra_reference", ""),
+                }
+                for f in manifest.get("files", [])
+            ],
         }
 
     steps = {

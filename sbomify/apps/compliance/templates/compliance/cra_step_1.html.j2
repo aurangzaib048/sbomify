@@ -33,6 +33,66 @@
                     </div>
                 </div>
             </div>
+            {# Manufacturer — Annex V item 2 guard #}
+            <div class="tw-card"
+                 :class="manufacturerIsPlaceholder ? 'border-red-400 bg-red-50/40 dark:bg-red-900/10' : ''">
+                <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                        <i class="fas fa-building text-primary"></i>
+                        Manufacturer
+                        <span x-show="manufacturerIsPlaceholder"
+                              class="tw-badge-danger text-xs ml-2"
+                              data-testid="mfr-placeholder-badge">Not configured</span>
+                    </h2>
+                    <a href="/workspace/settings/contacts/"
+                       class="text-sm text-primary hover:underline"
+                       data-testid="mfr-settings-link">
+                        <i class="fas fa-arrow-up-right-from-square mr-1"></i>
+                        Edit in team settings
+                    </a>
+                </div>
+                <div class="p-6">
+                    {# Placeholder banner — Annex V item 2 requires the manufacturer's legal name #}
+                    <div x-show="manufacturerIsPlaceholder"
+                         data-testid="mfr-placeholder-banner"
+                         class="mb-4 p-4 rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 text-sm text-red-900 dark:text-red-200">
+                        <div class="flex items-start gap-3">
+                            <i class="fas fa-triangle-exclamation text-red-600 mt-0.5"></i>
+                            <div class="space-y-1">
+                                <p class="font-semibold m-0">Annex V item 2 requires a legal manufacturer name on the Declaration of Conformity.</p>
+                                <p class="m-0">
+                                    The current value looks like a placeholder — the DoC will render
+                                    <code class="text-xs">[Manufacturer Name — not configured]</code>
+                                    and the bundle manifest will carry
+                                    <code class="text-xs">is_placeholder: true</code>.
+                                    Configure a real manufacturer entity in team settings before exporting.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div x-show="manufacturer" class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div>
+                            <span class="tw-form-label">Legal Name</span>
+                            <p class="text-text font-medium mt-1"
+                               data-testid="mfr-name"
+                               x-text="manufacturer?.name || '—'"></p>
+                        </div>
+                        <div>
+                            <span class="tw-form-label">Email</span>
+                            <p class="text-text-muted text-sm mt-1"
+                               x-text="manufacturer?.email || '—'"></p>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <span class="tw-form-label">Address</span>
+                            <p class="text-text-muted text-sm mt-1"
+                               x-text="manufacturer?.address || '—'"></p>
+                        </div>
+                    </div>
+                    <div x-show="!manufacturer" class="text-sm text-text-muted italic">
+                        No manufacturer entity configured for this workspace yet.
+                    </div>
+                </div>
+            </div>
             {# CRA Classification #}
             <div class="tw-card">
                 <div class="px-6 py-4 border-b border-border">
