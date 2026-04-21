@@ -448,40 +448,50 @@ class TestLoadHarmonisedStandards:
 
 
 class TestHarmonisedStandardsFallback:
-    """Loader must degrade gracefully when the shipped JSON is missing
-    or corrupt — the DoC still renders a valid Annex V §6 section from
-    the minimal built-in fallback."""
+    """Fail-fast regime for the shipped reference JSON: regulated
+    evidence must not ship with a silently-degraded standards list,
+    so a missing or corrupt ``cra-harmonised-standards.json`` surfaces
+    as :class:`ReferenceDataError` and the DoC pipeline blocks."""
 
-    def test_missing_file_returns_minimal_fallback(self, tmp_path):
-        """OSError path: shipped file is gone. Fallback must include
-        the CRA regulation and BSI TR-03183-2 so the DoC's
-        ``applied_standards`` isn't empty."""
+    def test_missing_file_raises_reference_data_error(self, tmp_path):
+        """OSError path: shipped file is gone. Regulated-evidence
+        policy is fail-fast — a silently-degraded DoC is worse than a
+        failed export, so operators see the install bug loudly."""
         from sbomify.apps.compliance.services import _reference_data
 
-        _reference_data.load_harmonised_standards.cache_clear()
+        _reference_data._load_cached.cache_clear()
         missing = tmp_path / "does-not-exist.json"
         with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", missing):
-            data = _reference_data.load_harmonised_standards()
-            _reference_data.load_harmonised_standards.cache_clear()
+            with pytest.raises(_reference_data.ReferenceDataError):
+                _reference_data.load_harmonised_standards()
+        _reference_data._load_cached.cache_clear()
 
-        assert data.get("_is_fallback") is True
-        ids = {s["id"] for s in data["standards"]}
-        assert {"cra", "bsi-tr-03183-2"}.issubset(ids)
-
-    def test_invalid_json_returns_minimal_fallback(self, tmp_path):
+    def test_invalid_json_raises_reference_data_error(self, tmp_path):
         """JSONDecodeError path: file is present but corrupt. Same
-        fallback so a corrupted deploy doesn't brick DoC generation."""
+        fail-fast policy — corrupt reference data must not produce a
+        DoC at all."""
         from sbomify.apps.compliance.services import _reference_data
 
-        _reference_data.load_harmonised_standards.cache_clear()
+        _reference_data._load_cached.cache_clear()
         broken = tmp_path / "cra-harmonised-standards.json"
         broken.write_text("{ this is not JSON", encoding="utf-8")
         with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
-            data = _reference_data.load_harmonised_standards()
-            _reference_data.load_harmonised_standards.cache_clear()
+            with pytest.raises(_reference_data.ReferenceDataError):
+                _reference_data.load_harmonised_standards()
+        _reference_data._load_cached.cache_clear()
 
-        assert data.get("_is_fallback") is True
-        assert len(data["standards"]) >= 2
+    def test_returned_dict_is_isolated_from_cache(self):
+        """Mutating the returned payload must not poison the shared
+        ``functools.cache`` — protects against a caller that appends
+        to ``standards`` and surprises the next caller."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        _reference_data._load_cached.cache_clear()
+        first = _reference_data.load_harmonised_standards()
+        first["standards"].append({"id": "poison"})
+        second = _reference_data.load_harmonised_standards()
+        assert "poison" not in {s.get("id") for s in second["standards"]}
+        _reference_data._load_cached.cache_clear()
 
     def test_read_bytes_returns_none_on_missing_file(self, tmp_path):
         """The export service's ``read_harmonised_standards_bytes``
@@ -493,6 +503,50 @@ class TestHarmonisedStandardsFallback:
         missing = tmp_path / "does-not-exist.json"
         with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", missing):
             assert _reference_data.read_harmonised_standards_bytes() is None
+
+
+@pytest.mark.django_db
+class TestReferenceDataErrorPropagation:
+    """End-to-end propagation: :class:`ReferenceDataError` raised
+    inside ``_select_applied_standards`` must surface as an
+    operator-actionable ``ServiceResult.failure`` (503) from
+    ``generate_document`` / ``get_document_preview``, not as an
+    uncaught 500 that just shows the user a blank error toast."""
+
+    def test_generate_document_returns_503_on_corrupt_reference_data(self, tmp_path, assessment):
+        """``_build_document_context`` raises before S3 is touched,
+        so no S3 mock is needed — the propagation guard fires early."""
+        from sbomify.apps.compliance.services import _reference_data
+        from sbomify.apps.compliance.services.document_generation_service import generate_document
+
+        _reference_data._load_cached.cache_clear()
+        broken = tmp_path / "cra-harmonised-standards.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        try:
+            with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
+                result = generate_document(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        finally:
+            _reference_data._load_cached.cache_clear()
+
+        assert not result.ok
+        assert result.status_code == 503
+        assert "reference data" in (result.error or "").lower()
+
+    def test_get_document_preview_returns_503_on_corrupt_reference_data(self, tmp_path, assessment):
+        from sbomify.apps.compliance.services import _reference_data
+        from sbomify.apps.compliance.services.document_generation_service import get_document_preview
+
+        _reference_data._load_cached.cache_clear()
+        broken = tmp_path / "cra-harmonised-standards.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        try:
+            with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
+                result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
+        finally:
+            _reference_data._load_cached.cache_clear()
+
+        assert not result.ok
+        assert result.status_code == 503
 
 
 @pytest.mark.django_db

@@ -19,6 +19,9 @@ from sbomify.apps.compliance.services._manufacturer_policy import (
     is_placeholder_manufacturer as _is_placeholder_manufacturer,
 )
 from sbomify.apps.compliance.services._reference_data import (
+    ReferenceDataError,
+)
+from sbomify.apps.compliance.services._reference_data import (
     load_harmonised_standards as _load_harmonised_standards,
 )
 from sbomify.apps.core.services.results import ServiceResult
@@ -361,7 +364,18 @@ def generate_document(
     if kind not in valid_kinds:
         return ServiceResult.failure(f"Unknown document kind: {kind}", status_code=400)
 
-    context = _build_document_context(assessment, kind)
+    try:
+        context = _build_document_context(assessment, kind)
+    except ReferenceDataError:
+        # Regulated-evidence policy: the shipped harmonised-standards
+        # JSON is missing or corrupt. Surface as an operator-actionable
+        # 503 instead of a bare 500 so the wizard can render a toast
+        # rather than a generic server error.
+        logger.exception("CRA reference data missing or corrupt; blocking document generation")
+        return ServiceResult.failure(
+            "CRA reference data is missing or corrupt — contact your workspace admin.",
+            status_code=503,
+        )
     rendered = _render_template(kind, context)
     content_bytes = rendered.encode("utf-8")
     content_hash = hashlib.sha256(content_bytes).hexdigest()
@@ -446,6 +460,13 @@ def get_document_preview(
     if kind not in valid_kinds:
         return ServiceResult.failure(f"Unknown document kind: {kind}", status_code=400)
 
-    context = _build_document_context(assessment, kind)
+    try:
+        context = _build_document_context(assessment, kind)
+    except ReferenceDataError:
+        logger.exception("CRA reference data missing or corrupt; blocking document preview")
+        return ServiceResult.failure(
+            "CRA reference data is missing or corrupt — contact your workspace admin.",
+            status_code=503,
+        )
     rendered = _render_template(kind, context)
     return ServiceResult.success(rendered)

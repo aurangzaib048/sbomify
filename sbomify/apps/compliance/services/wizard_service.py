@@ -26,7 +26,12 @@ from sbomify.apps.compliance.services.sbom_compliance_service import (
     get_bsi_assessment_status,
 )
 from sbomify.apps.core.services.results import ServiceResult
-from sbomify.apps.teams.services.contacts import get_manufacturer, get_security_contact
+from sbomify.apps.teams.services.contacts import (
+    contact_belongs_to_team,
+    get_manufacturer,
+    get_security_contact,
+    list_workspace_contacts,
+)
 
 if TYPE_CHECKING:
     from sbomify.apps.core.models import User
@@ -298,18 +303,7 @@ def _build_step_4_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "generated_at": doc.generated_at.isoformat(),
         }
 
-    # Fetch contact profiles for the support contact dropdown
-    from sbomify.apps.teams.models import ContactProfileContact
-
-    team = assessment.product.team
-    contacts = list(
-        ContactProfileContact.objects.filter(
-            entity__profile__team=team,
-            entity__profile__is_component_private=False,
-        )
-        .select_related("entity__profile")
-        .values("id", "name", "email", "phone", "entity__profile__name")
-    )
+    contacts = list_workspace_contacts(assessment.product.team)
 
     return ServiceResult.success(
         {
@@ -665,13 +659,8 @@ def _save_step_4(
     """Save Step 4: User Information."""
     # Validate support_contact_id belongs to the assessment's team
     contact_id = data.get("support_contact_id", "")
-    if contact_id:
-        from sbomify.apps.teams.models import ContactProfileContact
-
-        if not ContactProfileContact.objects.filter(
-            id=contact_id, entity__profile__team=assessment.product.team
-        ).exists():
-            return ServiceResult.failure("Invalid support contact", status_code=400)
+    if contact_id and not contact_belongs_to_team(contact_id, assessment.product.team):
+        return ServiceResult.failure("Invalid support contact", status_code=400)
 
     for field in _STEP_4_FIELDS:
         if field in data:

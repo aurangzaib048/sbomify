@@ -1,18 +1,26 @@
 """Shared loaders for CRA reference data shipped alongside the app.
 
-Centralises the path to ``oscal_data/cra-harmonised-standards.json`` and
-the ``read_bytes`` / ``json.loads`` wrappers around it so the two
+Centralises the path to ``reference_data/cra-harmonised-standards.json``
+and the ``read_bytes`` / ``json.loads`` wrappers around it so the two
 compliance services (document generation and export) don't maintain
 parallel constants that can drift.
 
-Ships with a minimal built-in fallback so a broken deploy (packaging
-mistake, missing file, corrupt JSON) degrades to "CRA + BSI TR-03183-2
-only" on the Declaration of Conformity rather than raising out of
-``generate_document`` and blocking every export.
+**Fail-fast policy (issue #910 follow-up).** Reference data is regulated
+evidence — a silently-degraded DoC that ships with only the minimal
+fallback is worse than a failed export. ``load_harmonised_standards``
+raises :class:`ReferenceDataError` when the JSON is missing or corrupt
+so the operator sees the install-time bug immediately instead of
+discovering it months later in the bundle. Callers that explicitly
+want graceful degradation (e.g. embedding a copy of the reference
+data in the export ZIP when the file is unreadable) call
+``read_harmonised_standards_bytes`` which returns ``None`` rather than
+raising — the export bundle then omits the embedded copy but the DoC
+itself still carries the Annex V §6 list from :func:`load_harmonised_standards`.
 """
 
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import logging
@@ -25,48 +33,22 @@ HARMONISED_STANDARDS_PATH: Path = (
     Path(__file__).resolve().parent.parent / "reference_data" / "cra-harmonised-standards.json"
 )
 
-# Safe fallback when the shipped JSON is missing or corrupt. Matches the
-# structure of the full file but only carries the two ``always_applicable``
-# anchors (the CRA itself and BSI TR-03183-2 for SBOM format) — enough to
-# satisfy Annex V item 6 minimally so the DoC still renders a valid
-# standards section. Flagged via ``_is_fallback`` so tests / logs can
-# detect the degraded state.
-_MINIMAL_FALLBACK: dict[str, Any] = {
-    "format_version": "1.0",
-    "description": "Fallback reference data — the shipped JSON was missing or unreadable.",
-    "_is_fallback": True,
-    "standards": [
-        {
-            "id": "cra",
-            "citation": "Regulation (EU) 2024/2847 — Cyber Resilience Act",
-            "url": "https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng",
-            "harmonised": False,
-            "always_applicable": True,
-            "cra_requirements_covered": [],
-        },
-        {
-            "id": "bsi-tr-03183-2",
-            "citation": "BSI TR-03183-2 v2.1.0 — Cyber Resilience Requirements, Part 2: SBOM",
-            "url": "https://www.bsi.bund.de/SharedDocs/Downloads/EN/BSI/Publications/TechGuidelines/TR03183/BSI-TR-03183-2_v2_1_0.html",
-            "harmonised": False,
-            "always_applicable": True,
-            "cra_requirements_covered": [
-                {
-                    "cra_reference": "Annex I, Part II, §1",
-                    "summary": "SBOM covering top-level dependencies in a commonly used machine-readable format.",
-                }
-            ],
-        },
-    ],
-}
+
+class ReferenceDataError(RuntimeError):
+    """Raised when shipped reference data is missing or corrupt.
+
+    Install-time bug; surfaces loudly so a broken deploy can't quietly
+    ship DoCs that omit harmonised-standard citations.
+    """
 
 
 def read_harmonised_standards_bytes() -> bytes | None:
     """Return the raw JSON bytes, or None if the file is missing / unreadable.
 
-    Used by the export service to embed the reference data in the bundle.
-    Returning None signals "skip the embedded copy"; the DoC section still
-    renders via :func:`load_harmonised_standards` which has its own fallback.
+    Used by the export service to embed a verbatim copy of the reference
+    data in the bundle. Returning ``None`` signals "skip the embedded
+    copy"; the DoC section is rendered by :func:`load_harmonised_standards`
+    which fails loudly if the same file is unreadable.
     """
     try:
         return HARMONISED_STANDARDS_PATH.read_bytes()
@@ -76,26 +58,31 @@ def read_harmonised_standards_bytes() -> bytes | None:
 
 
 @functools.cache
-def load_harmonised_standards() -> dict[str, Any]:
-    """Load + cache the reference data, or return the minimal fallback.
-
-    Fallback triggers on:
-    - File missing / unreadable (``OSError``)
-    - Invalid JSON (``json.JSONDecodeError``)
-
-    Either case is an install-time bug, not a runtime one. We log once
-    at error level, then return a minimal in-memory payload so the DoC
-    still emits a valid Annex V §6 "Standards & Specifications Applied"
-    section instead of blocking the whole export pipeline.
-    """
+def _load_cached() -> dict[str, Any]:
     try:
         raw = HARMONISED_STANDARDS_PATH.read_text(encoding="utf-8")
-    except OSError:
-        logger.exception("cra-harmonised-standards.json unreadable; falling back to minimal in-memory list")
-        return _MINIMAL_FALLBACK
+    except OSError as exc:
+        raise ReferenceDataError(
+            f"cra-harmonised-standards.json is missing or unreadable at {HARMONISED_STANDARDS_PATH}"
+        ) from exc
     try:
         data: dict[str, Any] = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.exception("cra-harmonised-standards.json is not valid JSON; falling back to minimal in-memory list")
-        return _MINIMAL_FALLBACK
+    except json.JSONDecodeError as exc:
+        raise ReferenceDataError(
+            f"cra-harmonised-standards.json at {HARMONISED_STANDARDS_PATH} is not valid JSON"
+        ) from exc
     return data
+
+
+def load_harmonised_standards() -> dict[str, Any]:
+    """Load + cache the reference data.
+
+    Raises :class:`ReferenceDataError` if the shipped JSON is missing or
+    corrupt — regulated-evidence exports must not silently ship with a
+    degraded standards list.
+
+    The returned dict is a deep copy of the cached payload so callers
+    that mutate their view (e.g. tests that splice fixture data) don't
+    poison the shared cache.
+    """
+    return copy.deepcopy(_load_cached())

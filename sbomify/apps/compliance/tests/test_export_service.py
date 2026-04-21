@@ -560,6 +560,57 @@ class TestGetDownloadUrl:
         assert result.ok
         assert result.value == "https://s3.example.com/presigned"
 
+    def test_presigned_url_contract(self):
+        """Regression for the #909 contract: regulated-evidence URLs
+        must be short-lived (900 s), forced to download (not inline),
+        and typed as application/zip. The product slug + content-hash
+        prefix ends up in the filename so bundles are distinguishable
+        on disk."""
+        mock_package = MagicMock()
+        mock_package.storage_key = "compliance/exports/test/abc.zip"
+        mock_package.content_hash = "abcdef0123456789"  # >= 12 chars
+        mock_package.assessment.product.name = "Lithium Edge Gateway"
+        mock_package.assessment.product.id = "prod-fallback-id"
+
+        with patch("boto3.client") as mock_client_fn:
+            mock_s3 = MagicMock()
+            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
+            mock_client_fn.return_value = mock_s3
+
+            result = get_download_url(mock_package)
+
+        assert result.ok
+        call_kwargs = mock_s3.generate_presigned_url.call_args.kwargs
+        assert call_kwargs["ExpiresIn"] == 900
+        params = call_kwargs["Params"]
+        assert params["ResponseContentType"] == "application/zip"
+        disposition = params["ResponseContentDisposition"]
+        assert disposition.startswith("attachment; ")
+        assert 'filename="cra-package-lithium-edge-gateway-abcdef012345.zip"' in disposition
+
+    def test_presigned_url_filename_falls_back_to_product_id(self):
+        """When the product name slugifies to an empty string (e.g. a
+        name containing only punctuation), the filename falls back to
+        the product id so the slug segment stays non-empty."""
+        mock_package = MagicMock()
+        mock_package.storage_key = "compliance/exports/test/abc.zip"
+        mock_package.content_hash = "0011223344556677"
+        mock_package.assessment.product.name = "---"
+        mock_package.assessment.product.id = "prod-abc123"
+
+        with patch("boto3.client") as mock_client_fn:
+            mock_s3 = MagicMock()
+            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
+            mock_client_fn.return_value = mock_s3
+
+            result = get_download_url(mock_package)
+
+        assert result.ok
+        disposition = mock_s3.generate_presigned_url.call_args.kwargs["Params"][
+            "ResponseContentDisposition"
+        ]
+        assert 'filename="cra-package-prod-abc123-001122334455.zip"' in disposition
+
     def test_handles_s3_error(self):
         mock_package = MagicMock()
         mock_package.storage_key = "bad-key"

@@ -18,7 +18,7 @@ of teams' internal schema.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sbomify.apps.teams.models import ContactEntity, ContactProfileContact
 
@@ -58,3 +58,45 @@ def get_security_contact(team: Team) -> ContactProfileContact | None:
         .select_related("entity")
         .first()
     )
+
+
+def list_workspace_contacts(team: Team) -> list[dict[str, Any]]:
+    """Return contact dicts for every public profile in the team.
+
+    Used by the CRA wizard's Step 4 support-contact dropdown. Excludes
+    private profiles (``profile.is_component_private=True``) because
+    those are scoped to individual components and shouldn't surface as
+    workspace-level support contacts.
+
+    Returned keys: ``id``, ``name``, ``email``, ``phone``, ``profile_name``.
+    ``profile_name`` is flattened here rather than exposing the
+    Django ORM lookup path (``entity__profile__name``) so templates
+    and JS consumers don't need to know the teams app's internal
+    schema.
+    """
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "email": row["email"],
+            "phone": row["phone"],
+            "profile_name": row["entity__profile__name"],
+        }
+        for row in (
+            ContactProfileContact.objects.filter(
+                entity__profile__team=team,
+                entity__profile__is_component_private=False,
+            )
+            .select_related("entity__profile")
+            .order_by("entity__profile__name", "name")
+            .values("id", "name", "email", "phone", "entity__profile__name")
+        )
+    ]
+
+
+def contact_belongs_to_team(contact_id: str, team: Team) -> bool:
+    """True iff ``contact_id`` identifies a ContactProfileContact in ``team``."""
+    return ContactProfileContact.objects.filter(
+        id=contact_id,
+        entity__profile__team=team,
+    ).exists()

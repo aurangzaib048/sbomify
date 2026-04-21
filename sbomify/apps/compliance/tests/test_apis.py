@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -382,6 +382,67 @@ class TestDownloadExport:
         )
 
         assert response.status_code == 404
+
+    def test_404_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+        """Cache-Control must apply on the error path too — a shared
+        cache (Caddy, corporate proxy) must not retain a 404 keyed on
+        an assessment+package-id pair. Regression for #909."""
+        client, token = authenticated_api_client
+
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}/export/nonexistent/download",
+            **get_api_headers(token),
+        )
+
+        assert response.status_code == 404
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
+
+    def test_403_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+        """The 403 path is the primary threat model the Cache-Control
+        change addresses — a shared cache keyed on (Authorization,
+        path) must not retain "this assessment exists, just not for
+        you". Covers both the team-role 403 and the billing-gate 403
+        by patching ``check_cra_access``."""
+        client, token = authenticated_api_client
+
+        with patch("sbomify.apps.compliance.apis.check_cra_access", return_value=False):
+            response = client.get(
+                f"/api/v1/compliance/cra/{assessment.id}/export/anything/download",
+                **get_api_headers(token),
+            )
+
+        assert response.status_code == 403
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
+
+    def test_200_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+        """Happy path: a successful download response must not be
+        cacheable — the presigned URL inside would otherwise be served
+        from an intermediate cache past its server-side expiry."""
+        from sbomify.apps.compliance.models import CRAExportPackage
+
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="0" * 64,
+            manifest={"format_version": "1.0"},
+        )
+        client, token = authenticated_api_client
+
+        with patch("boto3.client") as mock_client_fn:
+            mock_s3 = MagicMock()
+            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
+            mock_client_fn.return_value = mock_s3
+
+            response = client.get(
+                f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
+                **get_api_headers(token),
+            )
+
+        assert response.status_code == 200
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
 
 
 class TestStaleness:

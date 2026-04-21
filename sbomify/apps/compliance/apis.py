@@ -397,8 +397,13 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     lifetime. The URL itself is already short-lived (see
     ``_PRESIGNED_URL_EXPIRY_SECONDS`` in export_service) but the
     cache-control header stops it from being replayed from a stale
-    cache entry after expiry.
+    cache entry after expiry. The headers apply to error responses too
+    — a 404 or 403 can leak the existence of a package id / assessment
+    scope via a shared cache otherwise.
     """
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
+
     result = _get_assessment_or_error(request, assessment_id)
     if not isinstance(result, CRAAssessment):
         return result
@@ -414,8 +419,6 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     if not url.ok:
         return url.status_code or 500, ErrorResponse(error=url.error or "Unknown error")
 
-    response["Cache-Control"] = "no-store"
-    response["Pragma"] = "no-cache"
     return 200, {"download_url": url.value}
 
 
