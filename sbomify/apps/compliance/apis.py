@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponse
 from ninja import Router
 from ninja.security import django_auth
 
@@ -388,8 +388,17 @@ def create_export(request: HttpRequest, assessment_id: str) -> _Response:
     "/cra/{assessment_id}/export/{package_id}/download",
     response={200: dict, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
 )
-def download_export(request: HttpRequest, assessment_id: str, package_id: str) -> _Response:
-    """Get a presigned download URL for an export package."""
+def download_export(request: HttpRequest, response: HttpResponse, assessment_id: str, package_id: str) -> _Response:
+    """Get a short-lived presigned download URL for an export package.
+
+    The response carries ``Cache-Control: no-store`` and
+    ``Pragma: no-cache`` so intermediate caches (Caddy, corporate
+    proxies, browser) don't retain the presigned URL past its server
+    lifetime. The URL itself is already short-lived (see
+    ``_PRESIGNED_URL_EXPIRY_SECONDS`` in export_service) but the
+    cache-control header stops it from being replayed from a stale
+    cache entry after expiry.
+    """
     result = _get_assessment_or_error(request, assessment_id)
     if not isinstance(result, CRAAssessment):
         return result
@@ -405,6 +414,8 @@ def download_export(request: HttpRequest, assessment_id: str, package_id: str) -
     if not url.ok:
         return url.status_code or 500, ErrorResponse(error=url.error or "Unknown error")
 
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
     return 200, {"download_url": url.value}
 
 

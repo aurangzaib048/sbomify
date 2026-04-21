@@ -27,7 +27,7 @@ from sbomify.apps.core.models import Component
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.core.services.results import ServiceResult
 from sbomify.apps.sboms.models import SBOM
-from sbomify.apps.teams.models import ContactEntity
+from sbomify.apps.teams.services.contacts import get_manufacturer
 
 if TYPE_CHECKING:
     from sbomify.apps.compliance.models import CRAAssessment
@@ -291,7 +291,7 @@ def build_export_package(
 
         # 7. Manifest — built after all other files are written so manifest_files
         # is complete. The manifest itself is NOT included in its own files list.
-        manufacturer = ContactEntity.objects.filter(profile__team=assessment.team, is_manufacturer=True).first()
+        manufacturer = get_manufacturer(assessment.team)
         manufacturer_name = manufacturer.name if manufacturer else ""
         manufacturer_name_is_placeholder = _is_placeholder_manufacturer(manufacturer_name)
 
@@ -391,8 +391,25 @@ def _write_to_zip(
     )
 
 
+# CRA export bundle URLs expire in 15 minutes rather than the boto3
+# default of 1 h. These URLs point at regulated evidence (Annex VII
+# technical documentation); keeping the unauthenticated window tight
+# reduces the blast radius of a leaked URL in a referer header,
+# copy-pasted ticket, or mis-routed chat message. 900 s is still
+# long enough for a human to click "Download" on the wizard.
+_PRESIGNED_URL_EXPIRY_SECONDS = 900
+
+
 def get_download_url(package: CRAExportPackage) -> ServiceResult[str]:
-    """Generate a presigned S3 URL for ZIP download (1 hour expiry)."""
+    """Generate a presigned S3 URL for the CRA bundle ZIP.
+
+    Returns a short-lived URL (see ``_PRESIGNED_URL_EXPIRY_SECONDS``)
+    with a forced ``Content-Disposition: attachment`` header so the
+    browser downloads the bundle instead of rendering the ZIP inline
+    (which some viewers attempt for JSON-looking responses). The
+    filename is set to a deterministic slug derived from the product
+    name + short hash so auditors can tell bundles apart on disk.
+    """
     try:
         import boto3
 
@@ -403,13 +420,17 @@ def get_download_url(package: CRAExportPackage) -> ServiceResult[str]:
             aws_access_key_id=django_settings.AWS_DOCUMENTS_ACCESS_KEY_ID,
             aws_secret_access_key=django_settings.AWS_DOCUMENTS_SECRET_ACCESS_KEY,
         )
+        product_slug = slugify(package.assessment.product.name) or package.assessment.product.id
+        filename = f"cra-package-{product_slug}-{package.content_hash[:12]}.zip"
         url: str = s3_client.generate_presigned_url(
             "get_object",
             Params={
                 "Bucket": django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
                 "Key": package.storage_key,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentType": "application/zip",
             },
-            ExpiresIn=3600,
+            ExpiresIn=_PRESIGNED_URL_EXPIRY_SECONDS,
         )
         return ServiceResult.success(url)
     except Exception:

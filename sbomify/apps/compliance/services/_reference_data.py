@@ -22,7 +22,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 HARMONISED_STANDARDS_PATH: Path = (
-    Path(__file__).resolve().parent.parent / "oscal_data" / "cra-harmonised-standards.json"
+    Path(__file__).resolve().parent.parent / "reference_data" / "cra-harmonised-standards.json"
 )
 
 # Safe fallback when the shipped JSON is missing or corrupt. Matches the

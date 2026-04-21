@@ -230,6 +230,8 @@
             <button type="button"
                     @click="save()"
                     :disabled="!canContinue || isSaving"
+                    :title="manufacturerIsPlaceholder ? 'Configure a real manufacturer entity in team settings before continuing (Annex V item 2).' : ''"
+                    data-testid="step-1-save-continue"
                     class="tw-btn-primary">
                 <span x-show="!isSaving">Save &amp; Continue <i class="fas fa-arrow-right ml-2"></i></span>
                 <span x-show="isSaving" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Saving...</span>

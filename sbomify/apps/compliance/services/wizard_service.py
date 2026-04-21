@@ -26,7 +26,7 @@ from sbomify.apps.compliance.services.sbom_compliance_service import (
     get_bsi_assessment_status,
 )
 from sbomify.apps.core.services.results import ServiceResult
-from sbomify.apps.teams.models import ContactEntity, ContactProfileContact
+from sbomify.apps.teams.services.contacts import get_manufacturer, get_security_contact
 
 if TYPE_CHECKING:
     from sbomify.apps.core.models import User
@@ -47,24 +47,13 @@ def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
     """Populate security contact and CSIRT email from existing contact profiles."""
     team = assessment.team
 
-    # Find the security contact across all team contact profiles
-    security_contact = (
-        ContactProfileContact.objects.filter(
-            entity__profile__team=team,
-            is_security_contact=True,
-        )
-        .select_related("entity")
-        .first()
-    )
+    security_contact = get_security_contact(team)
     if security_contact:
         if not assessment.csirt_contact_email:
             assessment.csirt_contact_email = security_contact.email
 
     # Find manufacturer entity for VDP/support info
-    manufacturer = ContactEntity.objects.filter(
-        profile__team=team,
-        is_manufacturer=True,
-    ).first()
+    manufacturer = get_manufacturer(team)
     if manufacturer:
         if not assessment.support_email and manufacturer.email:
             assessment.support_email = manufacturer.email
@@ -178,10 +167,7 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
 
     product = assessment.product
 
-    manufacturer = ContactEntity.objects.filter(
-        profile__team=assessment.team,
-        is_manufacturer=True,
-    ).first()
+    manufacturer = get_manufacturer(assessment.team)
     manufacturer_data = None
     if manufacturer:
         manufacturer_data = {

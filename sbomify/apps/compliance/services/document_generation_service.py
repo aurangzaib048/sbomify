@@ -22,7 +22,7 @@ from sbomify.apps.compliance.services._reference_data import (
     load_harmonised_standards as _load_harmonised_standards,
 )
 from sbomify.apps.core.services.results import ServiceResult
-from sbomify.apps.teams.models import ContactEntity, ContactProfileContact
+from sbomify.apps.teams.services.contacts import get_manufacturer, get_security_contact
 
 if TYPE_CHECKING:
     pass
@@ -157,15 +157,8 @@ def _build_common_context(assessment: CRAAssessment) -> dict[str, Any]:
     """Build context shared across all templates."""
     product = assessment.product
 
-    manufacturer = ContactEntity.objects.filter(
-        profile__team=assessment.team,
-        is_manufacturer=True,
-    ).first()
-
-    security_contact = ContactProfileContact.objects.filter(
-        entity__profile__team=assessment.team,
-        is_security_contact=True,
-    ).first()
+    manufacturer = get_manufacturer(assessment.team)
+    security_contact = get_security_contact(assessment.team)
 
     # Raw manufacturer name flows through the placeholder check BEFORE
     # markdown escaping — escaping would insert backslashes and make

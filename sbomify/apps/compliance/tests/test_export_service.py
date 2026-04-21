@@ -446,6 +446,75 @@ class TestBuildExportPackage:
         assert any("harmonised-standards.json" in p for p in paths)
         assert not any("vulnerability-disclosure-policy.md" in p for p in paths)
 
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_sbom_packaged_with_annex_vii_reference(
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
+    ):
+        """End-to-end: a real ``Product → Project → Component → SBOM``
+        chain produces an SBOM file in the ZIP, a manifest entry with
+        ``cra_reference`` "Annex VII, §2", and the ``{slug}-{id}.cdx.json``
+        naming convention (covers the export_service branch that runs
+        the ``SBOM.objects`` join, the ``_FORMAT_EXT_MAP`` extension
+        pick, and the ``Annex VII, §2`` literal)."""
+        import io
+        import zipfile
+
+        from sbomify.apps.core.models import Component, Project
+        from sbomify.apps.sboms.models import SBOM
+
+        product = assessment_with_docs.product
+        team = assessment_with_docs.team
+
+        # Hang a Component off the Product via a Project. The export
+        # service discovers SBOMs via ``components__projects__products``.
+        project = Project.objects.create(name="CRA Export Project", team=team)
+        component = Component.objects.create(name="Export Test Component", team=team)
+        project.components.add(component)
+        product.projects.add(project)
+
+        # Give the component an SBOM that the export will find. The
+        # export service only wires the SBOM *path* into the ZIP; it
+        # does not re-read the actual bytes from storage during this
+        # test, so capturing_s3's stub get_sbom_data returning b""
+        # is enough for the manifest + path assertions below.
+        SBOM.objects.create(
+            name="export-test-sbom",
+            component=component,
+            format="cyclonedx",
+            format_version="1.6",
+            version="1.0.0",
+            sbom_filename="export-test-sbom.cdx.json",
+        )
+
+        captured, _ = capturing_s3
+        # Return non-empty bytes so the write-to-zip branch fires.
+        # capturing_s3's get_sbom_data returns b"" by default which
+        # short-circuits the branch; patch it on the stub for this test.
+        captured_s3_instance = capturing_s3[1].return_value
+        captured_s3_instance.get_sbom_data = lambda filename: b'{"bomFormat":"CycloneDX"}'
+        mock_get_content.return_value = b"mock content"
+
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+
+        # Manifest entry assertions — lines 258-266 of export_service.
+        sbom_entries = [
+            f for f in result.value.manifest["files"]
+            if "/sboms/" in f["path"] and f["path"].endswith(".cdx.json")
+        ]
+        assert len(sbom_entries) == 1, f"expected exactly one SBOM entry, got {sbom_entries}"
+        entry = sbom_entries[0]
+        assert entry["cra_reference"] == "Annex VII, §2", (
+            f"SBOM must be tagged Annex VII, §2 — got {entry['cra_reference']!r}"
+        )
+        # Naming convention: cra-package-<slug>/sboms/<comp-slug>-<comp-id>.cdx.json
+        assert entry["path"].endswith(f"{component.id}.cdx.json"), entry["path"]
+        assert "export-test-component" in entry["path"]
+
+        # And the ZIP actually carries the file at that path.
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            assert entry["path"] in zf.namelist()
+
     @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_manifest_flags_placeholder_manufacturer(

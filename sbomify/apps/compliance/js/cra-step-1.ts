@@ -73,6 +73,13 @@ function craStep1() {
     },
 
     get canContinue(): boolean {
+      // CRA Annex V item 2 requires the manufacturer's legal name on
+      // the generated DoC. When the team profile still carries a
+      // placeholder (or none) we refuse to advance past Step 1 — this
+      // is the wizard-side prevention that pairs with the render-time
+      // safety net in document_generation_service._build_common_context.
+      // Issue #908.
+      if (this.manufacturerIsPlaceholder) return false;
       return !!this.category && this.euMarkets.length > 0 && !!this.supportPeriodEnd;
     },
 
