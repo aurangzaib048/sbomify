@@ -447,6 +447,20 @@ class TestLoadHarmonisedStandards:
         assert "bsi-tr-03183-2" in always
 
 
+@pytest.fixture
+def _clear_reference_data_cache():
+    """Isolate tests from the module-level ``functools.cache`` on
+    ``_load_cached``. Clears before and after each test so a patched
+    ``HARMONISED_STANDARDS_PATH`` in one test can't leak a cached
+    value (or a cached exception's absence) into the next."""
+    from sbomify.apps.compliance.services import _reference_data
+
+    _reference_data._load_cached.cache_clear()
+    yield
+    _reference_data._load_cached.cache_clear()
+
+
+@pytest.mark.usefixtures("_clear_reference_data_cache")
 class TestHarmonisedStandardsFallback:
     """Fail-fast regime for the shipped reference JSON: regulated
     evidence must not ship with a silently-degraded standards list,
@@ -459,12 +473,10 @@ class TestHarmonisedStandardsFallback:
         failed export, so operators see the install bug loudly."""
         from sbomify.apps.compliance.services import _reference_data
 
-        _reference_data._load_cached.cache_clear()
         missing = tmp_path / "does-not-exist.json"
         with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", missing):
             with pytest.raises(_reference_data.ReferenceDataError):
                 _reference_data.load_harmonised_standards()
-        _reference_data._load_cached.cache_clear()
 
     def test_invalid_json_raises_reference_data_error(self, tmp_path):
         """JSONDecodeError path: file is present but corrupt. Same
@@ -472,13 +484,11 @@ class TestHarmonisedStandardsFallback:
         DoC at all."""
         from sbomify.apps.compliance.services import _reference_data
 
-        _reference_data._load_cached.cache_clear()
         broken = tmp_path / "cra-harmonised-standards.json"
         broken.write_text("{ this is not JSON", encoding="utf-8")
         with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
             with pytest.raises(_reference_data.ReferenceDataError):
                 _reference_data.load_harmonised_standards()
-        _reference_data._load_cached.cache_clear()
 
     def test_returned_dict_is_isolated_from_cache(self):
         """Mutating the returned payload must not poison the shared
@@ -486,12 +496,10 @@ class TestHarmonisedStandardsFallback:
         to ``standards`` and surprises the next caller."""
         from sbomify.apps.compliance.services import _reference_data
 
-        _reference_data._load_cached.cache_clear()
         first = _reference_data.load_harmonised_standards()
         first["standards"].append({"id": "poison"})
         second = _reference_data.load_harmonised_standards()
         assert "poison" not in {s.get("id") for s in second["standards"]}
-        _reference_data._load_cached.cache_clear()
 
     def test_read_bytes_returns_none_on_missing_file(self, tmp_path):
         """The export service's ``read_harmonised_standards_bytes``
@@ -506,6 +514,7 @@ class TestHarmonisedStandardsFallback:
 
 
 @pytest.mark.django_db
+@pytest.mark.usefixtures("_clear_reference_data_cache")
 class TestReferenceDataErrorPropagation:
     """End-to-end propagation: :class:`ReferenceDataError` raised
     inside ``_select_applied_standards`` must surface as an
@@ -519,14 +528,10 @@ class TestReferenceDataErrorPropagation:
         from sbomify.apps.compliance.services import _reference_data
         from sbomify.apps.compliance.services.document_generation_service import generate_document
 
-        _reference_data._load_cached.cache_clear()
         broken = tmp_path / "cra-harmonised-standards.json"
         broken.write_text("{ not json", encoding="utf-8")
-        try:
-            with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
-                result = generate_document(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
-        finally:
-            _reference_data._load_cached.cache_clear()
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
+            result = generate_document(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
 
         assert not result.ok
         assert result.status_code == 503
@@ -536,14 +541,10 @@ class TestReferenceDataErrorPropagation:
         from sbomify.apps.compliance.services import _reference_data
         from sbomify.apps.compliance.services.document_generation_service import get_document_preview
 
-        _reference_data._load_cached.cache_clear()
         broken = tmp_path / "cra-harmonised-standards.json"
         broken.write_text("{ not json", encoding="utf-8")
-        try:
-            with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
-                result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
-        finally:
-            _reference_data._load_cached.cache_clear()
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
+            result = get_document_preview(assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY)
 
         assert not result.ok
         assert result.status_code == 503

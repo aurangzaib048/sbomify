@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -416,7 +416,7 @@ class TestDownloadExport:
         assert response["Cache-Control"] == "no-store"
         assert response["Pragma"] == "no-cache"
 
-    def test_200_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+    def test_200_response_carries_no_store_headers(self, authenticated_api_client, assessment, mock_s3_client):
         """Happy path: a successful download response must not be
         cacheable — the presigned URL inside would otherwise be served
         from an intermediate cache past its server-side expiry."""
@@ -430,15 +430,10 @@ class TestDownloadExport:
         )
         client, token = authenticated_api_client
 
-        with patch("boto3.client") as mock_client_fn:
-            mock_s3 = MagicMock()
-            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
-            mock_client_fn.return_value = mock_s3
-
-            response = client.get(
-                f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
-                **get_api_headers(token),
-            )
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
+            **get_api_headers(token),
+        )
 
         assert response.status_code == 200
         assert response["Cache-Control"] == "no-store"

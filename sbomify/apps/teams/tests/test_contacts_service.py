@@ -203,3 +203,12 @@ class TestContactBelongsToTeam:
         team = _make_team("Tenant A")
 
         assert contact_belongs_to_team("does-not-exist", team) is False
+
+    @pytest.mark.parametrize("bad_value", [None, "", 123, ["abc"], {"id": "abc"}])
+    def test_false_for_malformed_payload(self, bad_value):
+        """A malformed JSON body (``null`` / missing / wrong type)
+        must resolve cleanly to False rather than crashing on
+        ``.filter(id=<non-str>)`` or returning the default pk=0 row."""
+        team = _make_team("Tenant A")
+
+        assert contact_belongs_to_team(bad_value, team) is False

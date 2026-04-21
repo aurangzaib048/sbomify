@@ -94,8 +94,17 @@ def list_workspace_contacts(team: Team) -> list[dict[str, Any]]:
     ]
 
 
-def contact_belongs_to_team(contact_id: str, team: Team) -> bool:
-    """True iff ``contact_id`` identifies a ContactProfileContact in ``team``."""
+def contact_belongs_to_team(contact_id: str | None, team: Team) -> bool:
+    """True iff ``contact_id`` identifies a ContactProfileContact in ``team``.
+
+    ``None``, empty strings, and non-string payloads are rejected up
+    front so a malformed request body (``{"support_contact_id": null}``
+    or ``{"support_contact_id": ["abc"]}``) resolves cleanly to
+    "not a valid contact" instead of hitting ``.filter(id=None)`` or
+    an ORM type-coercion error further down.
+    """
+    if not isinstance(contact_id, str) or not contact_id:
+        return False
     return ContactProfileContact.objects.filter(
         id=contact_id,
         entity__profile__team=team,
