@@ -173,13 +173,13 @@
                             </div>
                         </div>
                     </template>
-                    {# Mark Assessment Complete — prominent treatment #}
+                    {# Mark Assessment Complete — uses fa-circle-check (solid, high-contrast) instead of fa-flag-checkered which vanished against bg-green-100 in light mode. #}
                     <template x-if="overallReady">
                         <div class="tw-card border-green-300 dark:border-green-700">
                             <div class="p-6">
                                 <div class="flex items-start gap-4">
                                     <div class="shrink-0 w-10 h-10 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center">
-                                        <i class="fas fa-flag-checkered text-green-600 dark:text-green-400"></i>
+                                        <i class="fas fa-circle-check text-xl text-green-600 dark:text-green-400"></i>
                                     </div>
                                     <div class="flex-1">
                                         <h3 class="font-semibold text-text m-0">Ready to Complete</h3>
@@ -189,7 +189,7 @@
                                         <button @click="finishAssessment()"
                                                 :disabled="isFinishing"
                                                 class="tw-btn-primary mt-3">
-                                            <span x-show="!isFinishing"><i class="fas fa-flag-checkered mr-2"></i> Mark Assessment Complete</span>
+                                            <span x-show="!isFinishing"><i class="fas fa-circle-check mr-2"></i> Mark Assessment Complete</span>
                                             <span x-show="isFinishing" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Completing...</span>
                                         </button>
                                     </div>
