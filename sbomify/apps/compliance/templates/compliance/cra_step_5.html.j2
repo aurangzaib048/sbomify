@@ -136,14 +136,7 @@
                                 </template>
                             </div>
                             <div class="p-6 space-y-4">
-                                {# Integrity block.
-                                   ``lastExport.content_hash`` is the SHA-256 of the ZIP bytes
-                                   (see export_service.build_export_package → hashlib.sha256(zip_bytes)),
-                                   NOT the hash of metadata/manifest.json. The manifest's own
-                                   self-hash lives in the bundle at metadata/manifest.sha256 and
-                                   is verified by the sha256sum command shown. Label each hash
-                                   for what it actually is so auditors don't compare apples to
-                                   oranges. #}
+                                {# Integrity block — lastExport.content_hash is SHA-256 of the ZIP bytes; manifest self-hash lives in metadata/manifest.sha256 and is verified by the sha256sum command below. #}
                                 <template x-if="lastExport.integrity">
                                     <div class="text-xs text-text-muted space-y-1">
                                         <p class="m-0">
