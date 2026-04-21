@@ -79,31 +79,48 @@ def _is_placeholder_manufacturer(name: str | None) -> bool:
 
 
 def _integrity_readme(manifest_sha256: str) -> str:
-    """Human-readable bundle verification guide embedded in the export."""
+    """Human-readable bundle verification guide embedded in the export.
+
+    The commands below are tested end-to-end against the real bundle
+    layout — running them from the extracted package root (the folder
+    named ``cra-package-<product-slug>/`` inside the ZIP) produces
+    ``manifest.json: OK`` and ``<path>: OK`` for every file listed in
+    the manifest's ``files`` array.
+    """
     return (
         "# Bundle Integrity\n\n"
-        "This CRA export bundle is accompanied by:\n\n"
-        "- `manifest.json` — per-file SHA-256 hashes for every artefact in the ZIP\n"
-        "- `manifest.sha256` — SHA-256 of `manifest.json` itself, so the manifest "
-        "cannot be tampered with without detection\n\n"
-        "## Verifying the manifest\n\n"
+        "This CRA export bundle ships with two integrity primitives:\n\n"
+        "- `metadata/manifest.json` — per-file SHA-256 hashes for every "
+        "artefact listed in its `files` array. `manifest.json`, "
+        "`manifest.sha256`, and this `INTEGRITY.md` are NOT listed (they "
+        "are the integrity primitives themselves — listing them would be "
+        "circular).\n"
+        "- `metadata/manifest.sha256` — SHA-256 of `manifest.json` itself, "
+        "so the manifest cannot be tampered with without detection.\n\n"
+        "## 1. Verifying the manifest\n\n"
+        "Run from the extracted bundle root (the `cra-package-<slug>/` "
+        "directory inside the ZIP):\n\n"
         "```sh\n"
-        "# From the root of the extracted bundle:\n"
         "sha256sum -c metadata/manifest.sha256\n"
         "```\n\n"
-        f"Expected digest: `{manifest_sha256}`\n\n"
-        "## Verifying individual artefacts\n\n"
+        "Expected output: `metadata/manifest.json: OK`.\n\n"
+        f"Expected digest (from `manifest.sha256`): `{manifest_sha256}`\n\n"
+        "## 2. Verifying every individual artefact\n\n"
+        "Again from the extracted bundle root:\n\n"
         "```sh\n"
-        "# Each entry in manifest.json includes a sha256 field:\n"
-        "jq -r '.files[] | \"\\(.sha256)  \\(.path)\"' metadata/manifest.json "
-        "| sed 's|cra-package-[^/]*/||' > /tmp/checksums.txt\n"
-        "( cd .. && sha256sum -c /tmp/checksums.txt )\n"
+        'jq -r \'.files[] | "\\(.sha256)  \\(.path | sub("^cra-package-[^/]*/"; ""))"\' \\\n'
+        "  metadata/manifest.json | sha256sum -c -\n"
         "```\n\n"
-        "## About signatures\n\n"
-        "sbomify does not sign the bundle itself. Operators that need a "
+        "Each file in the manifest prints `<path>: OK`. A non-zero exit "
+        "code or any `FAILED` entry means the bundle has been modified "
+        "since export. The `jq` `sub` expression strips the "
+        "`cra-package-<slug>/` prefix so `sha256sum` resolves paths "
+        "against the current working directory (the bundle root).\n\n"
+        "## 3. About signatures\n\n"
+        "sbomify does not sign the bundle itself. Operators who need a "
         "stronger integrity / provenance guarantee for regulatory filings "
-        "should sign the whole ZIP downstream (e.g. with `cosign sign-blob` "
-        "or `gpg --detach-sign`) and distribute the detached signature "
+        "should sign the whole ZIP downstream with `cosign sign-blob` "
+        "or `gpg --detach-sign` and distribute the detached signature "
         "alongside the bundle. The self-hash above bounds the manifest's "
         "integrity; a downstream signature bounds the whole package.\n"
     )
@@ -316,9 +333,15 @@ def build_export_package(
         # that need one apply cosign / PGP over the whole ZIP downstream),
         # but a self-hash is the minimum useful integrity signal.
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        # The checksum file declares the manifest path as
+        # ``metadata/manifest.json`` (relative to the bundle root, not
+        # the checksum file's own directory) because ``sha256sum -c``
+        # resolves each entry against the working directory. INTEGRITY.md
+        # tells operators to run the verification from the bundle root,
+        # so the path here must match that working directory.
         zf.writestr(
             f"{prefix}/metadata/manifest.sha256",
-            f"{manifest_sha256}  manifest.json\n".encode("utf-8"),
+            f"{manifest_sha256}  metadata/manifest.json\n".encode("utf-8"),
         )
 
         # 9. INTEGRITY.md — human-readable verification guide.

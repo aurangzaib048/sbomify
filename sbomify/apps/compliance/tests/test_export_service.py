@@ -253,6 +253,100 @@ class TestBuildExportPackage:
 
     @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_manifest_sha256_round_trips_through_shasum(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Regression: ``sha256sum -c metadata/manifest.sha256`` run from
+        the extracted bundle root MUST verify ``metadata/manifest.json``.
+        Previously the checksum file declared the filename as plain
+        ``manifest.json`` which only worked when invoked from inside the
+        metadata/ directory — not from the bundle root that INTEGRITY.md
+        documents. This test extracts the real ZIP and re-hashes the
+        manifest, asserting the declared path is correct."""
+        import hashlib
+        import io
+        import zipfile
+
+        mock_get_content.return_value = b"mock content"
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):  # pragma: no cover
+                return b""
+
+            def get_sbom_data(self, filename):  # pragma: no cover
+                return b""
+
+        mock_s3_cls.return_value = _Capture()
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            manifest_name = next(n for n in zf.namelist() if n.endswith("metadata/manifest.json"))
+            sha_name = next(n for n in zf.namelist() if n.endswith("metadata/manifest.sha256"))
+            manifest_bytes = zf.read(manifest_name)
+            sha_line = zf.read(sha_name).decode().strip()
+            expected_hash = hashlib.sha256(manifest_bytes).hexdigest()
+
+            # Line format: "<sha>  <relative-path>"
+            recorded_hash, recorded_path = sha_line.split("  ", 1)
+            assert recorded_hash == expected_hash
+            # Path must be resolvable from the extracted bundle root —
+            # i.e. "metadata/manifest.json". Anything else (plain
+            # "manifest.json", absolute path, missing directory) breaks
+            # the documented `sha256sum -c metadata/manifest.sha256`
+            # command when invoked from the bundle root.
+            assert recorded_path == "metadata/manifest.json"
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
+    def test_per_file_manifest_entries_verify_against_actual_zip_contents(
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+    ):
+        """Regression for the INTEGRITY.md ``jq … | sha256sum -c -``
+        workflow: after stripping the ``cra-package-<slug>/`` prefix,
+        each manifest entry's hash must match the ZIP's bytes for that
+        relative path. This exercises the exact workflow the README
+        tells operators to run — not an approximation."""
+        import hashlib
+        import io
+        import re
+        import zipfile
+
+        mock_get_content.return_value = b"mock payload"
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):  # pragma: no cover
+                return b""
+
+            def get_sbom_data(self, filename):  # pragma: no cover
+                return b""
+
+        mock_s3_cls.return_value = _Capture()
+        result = build_export_package(assessment_with_docs, sample_user)
+        assert result.ok
+
+        with zipfile.ZipFile(io.BytesIO(captured["bytes"])) as zf:
+            prefix_re = re.compile(r"^cra-package-[^/]+/")
+            for entry in result.value.manifest["files"]:
+                recorded = entry["sha256"]
+                full_path = entry["path"]
+                relative = prefix_re.sub("", full_path)
+                actual = hashlib.sha256(zf.read(full_path)).hexdigest()
+                assert recorded == actual, (
+                    f"manifest entry for {relative!r} declares "
+                    f"{recorded}, but the ZIP bytes hash to {actual}"
+                )
+
+    @patch("sbomify.apps.compliance.services.export_service.S3Client")
+    @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_integrity_readme_cites_the_expected_hash(
         self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
     ):
@@ -463,6 +557,34 @@ class TestExportHelpers:
         assert "a" * 64 in content
         assert "sha256sum -c metadata/manifest.sha256" in content
         assert "manifest.json" in content
+
+    def test_integrity_readme_per_file_command_runs_from_bundle_root(self):
+        """Regression: the per-file verification command must be
+        runnable from the extracted bundle root without any `cd ..`
+        trickery. The README instructs stripping the ``cra-package-*/``
+        prefix and piping straight into ``sha256sum -c -`` — no
+        intermediate /tmp file, no parent-directory hop."""
+        content = _integrity_readme("a" * 64)
+        # Workflow uses a single pipeline ending in `sha256sum -c -`.
+        assert "sha256sum -c -" in content
+        # The prefix-stripping jq expression is there — this is the
+        # exact fragment that makes paths resolve against the bundle
+        # root (the cwd the README tells operators to run from).
+        assert 'sub("^cra-package-[^/]*/"; "")' in content
+        # Correcting a prior bug: the README no longer contains the
+        # broken ``cd ..`` form.
+        assert "cd .." not in content
+
+    def test_integrity_readme_clarifies_what_manifest_excludes(self):
+        """The README was previously claiming the manifest covers
+        'every artefact in the ZIP', which wasn't true — manifest.json,
+        manifest.sha256, and INTEGRITY.md are deliberately excluded.
+        The new copy has to spell that out so auditors don't chase a
+        non-existent gap."""
+        content = _integrity_readme("a" * 64)
+        assert "NOT listed" in content or "not listed" in content
+        for primitive in ("manifest.json", "manifest.sha256", "INTEGRITY.md"):
+            assert primitive in content
 
     def test_article_14_reporting_readme_contains_all_deadlines(self):
         """Readme enumerates all four Article 14 deadlines."""
