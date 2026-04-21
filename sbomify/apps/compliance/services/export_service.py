@@ -17,6 +17,9 @@ from sbomify.apps.compliance.models import (
     CRAExportPackage,
     CRAGeneratedDocument,
 )
+from sbomify.apps.compliance.services._manufacturer_policy import (
+    is_placeholder_manufacturer as _is_placeholder_manufacturer,
+)
 from sbomify.apps.compliance.services.oscal_service import serialize_assessment_results
 from sbomify.apps.core.models import Component
 from sbomify.apps.core.object_store import S3Client
@@ -62,22 +65,6 @@ _DOC_CRA_REF: dict[str, str] = {
 _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
 
 
-# Placeholder names that have shown up in operator test data and should
-# be flagged in the bundle manifest rather than silently published as the
-# manufacturer identity. Shared with document_generation_service via
-# behavioural parity; kept as a small local list here to avoid creating a
-# cross-service utility for a six-line predicate.
-_PLACEHOLDER_MANUFACTURER_VALUES = frozenset(
-    {"", "abc", "xyz", "test", "example", "acme", "foo", "bar", "tbd", "todo", "n/a", "na", "none", "null"}
-)
-
-
-def _is_placeholder_manufacturer(name: str | None) -> bool:
-    if not name:
-        return True
-    return name.strip().lower() in _PLACEHOLDER_MANUFACTURER_VALUES
-
-
 def _integrity_readme(manifest_sha256: str) -> str:
     """Human-readable bundle verification guide embedded in the export.
 
@@ -89,6 +76,16 @@ def _integrity_readme(manifest_sha256: str) -> str:
     """
     return (
         "# Bundle Integrity\n\n"
+        "Manifest `format_version` **1.1** — changes vs 1.0 (shipped in\n"
+        "the initial CRA export scaffolding):\n\n"
+        "- `manufacturer.is_placeholder: bool` — flags when the team\n"
+        "  profile still carries a stub name. Downstream consumers can\n"
+        "  reject bundles where this is `true` to keep invalid DoCs\n"
+        "  from being signed (Annex V item 2).\n"
+        "- `integrity` block — self-describes the hash algorithm and\n"
+        "  the companion files (`metadata/manifest.sha256`,\n"
+        "  `metadata/INTEGRITY.md`). Old consumers that read\n"
+        "  `format_version: 1.0` should ignore unknown keys.\n\n"
         "This CRA export bundle ships with two integrity primitives:\n\n"
         "- `metadata/manifest.json` — per-file SHA-256 hashes for every "
         "artefact listed in its `files` array. `manifest.json`, "

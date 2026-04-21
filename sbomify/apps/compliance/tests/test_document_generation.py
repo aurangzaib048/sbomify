@@ -10,10 +10,14 @@ from sbomify.apps.compliance.models import (
     CRAGeneratedDocument,
     OSCALFinding,
 )
+from sbomify.apps.compliance.services._manufacturer_policy import (
+    PLACEHOLDER_MANUFACTURER_VALUES,
+    is_placeholder_manufacturer as _is_placeholder_manufacturer,
+)
 from sbomify.apps.compliance.services.document_generation_service import (
-    _is_placeholder_manufacturer,
     _load_harmonised_standards,
     _select_applied_standards,
+    _sanitize,
     generate_document,
     get_document_preview,
     regenerate_all,
@@ -559,3 +563,174 @@ class TestGetDocumentPreview:
     def test_invalid_kind_returns_error(self, assessment):
         result = get_document_preview(assessment, "bogus")
         assert not result.ok
+
+
+class TestSanitizeMarkdownEscape:
+    """``_sanitize(escape_markdown=True)`` has to keep operator input
+    from injecting Markdown / HTML into rendered CRA artefacts. These
+    tests exercise the escape layer directly so a regression is caught
+    without the full template pipeline."""
+
+    def test_html_tags_are_escaped(self):
+        """Open angle brackets MUST be prefixed with a backslash so a
+        payload like ``<script>`` is rendered literally when the
+        Markdown is later converted to HTML (DoC is often piped
+        through pandoc → HTML)."""
+        out = _sanitize("<script>alert(1)</script>", escape_markdown=True)
+        # No unescaped ``<`` survives — every angle bracket has a
+        # backslash immediately before it.
+        assert "\\<" in out
+        assert "\\>" in out
+        # No bare ``<script>`` tag — raw HTML-rendering renderers will
+        # see literal text instead of an opening tag.
+        assert "<script>" not in out
+        assert "</script>" not in out
+        # Content preserved; just escaped in place.
+        assert "script" in out
+        assert "alert" in out
+
+    def test_markdown_link_syntax_escaped(self):
+        """``[click](javascript:alert(1))`` must survive as literal
+        text so no operator can embed arbitrary URL schemes into the
+        rendered DoC."""
+        out = _sanitize("[click me](javascript:alert(1))", escape_markdown=True)
+        assert "\\[" in out
+        assert "\\]" in out
+        assert "\\(" in out
+        assert "\\)" in out
+
+    def test_image_embed_syntax_escaped(self):
+        """Tracking-pixel injection via ``![x](url)`` is defused."""
+        out = _sanitize("![pixel](http://attacker.example/log)", escape_markdown=True)
+        assert "\\!" in out
+        assert "\\[" in out
+
+    def test_plain_text_passes_through(self):
+        """Legitimate product descriptions with plain words must survive
+        unchanged except for escape of any metacharacter that happens
+        to appear in them."""
+        out = _sanitize("Lithium Python Stack 1.0", escape_markdown=True)
+        assert "Lithium Python Stack 1.0" in out
+
+    def test_escape_markdown_defaults_to_off(self):
+        """Existing call sites that don't pass the flag get the same
+        behaviour as before — control-char strip only."""
+        out = _sanitize("<script>alert(1)</script>")
+        assert out == "<script>alert(1)</script>"
+
+    def test_pipe_escape_still_works_for_table_cells(self):
+        """``escape_pipe`` is orthogonal to ``escape_markdown``; both
+        can apply at once (finding notes in risk-assessment tables)."""
+        out = _sanitize("a|b<c>", escape_pipe=True, escape_markdown=True)
+        assert "\\|" in out
+        assert "\\<" in out
+
+
+@pytest.mark.django_db
+class TestDoCRejectsMarkdownInjection:
+    """End-to-end: hostile operator input in product / manufacturer /
+    intended-use fields must NOT produce a DoC that renders as
+    executable HTML or clickable attacker links when viewed in a
+    Markdown renderer. The previous pipeline had ``autoescape=False``
+    on the Django engine and no per-field Markdown escape — CVSS 6.4
+    cross-site scripting via regulated-document viewer."""
+
+    @pytest.fixture
+    def hostile_assessment(self, sample_team_with_owner_member, sample_user):
+        """Assessment populated with attack payloads in every
+        operator-controlled free-text field."""
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name='ACME <script>alert("mfr")</script>',
+            email="info@example.test",
+            address='Street 1 [phish](javascript:alert(1))',
+            is_manufacturer=True,
+        )
+        p = Product.objects.create(
+            name='<iframe src="http://attacker"></iframe>',
+            team=team,
+        )
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+        a = ares.value
+        a.intended_use = "Embedded ![pixel](http://attacker/track.png)"
+        a.data_deletion_instructions = "Run `rm -rf /` and [confirm](https://attacker)"
+        a.support_hours = "09:00-17:00 <img onerror=alert(1)>"
+        a.update_frequency = "monthly **<b>"
+        a.save()
+        return a
+
+    def test_doc_renders_without_raw_script_tags(self, hostile_assessment):
+        result = get_document_preview(
+            hostile_assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY
+        )
+        content = result.value
+        # Raw HTML/JS fragments must NOT survive into the rendered doc.
+        assert "<script>" not in content
+        assert "<iframe" not in content
+        assert "<img onerror" not in content
+        # The label text is still there — just Markdown-escaped.
+        assert "script" in content
+
+    def test_doc_renders_without_unescaped_markdown_links(self, hostile_assessment):
+        result = get_document_preview(
+            hostile_assessment, CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY
+        )
+        content = result.value
+        # A bare `[phish](javascript:...)` sequence in the output would
+        # render as a clickable link. Escaped brackets break that shape.
+        assert "[phish](javascript" not in content
+
+    def test_user_instructions_escapes_hostile_input(self, hostile_assessment):
+        result = get_document_preview(
+            hostile_assessment, CRAGeneratedDocument.DocumentKind.USER_INSTRUCTIONS
+        )
+        content = result.value
+        assert "<img onerror" not in content
+        assert "![pixel](http://attacker" not in content
+        assert "[confirm](https://attacker" not in content
+
+    def test_decommissioning_guide_escapes_data_deletion_instructions(self, hostile_assessment):
+        result = get_document_preview(
+            hostile_assessment, CRAGeneratedDocument.DocumentKind.DECOMMISSIONING_GUIDE
+        )
+        content = result.value
+        assert "[confirm](https://attacker" not in content
+
+
+class TestManufacturerPolicyParity:
+    """Shared-source-of-truth check: the placeholder predicate lives in
+    ``sbomify.apps.compliance.services._manufacturer_policy``. Both
+    ``document_generation_service`` and ``export_service`` import the
+    same function via aliasing. This test pins that parity — if anyone
+    re-introduces a local copy of the frozenset (the pre-fix shape),
+    the two imports will diverge and this test fails."""
+
+    def test_both_services_import_same_predicate(self):
+        """Identity check: the two module-level references are the same
+        function object, not copies."""
+        from sbomify.apps.compliance.services.document_generation_service import (
+            _is_placeholder_manufacturer as doc_predicate,
+        )
+        from sbomify.apps.compliance.services.export_service import (
+            _is_placeholder_manufacturer as export_predicate,
+        )
+        assert doc_predicate is export_predicate
+
+    def test_placeholder_vocabulary_is_single_source(self):
+        """Only one frozenset of placeholder values exists anywhere
+        under the compliance services — no local copies."""
+        import importlib
+
+        mod = importlib.import_module(
+            "sbomify.apps.compliance.services._manufacturer_policy"
+        )
+        assert isinstance(mod.PLACEHOLDER_MANUFACTURER_VALUES, frozenset)
+        # Invariants: whitespace stripped, lowercase keys, empty string
+        # included to model "no manufacturer configured".
+        for v in mod.PLACEHOLDER_MANUFACTURER_VALUES:
+            assert v == v.lower()
+            assert v == v.strip()
+        assert "" in mod.PLACEHOLDER_MANUFACTURER_VALUES

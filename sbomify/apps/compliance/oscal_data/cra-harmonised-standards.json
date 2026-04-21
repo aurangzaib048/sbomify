@@ -1,6 +1,7 @@
 {
   "format_version": "1.0",
   "description": "Reference map of standards that contribute evidence for CRA (Regulation (EU) 2024/2847) compliance. The CRA's own harmonised standards are not yet published; the EN 18031 series (published in OJ L_202500138, 28 Jan 2025) currently carries the presumption of conformity for the Radio Equipment Directive and ENISA explicitly maps its requirements onto CRA Annex I Part I (2)(a)-(m). BSI TR-03183-2 is the de-facto reference for the CRA Annex I Part II(1) SBOM format requirement. CEN/CENELEC is drafting CRA-specific harmonised standards (ETSI EN 304 626 etc.) which will be added here as they are published.",
+  "applies_when_status": "reserved — see https://github.com/sbomify/sbomify/issues/905. The `applies_when` rule trees on non-`always_applicable` standards document the selection logic that will be wired into `document_generation_service._select_applied_standards` once the CRA wizard gains a product-classification flag. Today the predicate only honours `always_applicable`; consumers MUST NOT rely on `applies_when` being evaluated.",
   "last_reviewed": "2026-04-21",
   "sources": [
     {

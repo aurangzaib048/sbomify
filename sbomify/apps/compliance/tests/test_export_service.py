@@ -7,13 +7,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sbomify.apps.compliance.models import CRAExportPackage
+from sbomify.apps.compliance.services._manufacturer_policy import (
+    is_placeholder_manufacturer as _is_placeholder_manufacturer,
+)
 from sbomify.apps.compliance.services.document_generation_service import regenerate_all
 from sbomify.apps.compliance.services.export_service import (
     _article_14_reporting_readme,
     _get_generated_doc_content,
     _get_sbom_content,
     _integrity_readme,
-    _is_placeholder_manufacturer,
     build_export_package,
     get_download_url,
 )
@@ -54,10 +56,48 @@ def assessment(sample_team_with_owner_member, sample_user, product):
 
 @pytest.fixture
 def assessment_with_docs(assessment):
-    """Assessment with all documents generated."""
+    """Assessment with all documents generated.
+
+    Function-scoped because ``assessment`` itself is function-scoped
+    (the CRA wizard creates a fresh OSCALAssessmentResult + 21
+    findings per test). Upgrading to class/module scope would require
+    re-working the wizard fixture to cache the OSCAL rows — tracked as
+    a follow-up. Today's overhead is ~9 mocked S3 writes per test
+    that uses this fixture; with ``S3Client`` patched at the import
+    site, each ``generate_document`` short-circuits at the upload and
+    the total cost is bounded to ORM work."""
     with patch("sbomify.apps.core.object_store.S3Client"):
         regenerate_all(assessment)
     return assessment
+
+
+@pytest.fixture
+def capturing_s3(request):
+    """Zero-boilerplate S3 stub that captures bytes uploaded by
+    ``build_export_package``.
+
+    Replaces the 4× inlined ``class _Capture`` dance that preceded
+    it — yields ``(captured, s3_cls_mock)`` where ``captured["bytes"]``
+    holds the last ZIP uploaded and ``s3_cls_mock`` is the patched
+    ``S3Client`` class (so tests that also need to mock doc fetches
+    can patch on top). Request-scoped to the test, so every use gets
+    a fresh captured dict.
+    """
+    captured: dict[str, bytes] = {}
+
+    class _Capture:
+        def upload_data_as_file(self, bucket, key, data):
+            captured["bytes"] = data
+
+        def get_file_data(self, bucket, key):
+            return b""
+
+        def get_sbom_data(self, filename):
+            return b""
+
+    with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+        mock_s3_cls.return_value = _Capture()
+        yield captured, mock_s3_cls
 
 
 @pytest.mark.django_db
@@ -103,9 +143,17 @@ class TestBuildExportPackage:
 
         result = build_export_package(assessment_with_docs, sample_user)
 
+        # Assert every entry carries a *valid* 64-char lowercase hex
+        # digest, not just a 64-char string. A previous weaker form
+        # (``len(...) == 64``) would have passed for "a" * 64.
+        import re as _re
+
+        _hex64 = _re.compile(r"^[0-9a-f]{64}$")
         for file_entry in result.value.manifest["files"]:
             assert "sha256" in file_entry
-            assert len(file_entry["sha256"]) == 64
+            assert _hex64.match(file_entry["sha256"]), (
+                f"sha256 field is not 64-char lowercase hex: {file_entry['sha256']!r}"
+            )
 
     @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
@@ -172,32 +220,18 @@ class TestBuildExportPackage:
         assert integrity["manifest_hash_file"] == "metadata/manifest.sha256"
         assert integrity["verification_doc"] == "metadata/INTEGRITY.md"
 
-    @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_bundle_contains_manifest_self_hash_and_integrity_doc(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
     ):
         """ZIP must physically carry ``manifest.sha256`` and
-        ``INTEGRITY.md`` — verified by extracting the uploaded bytes.
-        The S3 upload is mocked so we introspect the call payload."""
+        ``INTEGRITY.md`` — verified by extracting the uploaded bytes."""
+        import hashlib
         import io
         import zipfile
 
+        captured, _ = capturing_s3
         mock_get_content.return_value = b"mock content"
-
-        captured: dict[str, bytes] = {}
-
-        class _Capture:
-            def upload_data_as_file(self, bucket, key, data):
-                captured["bytes"] = data
-
-            def get_file_data(self, bucket, key):  # pragma: no cover - unused path
-                return b""
-
-            def get_sbom_data(self, filename):  # pragma: no cover - unused path
-                return b""
-
-        mock_s3_cls.return_value = _Capture()
 
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.ok
@@ -207,10 +241,8 @@ class TestBuildExportPackage:
             names = zf.namelist()
             assert any(n.endswith("metadata/manifest.sha256") for n in names)
             assert any(n.endswith("metadata/INTEGRITY.md") for n in names)
-            # Self-hash must match the in-ZIP manifest exactly.
             manifest_name = next(n for n in names if n.endswith("metadata/manifest.json"))
             sha_name = next(n for n in names if n.endswith("metadata/manifest.sha256"))
-            import hashlib
 
             expected = hashlib.sha256(zf.read(manifest_name)).hexdigest()
             assert expected in zf.read(sha_name).decode("utf-8")
@@ -251,36 +283,18 @@ class TestBuildExportPackage:
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.value.manifest["format_version"] == "1.1"
 
-    @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_manifest_sha256_round_trips_through_shasum(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
     ):
         """Regression: ``sha256sum -c metadata/manifest.sha256`` run from
-        the extracted bundle root MUST verify ``metadata/manifest.json``.
-        Previously the checksum file declared the filename as plain
-        ``manifest.json`` which only worked when invoked from inside the
-        metadata/ directory — not from the bundle root that INTEGRITY.md
-        documents. This test extracts the real ZIP and re-hashes the
-        manifest, asserting the declared path is correct."""
+        the extracted bundle root MUST verify ``metadata/manifest.json``."""
         import hashlib
         import io
         import zipfile
 
+        captured, _ = capturing_s3
         mock_get_content.return_value = b"mock content"
-        captured: dict[str, bytes] = {}
-
-        class _Capture:
-            def upload_data_as_file(self, bucket, key, data):
-                captured["bytes"] = data
-
-            def get_file_data(self, bucket, key):  # pragma: no cover
-                return b""
-
-            def get_sbom_data(self, filename):  # pragma: no cover
-                return b""
-
-        mock_s3_cls.return_value = _Capture()
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.ok
 
@@ -301,10 +315,9 @@ class TestBuildExportPackage:
             # command when invoked from the bundle root.
             assert recorded_path == "metadata/manifest.json"
 
-    @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_per_file_manifest_entries_verify_against_actual_zip_contents(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
     ):
         """Regression for the INTEGRITY.md ``jq … | sha256sum -c -``
         workflow: after stripping the ``cra-package-<slug>/`` prefix,
@@ -316,20 +329,8 @@ class TestBuildExportPackage:
         import re
         import zipfile
 
+        captured, _ = capturing_s3
         mock_get_content.return_value = b"mock payload"
-        captured: dict[str, bytes] = {}
-
-        class _Capture:
-            def upload_data_as_file(self, bucket, key, data):
-                captured["bytes"] = data
-
-            def get_file_data(self, bucket, key):  # pragma: no cover
-                return b""
-
-            def get_sbom_data(self, filename):  # pragma: no cover
-                return b""
-
-        mock_s3_cls.return_value = _Capture()
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.ok
 
@@ -345,10 +346,9 @@ class TestBuildExportPackage:
                     f"{recorded}, but the ZIP bytes hash to {actual}"
                 )
 
-    @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_integrity_readme_cites_the_expected_hash(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
     ):
         """INTEGRITY.md cites the manifest SHA-256 verbatim, so a
         diligent auditor can cross-check the value declared in the
@@ -356,21 +356,8 @@ class TestBuildExportPackage:
         import io
         import zipfile
 
+        captured, _ = capturing_s3
         mock_get_content.return_value = b"mock content"
-
-        captured: dict[str, bytes] = {}
-
-        class _Capture:
-            def upload_data_as_file(self, bucket, key, data):
-                captured["bytes"] = data
-
-            def get_file_data(self, bucket, key):  # pragma: no cover
-                return b""
-
-            def get_sbom_data(self, filename):  # pragma: no cover
-                return b""
-
-        mock_s3_cls.return_value = _Capture()
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.ok
 
@@ -383,31 +370,17 @@ class TestBuildExportPackage:
             assert "sha256sum -c metadata/manifest.sha256" in readme
             assert "cosign" in readme  # signing guidance reference
 
-    @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_article_14_readme_cites_deadline_and_srp_url(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
+        self, mock_get_content, assessment_with_docs, sample_user, capturing_s3
     ):
         """Readme carries the 2026-09-11 deadline + the EC reporting
         portal URL verbatim so operators can't miss either."""
         import io
         import zipfile
 
+        captured, _ = capturing_s3
         mock_get_content.return_value = b"mock content"
-
-        captured: dict[str, bytes] = {}
-
-        class _Capture:
-            def upload_data_as_file(self, bucket, key, data):
-                captured["bytes"] = data
-
-            def get_file_data(self, bucket, key):  # pragma: no cover
-                return b""
-
-            def get_sbom_data(self, filename):  # pragma: no cover
-                return b""
-
-        mock_s3_cls.return_value = _Capture()
         result = build_export_package(assessment_with_docs, sample_user)
         assert result.ok
 
