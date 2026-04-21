@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
-import json
 import logging
 from datetime import date
 from pathlib import Path
@@ -20,6 +18,9 @@ from sbomify.apps.compliance.models import (
 from sbomify.apps.compliance.services._manufacturer_policy import (
     is_placeholder_manufacturer as _is_placeholder_manufacturer,
 )
+from sbomify.apps.compliance.services._reference_data import (
+    load_harmonised_standards as _load_harmonised_standards,
+)
 from sbomify.apps.core.services.results import ServiceResult
 from sbomify.apps.teams.models import ContactEntity, ContactProfileContact
 
@@ -29,14 +30,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "document_templates"
-_HARMONISED_STANDARDS_PATH = Path(__file__).resolve().parent.parent / "oscal_data" / "cra-harmonised-standards.json"
-
-
-@functools.cache
-def _load_harmonised_standards() -> dict[str, Any]:
-    """Load and cache the CRA harmonised-standards reference JSON."""
-    data: dict[str, Any] = json.loads(_HARMONISED_STANDARDS_PATH.read_text(encoding="utf-8"))
-    return data
 
 
 def _select_applied_standards(assessment: CRAAssessment) -> list[dict[str, Any]]:

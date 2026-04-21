@@ -136,15 +136,22 @@
                                 </template>
                             </div>
                             <div class="p-6 space-y-4">
-                                {# Integrity block #}
+                                {# Integrity block.
+                                   ``lastExport.content_hash`` is the SHA-256 of the ZIP bytes
+                                   (see export_service.build_export_package → hashlib.sha256(zip_bytes)),
+                                   NOT the hash of metadata/manifest.json. The manifest's own
+                                   self-hash lives in the bundle at metadata/manifest.sha256 and
+                                   is verified by the sha256sum command shown. Label each hash
+                                   for what it actually is so auditors don't compare apples to
+                                   oranges. #}
                                 <template x-if="lastExport.integrity">
                                     <div class="text-xs text-text-muted space-y-1">
                                         <p class="m-0">
                                             <i class="fas fa-shield-halved text-text-muted mr-1"></i>
-                                            Verify from the extracted bundle root:
+                                            Verify the manifest from the extracted bundle root:
                                         </p>
                                         <pre class="bg-surface-hover text-text rounded p-2 overflow-x-auto text-xs m-0"><code>sha256sum -c metadata/manifest.sha256</code></pre>
-                                        <p class="m-0 mt-1">Manifest SHA-256:</p>
+                                        <p class="m-0 mt-1">Bundle SHA-256 (ZIP bytes stored in sbomify):</p>
                                         <code class="font-mono text-xs break-all"
                                               data-testid="bundle-content-hash"
                                               x-text="lastExport.content_hash"></code>

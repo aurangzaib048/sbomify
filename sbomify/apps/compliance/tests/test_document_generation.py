@@ -11,7 +11,6 @@ from sbomify.apps.compliance.models import (
     OSCALFinding,
 )
 from sbomify.apps.compliance.services._manufacturer_policy import (
-    PLACEHOLDER_MANUFACTURER_VALUES,
     is_placeholder_manufacturer as _is_placeholder_manufacturer,
 )
 from sbomify.apps.compliance.services.document_generation_service import (
@@ -446,6 +445,54 @@ class TestLoadHarmonisedStandards:
         always = {s["id"] for s in data["standards"] if s.get("always_applicable")}
         assert "cra" in always
         assert "bsi-tr-03183-2" in always
+
+
+class TestHarmonisedStandardsFallback:
+    """Loader must degrade gracefully when the shipped JSON is missing
+    or corrupt — the DoC still renders a valid Annex V §6 section from
+    the minimal built-in fallback."""
+
+    def test_missing_file_returns_minimal_fallback(self, tmp_path):
+        """OSError path: shipped file is gone. Fallback must include
+        the CRA regulation and BSI TR-03183-2 so the DoC's
+        ``applied_standards`` isn't empty."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        _reference_data.load_harmonised_standards.cache_clear()
+        missing = tmp_path / "does-not-exist.json"
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", missing):
+            data = _reference_data.load_harmonised_standards()
+            _reference_data.load_harmonised_standards.cache_clear()
+
+        assert data.get("_is_fallback") is True
+        ids = {s["id"] for s in data["standards"]}
+        assert {"cra", "bsi-tr-03183-2"}.issubset(ids)
+
+    def test_invalid_json_returns_minimal_fallback(self, tmp_path):
+        """JSONDecodeError path: file is present but corrupt. Same
+        fallback so a corrupted deploy doesn't brick DoC generation."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        _reference_data.load_harmonised_standards.cache_clear()
+        broken = tmp_path / "cra-harmonised-standards.json"
+        broken.write_text("{ this is not JSON", encoding="utf-8")
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", broken):
+            data = _reference_data.load_harmonised_standards()
+            _reference_data.load_harmonised_standards.cache_clear()
+
+        assert data.get("_is_fallback") is True
+        assert len(data["standards"]) >= 2
+
+    def test_read_bytes_returns_none_on_missing_file(self, tmp_path):
+        """The export service's ``read_harmonised_standards_bytes``
+        shortcut returns None (not bytes) when the file is gone, so
+        the caller can skip the embedded copy rather than writing a
+        fallback blob."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        missing = tmp_path / "does-not-exist.json"
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", missing):
+            assert _reference_data.read_harmonised_standards_bytes() is None
 
 
 @pytest.mark.django_db

@@ -72,7 +72,7 @@ def assessment_with_docs(assessment):
 
 
 @pytest.fixture
-def capturing_s3(request):
+def capturing_s3():
     """Zero-boilerplate S3 stub that captures bytes uploaded by
     ``build_export_package``.
 
@@ -250,16 +250,21 @@ class TestBuildExportPackage:
     @patch("sbomify.apps.compliance.services.export_service.S3Client")
     @patch("sbomify.apps.compliance.services.export_service._get_generated_doc_content")
     def test_bundle_survives_missing_harmonised_standards_file(
-        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user, tmp_path
+        self, mock_get_content, mock_s3_cls, assessment_with_docs, sample_user
     ):
         """If the bundled reference JSON somehow vanishes at runtime
         (broken install, packaging bug) the export must still produce
-        a valid bundle — the file is logged and skipped, not fatal."""
+        a valid bundle — the reader returns None, we log, and the
+        embedded reference copy is simply omitted from the ZIP."""
         mock_get_content.return_value = b"mock content"
 
+        # Patch the shared reader used by export_service to simulate
+        # a missing / unreadable shipped JSON. The path itself moved
+        # into ``services._reference_data`` in the centralisation pass,
+        # so this is the correct seam for the "missing file" scenario.
         with patch(
-            "sbomify.apps.compliance.services.export_service._HARMONISED_STANDARDS_PATH",
-            tmp_path / "does-not-exist.json",
+            "sbomify.apps.compliance.services.export_service.read_harmonised_standards_bytes",
+            return_value=None,
         ):
             result = build_export_package(assessment_with_docs, sample_user)
 

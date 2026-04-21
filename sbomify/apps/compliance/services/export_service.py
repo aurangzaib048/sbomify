@@ -7,7 +7,6 @@ import json
 import logging
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.conf import settings as django_settings
@@ -19,6 +18,9 @@ from sbomify.apps.compliance.models import (
 )
 from sbomify.apps.compliance.services._manufacturer_policy import (
     is_placeholder_manufacturer as _is_placeholder_manufacturer,
+)
+from sbomify.apps.compliance.services._reference_data import (
+    read_harmonised_standards_bytes,
 )
 from sbomify.apps.compliance.services.oscal_service import serialize_assessment_results
 from sbomify.apps.core.models import Component
@@ -32,8 +34,6 @@ if TYPE_CHECKING:
     from sbomify.apps.core.models import User
 
 logger = logging.getLogger(__name__)
-
-_HARMONISED_STANDARDS_PATH = Path(__file__).resolve().parent.parent / "oscal_data" / "cra-harmonised-standards.json"
 
 # Map document kinds to their paths inside the ZIP
 _DOC_PATH_MAP: dict[str, str] = {
@@ -101,7 +101,7 @@ def _integrity_readme(manifest_sha256: str) -> str:
         "sha256sum -c metadata/manifest.sha256\n"
         "```\n\n"
         "Expected output: `metadata/manifest.json: OK`.\n\n"
-        f"Expected digest (from `manifest.sha256`): `{manifest_sha256}`\n\n"
+        f"Expected digest (from `metadata/manifest.sha256`): `{manifest_sha256}`\n\n"
         "## 2. Verifying every individual artefact\n\n"
         "Again from the extracted bundle root:\n\n"
         "```sh\n"
@@ -264,9 +264,12 @@ def build_export_package(
 
         # 5. Harmonised-standards reference copy — so the bundle is
         # self-contained and auditors / notified bodies don't have to
-        # chase the source JSON inside the sbomify codebase.
-        try:
-            standards_bytes = _HARMONISED_STANDARDS_PATH.read_bytes()
+        # chase the source JSON inside the sbomify codebase. The helper
+        # returns ``None`` (already logged) on missing / unreadable
+        # file; we simply skip the embedded copy in that case — the
+        # rest of the export continues.
+        standards_bytes = read_harmonised_standards_bytes()
+        if standards_bytes is not None:
             _write_to_zip(
                 zf,
                 f"{prefix}/metadata/harmonised-standards.json",
@@ -274,11 +277,6 @@ def build_export_package(
                 manifest_files,
                 "CRA standards reference",
             )
-        except OSError:
-            # Reference data is shipped with the app so an OSError here
-            # is an install-time bug, not a runtime one. Log and carry on
-            # rather than failing the whole export.
-            logger.exception("harmonised-standards.json missing from installed app")
 
         # 6. Article 14 reporting README — documents the 2026-09-11
         # reporting deadline, the ENISA Single Reporting Platform, and
