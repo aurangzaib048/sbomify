@@ -34,40 +34,38 @@
                 </div>
             </div>
             {# Manufacturer — Annex V item 2 guard #}
-            <div class="tw-card"
-                 :class="manufacturerIsPlaceholder ? 'border-red-400 bg-red-50/40 dark:bg-red-900/10' : ''">
+            <div class="tw-card">
                 <div class="px-6 py-4 border-b border-border flex items-center justify-between">
                     <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
-                        <i class="fas fa-building text-primary"></i>
+                        <i class="fas fa-industry text-primary"></i>
                         Manufacturer
                         <span x-show="manufacturerIsPlaceholder"
                               class="tw-badge-danger text-xs ml-2"
                               data-testid="mfr-placeholder-badge">Not configured</span>
                     </h2>
-                    <a href="/workspace/settings/contacts/"
+                    <a href="{% url 'teams:contact_profiles_list' team_key=team.key %}"
                        class="text-sm text-primary hover:underline"
                        data-testid="mfr-settings-link">
-                        <i class="fas fa-arrow-up-right-from-square mr-1"></i>
+                        <i class="fas fa-up-right-from-square mr-1"></i>
                         Edit in team settings
                     </a>
                 </div>
-                <div class="p-6">
-                    {# Placeholder banner — Annex V item 2 requires the manufacturer's legal name #}
+                <div class="p-6 space-y-4">
+                    {# Placeholder banner — Annex V item 2; uses the shared tw-alert-danger component. #}
                     <div x-show="manufacturerIsPlaceholder"
                          data-testid="mfr-placeholder-banner"
-                         class="mb-4 p-4 rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 text-sm text-red-900 dark:text-red-200">
-                        <div class="flex items-start gap-3">
-                            <i class="fas fa-triangle-exclamation text-red-600 mt-0.5"></i>
-                            <div class="space-y-1">
-                                <p class="font-semibold m-0">Annex V item 2 requires a legal manufacturer name on the Declaration of Conformity.</p>
-                                <p class="m-0">
-                                    The current value looks like a placeholder — the DoC will render
-                                    <code class="text-xs">[Manufacturer Name — not configured]</code>
-                                    and the bundle manifest will carry
-                                    <code class="text-xs">is_placeholder: true</code>.
-                                    Configure a real manufacturer entity in team settings before exporting.
-                                </p>
-                            </div>
+                         role="alert"
+                         class="tw-alert tw-alert-danger">
+                        <i class="fas fa-triangle-exclamation tw-alert-icon"></i>
+                        <div class="tw-alert-content">
+                            <p class="tw-alert-title">Annex V item 2 requires a legal manufacturer name</p>
+                            <p class="opacity-80">
+                                The current value looks like a placeholder — the DoC will render
+                                <code class="text-xs">[Manufacturer Name — not configured]</code>
+                                and the bundle manifest will carry
+                                <code class="text-xs">is_placeholder: true</code>.
+                                Configure a real manufacturer entity in team settings before exporting.
+                            </p>
                         </div>
                     </div>
                     <div x-show="manufacturer" class="grid grid-cols-1 sm:grid-cols-2 gap-6">
