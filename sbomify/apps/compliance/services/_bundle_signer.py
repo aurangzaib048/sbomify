@@ -112,10 +112,10 @@ def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings")
        token from a different issuer (same email, wrong IdP) is
        rejected.
 
-    4. Sign via ``SigningContext.production()`` which uses
-       Sigstore's public Fulcio + Rekor instances. The Bundle
-       returned by ``Signer.sign_artifact`` already contains the
-       log-entry inclusion proof — we capture ``log_index`` for
+    4. Sign via ``SigningContext.from_trust_config(ClientTrustConfig.production())``
+       which uses Sigstore's public Fulcio + Rekor instances. The
+       Bundle returned by ``Signer.sign_artifact`` already contains
+       the log-entry inclusion proof — we capture ``log_index`` for
        persistence on :class:`CRAExportPackage`.
 
     Every rejection path returns ``None``; the outer ``sign_bundle``
@@ -126,6 +126,12 @@ def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings")
     verifier can confirm the signature without sbomify-specific
     knowledge.
     """
+    # sigstore 4.2 API: SigningContext is constructed from a
+    # ClientTrustConfig, not via a .production() classmethod. That
+    # method DOES exist on ClientTrustConfig (and on Verifier) but
+    # not on SigningContext — the asymmetry is easy to miss because
+    # MagicMock would autocreate it silently in tests.
+    from sigstore.models import ClientTrustConfig  # type: ignore[import-not-found,unused-ignore]
     from sigstore.oidc import detect_credential  # type: ignore[import-not-found,unused-ignore]
     from sigstore.sign import SigningContext  # type: ignore[import-not-found,unused-ignore]
 
@@ -162,13 +168,14 @@ def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings")
         )
         return None
 
-    ctx = SigningContext.production()  # type: ignore[attr-defined,unused-ignore]
-    with ctx.signer(token) as signer:  # type: ignore[attr-defined,unused-ignore]
+    trust_config = ClientTrustConfig.production()
+    ctx = SigningContext.from_trust_config(trust_config)
+    with ctx.signer(token) as signer:  # type: ignore[arg-type,unused-ignore]
         bundle = signer.sign_artifact(zip_bytes)
 
     return SigningOutcome(
         bundle_bytes=bundle.to_json().encode("utf-8"),
-        rekor_log_index=int(bundle.log_entry.log_index),
+        rekor_log_index=int(bundle.log_entry.log_index),  # type: ignore[attr-defined,unused-ignore]
         signed_by=token_identity,
         signed_issuer=token_issuer,
     )

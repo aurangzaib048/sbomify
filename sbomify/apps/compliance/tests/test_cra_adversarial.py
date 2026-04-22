@@ -856,14 +856,20 @@ class TestSignatureReadmeSectionAllowlist:
 
 
 @pytest.mark.django_db
-class TestBuildExportPackageRealSignerNoSigstore:
-    """End-to-end sanity: team opts into sigstore_keyless, sigstore
-    library is absent in the environment (default in tests). The
-    signer logs a warning and returns None; the export ships
+class TestBuildExportPackageRealSignerNoAmbientIdentity:
+    """End-to-end: team opts into sigstore_keyless, but no ambient
+    OIDC identity is available (no SIGSTORE_ID_TOKEN env var, no CI
+    workload identity). The signer returns None via the
+    ``detect_credential() is None`` short-circuit; the export ships
     unsigned and the download endpoint correctly omits the
-    signature URL."""
+    signature URL.
 
-    def test_sigstore_library_absent_ships_unsigned(
+    ``sigstore>=4.2`` IS a required project dependency — we don't
+    test the "library absent" path because it can't happen in
+    production. We test the realistic "no ambient token" path
+    instead."""
+
+    def test_no_ambient_identity_ships_unsigned(
         self, sample_team_with_owner_member, sample_user
     ):
         team = sample_team_with_owner_member.team
@@ -874,22 +880,22 @@ class TestBuildExportPackageRealSignerNoSigstore:
             email="legal@acme.example",
             is_manufacturer=True,
         )
-        p = Product.objects.create(name="Sigstoreless", team=team)
+        p = Product.objects.create(name="No OIDC", team=team)
         ares = get_or_create_assessment(p.id, sample_user, team)
         assert ares.ok
         a = ares.value
         TeamComplianceSettings.objects.create(
             team=team, signing_enabled=True, signing_provider="sigstore_keyless"
         )
-        # Generate docs first so the bundle has something to ship.
         from sbomify.apps.compliance.services.document_generation_service import regenerate_all
 
         with patch("sbomify.apps.core.object_store.S3Client"):
             regenerate_all(a)
 
-        # DO NOT mock _sign_sigstore_keyless — let the real dispatch
-        # run. It will try to `import sigstore.sign`, fail (library
-        # absent in test env), log, and return None.
+        # Patch detect_credential to return None — no ambient OIDC
+        # token available. Real dispatch runs all the way through
+        # the ``if token is None`` short-circuit and returns None
+        # before touching ClientTrustConfig / SigningContext.
         captured: list[tuple[str, bytes]] = []
 
         class _Capture:
@@ -902,13 +908,14 @@ class TestBuildExportPackageRealSignerNoSigstore:
             def get_sbom_data(self, filename):
                 return b""
 
-        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
-            mock_s3_cls.return_value = _Capture()
-            result = build_export_package(a, sample_user)
+        with patch("sigstore.oidc.detect_credential", return_value=None):
+            with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+                mock_s3_cls.return_value = _Capture()
+                result = build_export_package(a, sample_user)
 
         assert result.ok
-        # No .sig side-car — the real signer returned None because
-        # sigstore isn't installed in the test env.
+        # No .sig side-car — the signer returned None at the
+        # ``detect_credential() is None`` short-circuit.
         assert not any(key.endswith(".sig") for key, _ in captured)
         assert result.value.signature_storage_key == ""
         assert result.value.is_signed is False
@@ -956,9 +963,12 @@ class TestSigstoreOidcAdversarial:
             detect.return_value = self._mock_token(
                 "ci@acme.example", "https://token.actions.githubusercontent.com"
             )
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 assert _sign_sigstore_keyless(b"zip", s) is None
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     def test_identity_comparison_rejects_prefix_match(self, sample_team_with_owner_member):
         """Configured: ``ci@acme.example``. Ambient:
@@ -974,9 +984,12 @@ class TestSigstoreOidcAdversarial:
             detect.return_value = self._mock_token(
                 "ci@acme.example.attacker.test", "https://issuer"
             )
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 assert _sign_sigstore_keyless(b"zip", s) is None
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     def test_issuer_trailing_slash_is_literal_mismatch(self, sample_team_with_owner_member):
         """Configured issuer ``https://token.actions.githubusercontent.com``
@@ -996,9 +1009,12 @@ class TestSigstoreOidcAdversarial:
             detect.return_value = self._mock_token(
                 "ci@example.test", "https://token.actions.githubusercontent.com/"
             )
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 assert _sign_sigstore_keyless(b"zip", s) is None
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     def test_whitespace_padded_identity_is_mismatch(self, sample_team_with_owner_member):
         """Configured ``ci@acme.example``; ambient ``" ci@acme.example "``.
@@ -1012,9 +1028,12 @@ class TestSigstoreOidcAdversarial:
 
         with patch("sigstore.oidc.detect_credential") as detect:
             detect.return_value = self._mock_token(" ci@acme.example ", "https://any")
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 assert _sign_sigstore_keyless(b"zip", s) is None
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     def test_unicode_identity_matches_exactly(self, sample_team_with_owner_member):
         """Operators with non-ASCII identities (``ci@bücher.example``,
@@ -1032,15 +1051,18 @@ class TestSigstoreOidcAdversarial:
         token = self._mock_token("ci@bücher.example", "https://iß.example")
         mock_bundle = MagicMock()
         mock_bundle.to_json.return_value = '{"ok":1}'
-        mock_bundle.log_entry.log_index = 7
+        mock_bundle.log_entry.log_index = "7"  # sigstore returns str
         mock_signer = MagicMock()
         mock_signer.sign_artifact.return_value = mock_bundle
         mock_ctx = MagicMock()
         mock_ctx.signer.return_value.__enter__.return_value = mock_signer
 
         with patch("sigstore.oidc.detect_credential", return_value=token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.return_value = mock_ctx
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                trust_cls.production.return_value = MagicMock(name="trust-config")
+                ctx_cls.from_trust_config.return_value = mock_ctx
                 outcome = _sign_sigstore_keyless(b"zip", s)
 
         assert outcome is not None
@@ -1078,8 +1100,11 @@ class TestSigstoreOidcAdversarial:
         mock_ctx.signer.return_value.__enter__.return_value = mock_signer
 
         with patch("sigstore.oidc.detect_credential", return_value=token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.return_value = mock_ctx
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                trust_cls.production.return_value = MagicMock(name="trust-config")
+                ctx_cls.from_trust_config.return_value = mock_ctx
                 outcome = _sign_sigstore_keyless(b"zip", s)
 
         assert outcome is not None
@@ -1114,8 +1139,11 @@ class TestSigstoreOidcAdversarial:
         mock_ctx.signer.return_value.__enter__.return_value = mock_signer
 
         with patch("sigstore.oidc.detect_credential", return_value=token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.return_value = mock_ctx
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                trust_cls.production.return_value = MagicMock(name="trust-config")
+                ctx_cls.from_trust_config.return_value = mock_ctx
                 outcome = _sign_sigstore_keyless(b"zip", s)
 
         # In-memory ``s`` still has the original identity, so the

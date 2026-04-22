@@ -21,7 +21,8 @@ infrastructure.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +32,56 @@ from sbomify.apps.compliance.services._bundle_signer import (
     SigningOutcome,
     sign_bundle,
 )
+
+
+def _mock_identity_token(identity: str, issuer: str):
+    """Build a minimal OIDC token with the two claim-like attributes
+    the signer reads. Real ``sigstore.oidc.IdentityToken`` also has
+    ``.federated_issuer`` + ``.in_validity_period`` but the signing
+    code doesn't touch them, so duck-typing is sufficient and the
+    test stays robust to sigstore minor bumps."""
+    return type("MockIdentityToken", (), {"identity": identity, "issuer": issuer})()
+
+
+@contextmanager
+def _mock_sigstore_signer(*, bundle_json: str, log_index):
+    """Set up the sigstore 4.2 signing chain end-to-end:
+
+    ``ClientTrustConfig.production()`` → trust_config
+    → ``SigningContext.from_trust_config(trust_config)`` → ctx
+    → ``ctx.signer(token)`` → signer (context manager)
+    → ``signer.sign_artifact(bytes)`` → bundle
+    → ``bundle.log_entry.log_index`` = log_index (str in real API)
+    → ``bundle.to_json()`` = bundle_json
+
+    Yields a dict of the mock objects so tests can make call-args
+    assertions on the chain.
+    """
+    mock_bundle = MagicMock()
+    mock_bundle.to_json.return_value = bundle_json
+    mock_bundle.log_entry.log_index = log_index
+
+    mock_signer = MagicMock()
+    mock_signer.sign_artifact.return_value = mock_bundle
+
+    mock_ctx = MagicMock()
+    mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+
+    mock_trust_config = MagicMock(name="ClientTrustConfig.production()")
+
+    with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+        "sigstore.sign.SigningContext"
+    ) as ctx_cls:
+        trust_cls.production.return_value = mock_trust_config
+        ctx_cls.from_trust_config.return_value = mock_ctx
+        yield {
+            "trust_cls": trust_cls,
+            "trust_config": mock_trust_config,
+            "ctx_cls": ctx_cls,
+            "ctx": mock_ctx,
+            "signer": mock_signer,
+            "bundle": mock_bundle,
+        }
 
 
 def _mock_outcome(
@@ -166,18 +217,18 @@ class TestSigstoreKeylessSigner:
             signing_provider="sigstore_keyless",
             signing_identity="ci@acme.example",
         )
-        mock_token = type(
-            "MockToken",
-            (),
-            {"identity": "root@deploy-vm", "issuer": "https://accounts.google.com"},
-        )()
+        mock_token = _mock_identity_token("root@deploy-vm", "https://accounts.google.com")
         with patch("sigstore.oidc.detect_credential", return_value=mock_token):
-            # Even if SigningContext were called, it would blow up —
-            # patch it too so a rejection regression surfaces as a
-            # crash in the test, not silently producing a signature.
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            # Patch both classes in the sigstore 4.2 signing flow —
+            # ``ClientTrustConfig.production()`` provides the trust
+            # root, ``SigningContext.from_trust_config(config)``
+            # builds the context. Rejection must never reach either.
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 result = _sign_sigstore_keyless(b"zip-bytes", settings)
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
         assert result is None
 
@@ -194,28 +245,27 @@ class TestSigstoreKeylessSigner:
             signing_provider="sigstore_keyless",
             signing_issuer="https://token.actions.githubusercontent.com",
         )
-        mock_token = type(
-            "MockToken",
-            (),
-            {"identity": "ci@acme.example", "issuer": "https://accounts.google.com"},
-        )()
+        mock_token = _mock_identity_token("ci@acme.example", "https://accounts.google.com")
         with patch("sigstore.oidc.detect_credential", return_value=mock_token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
                 result = _sign_sigstore_keyless(b"zip-bytes", settings)
-                ctx_cls.production.assert_not_called()
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
         assert result is None
 
     def test_happy_path_resolves_identity_and_captures_rekor(
         self, sample_team_with_owner_member
     ):
-        """Full end-to-end with the sigstore API mocked: ambient
-        token resolves, identity + issuer match, sign_artifact
-        returns a Bundle-shaped mock with ``log_entry.log_index``,
-        and the signer produces a SigningOutcome with every field
-        populated from the resolved state."""
-        from unittest.mock import MagicMock
-
+        """Full end-to-end with the sigstore 4.2 API mocked at the
+        real call points: ``ClientTrustConfig.production()`` +
+        ``SigningContext.from_trust_config(config)`` +
+        ``ctx.signer(token)`` + ``signer.sign_artifact(bytes)`` +
+        ``bundle.log_entry.log_index``. Real ``log_index`` is a
+        str in sigstore models, so we mock with ``"42"`` to exercise
+        the ``int(...)`` coercion in the signer."""
         from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
 
         team = sample_team_with_owner_member.team
@@ -227,39 +277,25 @@ class TestSigstoreKeylessSigner:
             signing_issuer="https://token.actions.githubusercontent.com",
         )
 
-        mock_token = type(
-            "MockToken",
-            (),
-            {
-                "identity": "ci@acme.example",
-                "issuer": "https://token.actions.githubusercontent.com",
-            },
-        )()
-
-        mock_bundle = MagicMock()
-        mock_bundle.to_json.return_value = '{"mediaType":"test-bundle"}'
-        mock_bundle.log_entry.log_index = 42
-
-        mock_signer = MagicMock()
-        mock_signer.sign_artifact.return_value = mock_bundle
-        mock_ctx = MagicMock()
-        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+        mock_token = _mock_identity_token(
+            "ci@acme.example", "https://token.actions.githubusercontent.com"
+        )
 
         with patch("sigstore.oidc.detect_credential", return_value=mock_token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.return_value = mock_ctx
+            with _mock_sigstore_signer(bundle_json='{"mediaType":"test-bundle"}', log_index="42") as mocks:
                 outcome = _sign_sigstore_keyless(b"zip-bytes", settings)
 
         assert outcome is not None
         assert outcome.bundle_bytes == b'{"mediaType":"test-bundle"}'
-        assert outcome.rekor_log_index == 42
+        assert outcome.rekor_log_index == 42  # coerced from str
         assert outcome.signed_by == "ci@acme.example"
         assert outcome.signed_issuer == "https://token.actions.githubusercontent.com"
         # The ambient token was passed to SigningContext.signer(...)
-        # — that's the mechanism by which identity validation is
-        # binding (sigstore-python uses the token to request the
-        # Fulcio cert).
-        mock_ctx.signer.assert_called_once_with(mock_token)
+        # — sigstore uses the token to request the Fulcio cert.
+        mocks["ctx"].signer.assert_called_once_with(mock_token)
+        # Trust config came from the public production() factory.
+        mocks["trust_cls"].production.assert_called_once_with()
+        mocks["ctx_cls"].from_trust_config.assert_called_once_with(mocks["trust_config"])
 
     def test_unconfigured_identity_accepts_any_subject(self, sample_team_with_owner_member):
         """Teams with empty ``signing_identity`` accept any ambient
@@ -268,8 +304,6 @@ class TestSigstoreKeylessSigner:
         signs successfully; the subject resolved from the ambient
         token is persisted on the export package so an auditor can
         see who actually signed."""
-        from unittest.mock import MagicMock
-
         from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
 
         team = sample_team_with_owner_member.team
@@ -280,22 +314,9 @@ class TestSigstoreKeylessSigner:
             # No signing_identity or signing_issuer configured.
         )
 
-        mock_token = type(
-            "MockToken",
-            (),
-            {"identity": "whoever@dev.local", "issuer": "https://any.issuer"},
-        )()
-        mock_bundle = MagicMock()
-        mock_bundle.to_json.return_value = '{"mediaType":"test"}'
-        mock_bundle.log_entry.log_index = 1
-        mock_signer = MagicMock()
-        mock_signer.sign_artifact.return_value = mock_bundle
-        mock_ctx = MagicMock()
-        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
-
+        mock_token = _mock_identity_token("whoever@dev.local", "https://any.issuer")
         with patch("sigstore.oidc.detect_credential", return_value=mock_token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.return_value = mock_ctx
+            with _mock_sigstore_signer(bundle_json='{"mediaType":"test"}', log_index="1"):
                 outcome = _sign_sigstore_keyless(b"zip-bytes", settings)
 
         assert outcome is not None
@@ -304,9 +325,9 @@ class TestSigstoreKeylessSigner:
     def test_signing_context_failure_propagates_to_outer_swallow(
         self, sample_team_with_owner_member
     ):
-        """Sigstore raises inside the context manager (Fulcio
-        unreachable, clock skew, invalid token). Contract: the
-        inner signer doesn't catch — it propagates to the outer
+        """Sigstore raises inside ``SigningContext.from_trust_config``
+        (Fulcio unreachable, clock skew, invalid trust root). Contract:
+        the inner signer doesn't catch — it propagates to the outer
         ``sign_bundle`` wrapper which swallows. Pins the error-
         propagation boundary so a future "be helpful" catch doesn't
         silently hide identity errors."""
@@ -319,19 +340,20 @@ class TestSigstoreKeylessSigner:
         TeamComplianceSettings.objects.create(
             team=team, signing_enabled=True, signing_provider="sigstore_keyless"
         )
-        mock_token = type(
-            "MockToken",
-            (),
-            {"identity": "ci@example.test", "issuer": "https://any"},
-        )()
+        mock_token = _mock_identity_token("ci@example.test", "https://any")
 
         with patch("sigstore.oidc.detect_credential", return_value=mock_token):
-            with patch("sigstore.sign.SigningContext") as ctx_cls:
-                ctx_cls.production.side_effect = RuntimeError("Fulcio unreachable")
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                trust_cls.production.side_effect = RuntimeError("Fulcio unreachable")
                 # Inner signer propagates.
                 with pytest.raises(RuntimeError):
                     _sign_sigstore_keyless(
                         b"zip-bytes", TeamComplianceSettings.objects.get(team=team)
                     )
-                # Outer wrapper swallows.
+                # Outer wrapper swallows — and the outer call did NOT
+                # reach ``SigningContext.from_trust_config`` because
+                # the trust-config lookup raised first.
                 assert sign_bundle(b"zip-bytes", team) is None
+                ctx_cls.from_trust_config.assert_not_called()
