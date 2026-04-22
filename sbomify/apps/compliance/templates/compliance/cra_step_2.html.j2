@@ -162,8 +162,7 @@
                                                     <div class="flex-1 min-w-0">
                                                         <p class="text-sm font-medium text-text m-0 flex items-center gap-2">
                                                             <span x-text="check.title"></span>
-                                                            {# issue #907: remediation_type badge — operators understand
-                                                               what to do at a glance rather than reading the remediation prose. #}
+                                                            {% comment %}issue #907: remediation_type badge — operators understand what to do at a glance rather than reading the remediation prose.{% endcomment %}
                                                             <template x-if="check.remediation_type === 'tooling_limitation'">
                                                                 <span class="tw-badge-warning text-[10px] font-normal px-1.5 py-0.5"
                                                                       data-testid="step-2-tooling-limitation-badge">
@@ -208,10 +207,7 @@
                                                         </template>
                                                     </div>
                                                 </div>
-                                                {# Issue #907: human_summary is the plain-English one-liner
-                                                   explaining WHY this fails in practice (e.g. "syft doesn't emit
-                                                   X for apt packages"). Rendered first so operators see it
-                                                   before digging into the BSI-plugin's schema-oriented remediation. #}
+                                                {% comment %}Issue #907: human_summary is the plain-English one-liner explaining WHY this fails in practice (e.g. "syft doesn't emit X for apt packages"). Rendered first so operators see it before digging into the BSI-plugin's schema-oriented remediation.{% endcomment %}
                                                 <template x-if="check.human_summary">
                                                     <div class="px-4 py-2.5 bg-info/5 border-t border-border/30 flex items-start gap-2"
                                                          data-testid="step-2-human-summary">
