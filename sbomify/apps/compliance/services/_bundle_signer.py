@@ -1,16 +1,20 @@
 """Cosign / sigstore bundle-signing dispatcher for CRA exports.
 
 Opt-in per team via :class:`TeamComplianceSettings` (issue #906). The
-public entry point is :func:`sign_bundle`:
+public entry point is :func:`sign_bundle`, which returns a
+:class:`SigningOutcome` or ``None``:
 
-    signature = sign_bundle(zip_bytes, team)
-    if signature:
-        # upload to S3 at f"{storage_key}.sig"
+    outcome = sign_bundle(zip_bytes, team)
+    if outcome is not None:
+        # outcome.bundle_bytes uploaded to S3 at f"{storage_key}.sig"
+        # outcome.rekor_log_index + .signed_by + .signed_issuer
+        # persisted on :class:`CRAExportPackage` for the audit trail.
 
-``signature`` is ``None`` when the team hasn't enabled signing, when
-the provider is configured but the runtime prerequisites aren't met
-(e.g. missing OIDC token for keyless), or when the signer itself
-raises. In every case the bundle build still succeeds — signing is a
+``None`` is returned when the team hasn't enabled signing, when the
+provider is configured but the runtime prerequisites aren't met
+(missing ambient OIDC token, identity or issuer mismatch vs the
+team's configured expectations), or when the signer itself raises.
+In every case the bundle build still succeeds — signing is a
 best-effort enhancement, not a gate on the export. A warning is
 logged so operators can investigate misconfiguration without having
 a regulated export blocked.

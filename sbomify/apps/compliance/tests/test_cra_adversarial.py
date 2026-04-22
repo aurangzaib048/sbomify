@@ -915,6 +915,311 @@ class TestBuildExportPackageRealSignerNoSigstore:
 
 
 # ---------------------------------------------------------------------------
+# Sigstore OIDC flow — adversarial identity / issuer / Rekor cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestSigstoreOidcAdversarial:
+    """Bad-case coverage for the real sigstore keyless path.
+
+    The happy-path + basic mismatch cases live in
+    ``test_bundle_signer.py::TestSigstoreKeylessSigner``. This class
+    exercises the edges: whitespace, case-sensitivity, Unicode,
+    malformed tokens, and partial-match attempts that would slip
+    past a permissive implementation.
+    """
+
+    def _settings_for(self, team, **kwargs):
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+
+        defaults = {"signing_enabled": True, "signing_provider": "sigstore_keyless"}
+        defaults.update(kwargs)
+        return TeamComplianceSettings.objects.create(team=team, **defaults)
+
+    @staticmethod
+    def _mock_token(identity: str, issuer: str):
+        return type("MockToken", (), {"identity": identity, "issuer": issuer})()
+
+    def test_identity_comparison_is_case_sensitive(self, sample_team_with_owner_member):
+        """``signing_identity="ci@Acme.Example"`` must NOT match
+        ambient ``ci@acme.example``. OIDC subject claims are
+        case-sensitive by spec — a normalisation bug would let an
+        attacker with control of a casing-variant identity bypass
+        the check."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@Acme.Example")
+
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(
+                "ci@acme.example", "https://token.actions.githubusercontent.com"
+            )
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                ctx_cls.production.assert_not_called()
+
+    def test_identity_comparison_rejects_prefix_match(self, sample_team_with_owner_member):
+        """Configured: ``ci@acme.example``. Ambient:
+        ``ci@acme.example.attacker.test``. A substring/prefix match
+        would be catastrophic — ambient must equal configured,
+        nothing less."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@acme.example")
+
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(
+                "ci@acme.example.attacker.test", "https://issuer"
+            )
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                ctx_cls.production.assert_not_called()
+
+    def test_issuer_trailing_slash_is_literal_mismatch(self, sample_team_with_owner_member):
+        """Configured issuer ``https://token.actions.githubusercontent.com``
+        (no trailing slash); ambient token carries
+        ``https://token.actions.githubusercontent.com/`` (with
+        slash). OIDC ``iss`` claim comparison is byte-for-byte; a
+        URL-normalisation "helpfulness" would allow a spoofed
+        issuer to match. Pins the strict comparison."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(
+            team, signing_issuer="https://token.actions.githubusercontent.com"
+        )
+
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(
+                "ci@example.test", "https://token.actions.githubusercontent.com/"
+            )
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                ctx_cls.production.assert_not_called()
+
+    def test_whitespace_padded_identity_is_mismatch(self, sample_team_with_owner_member):
+        """Configured ``ci@acme.example``; ambient ``" ci@acme.example "``.
+        Signer does NOT strip whitespace — forces operators to fix
+        their IdP configuration rather than silently accepting a
+        normalised claim."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@acme.example")
+
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(" ci@acme.example ", "https://any")
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                ctx_cls.production.assert_not_called()
+
+    def test_unicode_identity_matches_exactly(self, sample_team_with_owner_member):
+        """Operators with non-ASCII identities (``ci@bücher.example``,
+        i.e. IDN) must round-trip exactly. Regression guard against
+        an idna-normalisation that would break equality."""
+        from unittest.mock import MagicMock
+
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(
+            team, signing_identity="ci@bücher.example", signing_issuer="https://iß.example"
+        )
+
+        token = self._mock_token("ci@bücher.example", "https://iß.example")
+        mock_bundle = MagicMock()
+        mock_bundle.to_json.return_value = '{"ok":1}'
+        mock_bundle.log_entry.log_index = 7
+        mock_signer = MagicMock()
+        mock_signer.sign_artifact.return_value = mock_bundle
+        mock_ctx = MagicMock()
+        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+
+        with patch("sigstore.oidc.detect_credential", return_value=token):
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                ctx_cls.production.return_value = mock_ctx
+                outcome = _sign_sigstore_keyless(b"zip", s)
+
+        assert outcome is not None
+        assert outcome.signed_by == "ci@bücher.example"
+        assert outcome.signed_issuer == "https://iß.example"
+
+    def test_rekor_log_index_coerced_to_int(self, sample_team_with_owner_member):
+        """``Bundle.log_entry.log_index`` is typed ``int`` by sigstore-
+        python but protobuf-derived models can hand out pydantic-
+        wrapped values. The signer does ``int(...)`` to force a
+        plain Python int before persistence — PositiveBigIntegerField
+        requires a native int and pydantic's proto-backed wrappers
+        can serialise differently. Regression guard."""
+        from unittest.mock import MagicMock
+
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team)
+        token = self._mock_token("any@id", "https://any")
+
+        mock_bundle = MagicMock()
+        mock_bundle.to_json.return_value = '{"ok":1}'
+
+        # Simulate a proto-wrapped integer that is int-castable but
+        # not an actual ``int`` instance.
+        class _ProtoInt:
+            def __int__(self):
+                return 99_999_999_999
+
+        mock_bundle.log_entry.log_index = _ProtoInt()
+        mock_signer = MagicMock()
+        mock_signer.sign_artifact.return_value = mock_bundle
+        mock_ctx = MagicMock()
+        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+
+        with patch("sigstore.oidc.detect_credential", return_value=token):
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                ctx_cls.production.return_value = mock_ctx
+                outcome = _sign_sigstore_keyless(b"zip", s)
+
+        assert outcome is not None
+        assert isinstance(outcome.rekor_log_index, int)
+        assert outcome.rekor_log_index == 99_999_999_999
+
+    def test_settings_row_requires_refetch_after_update(self, sample_team_with_owner_member):
+        """Defensive regression: the signer uses the passed-in
+        settings dict, not a re-fetched row. If an operator updates
+        ``signing_identity`` mid-export (a race) the signer still
+        sees the pre-fetch value. Documents this as intended —
+        snapshot-at-call-time beats racey-midflight semantics for
+        a signing operation."""
+        from unittest.mock import MagicMock
+
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="original@id")
+
+        # Mutate the DB row after we've captured ``s``.
+        TeamComplianceSettings.objects.filter(pk=s.pk).update(signing_identity="mutated@id")
+
+        token = self._mock_token("original@id", "https://any")
+        mock_bundle = MagicMock()
+        mock_bundle.to_json.return_value = '{"x":1}'
+        mock_bundle.log_entry.log_index = 1
+        mock_signer = MagicMock()
+        mock_signer.sign_artifact.return_value = mock_bundle
+        mock_ctx = MagicMock()
+        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+
+        with patch("sigstore.oidc.detect_credential", return_value=token):
+            with patch("sigstore.sign.SigningContext") as ctx_cls:
+                ctx_cls.production.return_value = mock_ctx
+                outcome = _sign_sigstore_keyless(b"zip", s)
+
+        # In-memory ``s`` still has the original identity, so the
+        # validation passes. The DB row disagrees — signer doesn't
+        # check, by design.
+        assert outcome is not None
+        assert outcome.signed_by == "original@id"
+
+
+@pytest.mark.django_db
+class TestDownloadApiSigningBlockEdges:
+    """Adversarial coverage for the download API's ``signature``
+    block: partial state, zero-index, and absent-but-storage-key
+    combinations that should never exist in production but shouldn't
+    crash the API when they do."""
+
+    def test_signature_block_absent_when_storage_key_empty(
+        self, sample_team_with_owner_member, sample_user
+    ):
+        """Package row exists with rekor_log_index set but empty
+        signature_storage_key — the ``get_signature_download_url``
+        boundary returns None so the API omits both
+        ``signature_url`` AND ``signature`` block. No partial
+        signing state ever leaks to the client."""
+        from sbomify.apps.compliance.models import (
+            CRAAssessment,
+            CRAExportPackage,
+        )
+        from sbomify.apps.compliance.services.export_service import (
+            get_signature_download_url,
+        )
+
+        team = sample_team_with_owner_member.team
+        p = Product.objects.create(name="Partial Signing", team=team)
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs GmbH",
+            email="legal@acme.example",
+            is_manufacturer=True,
+        )
+        a = get_or_create_assessment(p.id, sample_user, team).value
+        pkg = CRAExportPackage.objects.create(
+            assessment=a,
+            storage_key="compliance/exports/x/abc.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="",  # empty
+            rekor_log_index=42,  # non-None but storage_key empty
+            signed_by="stray@value",
+            signed_issuer="https://stray",
+        )
+
+        # Signature URL path returns None because the key is empty —
+        # rekor/signed_by state is ignored when there's no side-car
+        # to point at.
+        assert get_signature_download_url(pkg).value is None
+
+    def test_signature_block_zero_rekor_index_still_valid(self, sample_team_with_owner_member):
+        """Edge: ``rekor_log_index=0`` is a legitimate first-entry
+        index in a Rekor instance (e.g., a new staging deployment).
+        The signer must persist it as-is — a ``if not
+        rekor_log_index`` check would falsely conclude "unsigned"."""
+        from sbomify.apps.compliance.models import (
+            CRAAssessment,
+            CRAExportPackage,
+        )
+
+        team = sample_team_with_owner_member.team
+        p = Product.objects.create(name="Zero Index", team=team)
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs GmbH",
+            email="legal@acme.example",
+            is_manufacturer=True,
+        )
+        a = get_or_create_assessment(p.id, sample_user_for_team(team), team).value
+        pkg = CRAExportPackage.objects.create(
+            assessment=a,
+            storage_key="compliance/exports/x/abc.zip",
+            content_hash="b" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="compliance/exports/x/abc.zip.sig",
+            signature_provider="sigstore_keyless",
+            rekor_log_index=0,
+            signed_by="ci@example.test",
+            signed_issuer="https://any",
+        )
+
+        assert pkg.is_signed is True
+        assert pkg.rekor_log_index == 0
+
+
+def sample_user_for_team(team):
+    """Helper for the zero-index test — returns a user that
+    owns ``team`` (the fixture machinery in this module doesn't
+    expose it directly for ad-hoc Product creations)."""
+    from sbomify.apps.teams.models import Member
+
+    return Member.objects.filter(team=team, role="owner").first().user
+
+
+# ---------------------------------------------------------------------------
 # Signer dispatch — xdist safety hedge
 # ---------------------------------------------------------------------------
 

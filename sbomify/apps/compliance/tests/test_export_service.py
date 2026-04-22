@@ -678,13 +678,26 @@ class TestIntegrityReadmeFormatVersion:
 class TestBuildExportPackageSigning:
     """Issue #906: signature side-car creation in ``build_export_package``.
 
-    The three paths from the acceptance criteria:
-    - signing disabled → no ``.sig`` object, no manifest signature entry
-      (no regression vs pre-feature).
-    - signing enabled, signer happy path → ``.sig`` written, manifest
-      records ``integrity.signature.present=True``.
-    - signing enabled, signer returns None → same as disabled (misconfig
-      doesn't block the export).
+    The four paths covered:
+
+    - **Disabled** — no ``.sig`` object, all signing fields on the
+      package row remain empty (no regression vs pre-feature).
+    - **Enabled, happy path** — ``.sig`` side-car uploaded at
+      ``<storage_key>.sig``; ``signature_storage_key``,
+      ``signature_provider``, ``rekor_log_index``, ``signed_by``,
+      and ``signed_issuer`` populated on :class:`CRAExportPackage`
+      from the :class:`SigningOutcome` the signer returned.
+    - **Enabled, signer returns None** — (missing OIDC token,
+      identity/issuer mismatch) same observable state as disabled.
+    - **Enabled, signer returns outcome but S3 upload fails** —
+      no fields populated; the row never claims a
+      ``signature_storage_key`` that doesn't exist in S3.
+
+    The manifest itself (both the DB-persisted copy and the copy
+    embedded in the ZIP) does NOT carry signature metadata — the
+    signature is external to the ZIP, stored as a side-car. The
+    authoritative signal for "this bundle was signed" is the
+    ``signature_storage_key`` field on the package row.
     """
 
     def test_disabled_signing_produces_no_sig_side_car(self, assessment_with_docs, sample_user):

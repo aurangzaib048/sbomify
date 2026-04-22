@@ -391,6 +391,19 @@ def create_export(request: HttpRequest, assessment_id: str) -> _Response:
 def download_export(request: HttpRequest, response: HttpResponse, assessment_id: str, package_id: str) -> _Response:
     """Get a short-lived presigned download URL for an export package.
 
+    Response shape (200):
+
+    - ``download_url``: presigned URL for the ZIP. Always present.
+    - ``signature_url``: presigned URL for the ``.zip.sig`` side-car.
+      Present only when the package is signed (issue #906).
+    - ``signature``: object with ``provider``, ``rekor_log_index``,
+      ``signed_by``, ``signed_issuer``. Present iff ``signature_url``
+      is present. Downstream auditors use these to run
+      ``cosign verify-blob --certificate-identity=<signed_by>
+      --certificate-oidc-issuer=<signed_issuer> ...`` and to fetch
+      the Rekor entry at ``/api/v2/log/entries/<rekor_log_index>``
+      for independent inclusion-proof verification.
+
     The response carries ``Cache-Control: no-store`` and
     ``Pragma: no-cache`` so intermediate caches (Caddy, corporate
     proxies, browser) don't retain the presigned URL past its server
