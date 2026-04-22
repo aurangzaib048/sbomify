@@ -582,7 +582,13 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
     key = package.signature_storage_key
     if not key:
         return ServiceResult.success(None)
-    if not (key.startswith("compliance/exports/") and key.endswith(".sig")):
+    # Prefix + suffix + no-traversal check. ``startswith`` alone lets
+    # ``compliance/exports/../other-app/x.sig`` through (S3 treats
+    # keys literally so no filesystem escape, but the URL would
+    # presign an object outside the compliance tree in the same
+    # bucket). Reject any key containing ``..`` or NUL segments so
+    # the defense-in-depth claim holds at the app boundary.
+    if not key.startswith("compliance/exports/") or not key.endswith(".sig") or ".." in key.split("/") or "\x00" in key:
         logger.warning(
             "Refusing to presign signature key %r for package %s — not under compliance/exports/*.sig",
             key,

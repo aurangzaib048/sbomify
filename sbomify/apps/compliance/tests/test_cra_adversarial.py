@@ -444,6 +444,32 @@ class TestBsiWaiverLifecycle:
         assert result.status_code == 400
         assert "limit" in (result.error or "").lower()
 
+    def test_justification_at_exact_cap_accepted(self, assessment, sample_user):
+        """Boundary: 2 000-char justification (exactly at the cap) is
+        accepted. The check is ``len > MAX``, not ``len >= MAX``."""
+        j = "x" * 2_000
+        result = save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": j}}},
+            sample_user,
+        )
+        assert result.ok
+        assessment.refresh_from_db()
+        assert len(assessment.bsi_waivers["bsi-tr03183:hash-value"]["justification"]) == 2_000
+
+    def test_justification_one_over_cap_rejected(self, assessment, sample_user):
+        """Boundary: 2 001 chars is over — rejected with 400."""
+        j = "x" * 2_001
+        result = save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": j}}},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+
     def test_waiver_with_extra_fields_ignored(self, assessment, sample_user):
         """Payload includes unexpected keys alongside justification
         (``{"justification": "x", "expires_at": "..."}``). Extra
@@ -662,12 +688,43 @@ class TestSignerDispatchAdversarial:
         with pytest.raises(ValueError, match="rekor_log_index must be >= 0"):
             SigningOutcome(bundle_bytes=b"x", rekor_log_index=-1, signed_by="", signed_issuer="")
 
-    def test_signer_raising_keyboard_interrupt_swallowed(self, sample_team_with_owner_member):
-        """Best-effort contract: ANY exception from the signer
-        must not fail the export. Even KeyboardInterrupt —
-        relevant because sigstore-python can raise during OIDC
-        browser flow timeout. BaseException derivatives are fair
-        game."""
+    def test_signer_constructing_invalid_outcome_swallowed_by_sign_bundle(
+        self, sample_team_with_owner_member
+    ):
+        """End-to-end: a signer callable that TRIES to return an
+        invalid ``SigningOutcome`` raises ``ValueError`` inside the
+        constructor. The outer ``sign_bundle`` wrapper catches and
+        returns ``None`` — the export ships unsigned, the broken
+        signer is logged, no invalid state reaches the DB. Verifies
+        the invariants compose with the best-effort swallow
+        contract (both are separate safety nets that work
+        together, not against each other)."""
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
+
+        team = sample_team_with_owner_member.team
+        self._with_signing_settings(team)
+
+        def _broken_signer(z, s):
+            # Violates the __post_init__ invariant (empty bundle).
+            # Raises ValueError inside the callable.
+            return SigningOutcome(
+                bundle_bytes=b"",
+                rekor_log_index=1,
+                signed_by="who",
+                signed_issuer="where",
+            )
+
+        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": _broken_signer}):
+            assert sign_bundle(b"zip", team) is None
+
+    def test_signer_raising_keyboard_interrupt_propagates(self, sample_team_with_owner_member):
+        """``KeyboardInterrupt`` and other ``BaseException`` subclasses
+        DO propagate — the outer ``sign_bundle`` catches ``Exception``,
+        not ``BaseException``. This pins the contract: best-effort
+        swallow applies to ``Exception``-derived failures (network,
+        OIDC, runtime); truly-exceptional signals (SIGINT, SystemExit)
+        pass through so a Ctrl-C on a signing operation doesn't
+        silently ship an unsigned bundle."""
         team = sample_team_with_owner_member.team
         self._with_signing_settings(team)
 
@@ -820,6 +877,61 @@ class TestSignatureDownloadUrlAdversarial:
             manifest={"format_version": "1.1"},
             signature_storage_key=f"compliance/exports/{assessment.id}/test.zip",
         )
+        assert get_signature_download_url(package).value is None
+
+    @pytest.mark.parametrize(
+        "traversal_key",
+        [
+            # Classic dotdot — starts with the correct prefix AND
+            # ends with .sig, so a naive ``startswith`` + ``endswith``
+            # check would pass it through.
+            "compliance/exports/../other-app/secret.sig",
+            # Multiple dotdots walking up and back down.
+            "compliance/exports/foo/../../../bar/x.sig",
+            # Trailing dotdot.
+            "compliance/exports/foo/../file.sig",
+        ],
+    )
+    def test_signature_key_traversal_within_prefix_rejected(self, assessment, traversal_key):
+        """Defense-in-depth: ``startswith("compliance/exports/")`` and
+        ``endswith(".sig")`` alone would let keys containing ``..``
+        segments slip through — the URL would then presign an object
+        outside the compliance tree in the same bucket. Explicit
+        rejection of ``..`` means the check matches its docstring
+        claim, even though S3 treats keys literally and no
+        filesystem escape is possible.
+
+        NUL-byte cases are covered at the database layer:
+        PostgreSQL rejects ``\\x00`` in varchar values before the row
+        is ever created, so ``signature_storage_key`` can't carry
+        one in practice. ``\\x00 in key`` in the service check
+        handles the sqlite-backed / in-memory test case.
+        """
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key=traversal_key,
+        )
+        assert get_signature_download_url(package).value is None
+
+    def test_signature_key_nul_byte_rejected_by_service_layer(self, assessment):
+        """The DB layer rejects NUL-in-varchar at row insertion
+        (Postgres), but the service-level ``\\x00 in key`` check
+        provides belt-and-braces for any future storage backend
+        that doesn't. Set the key by bypassing ``create()`` so we
+        exercise the service-level guard in isolation."""
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="compliance/exports/ok.sig",  # valid at insert
+        )
+        # Bypass the DB-layer NUL rejection by poking the Python
+        # object directly — exercises the service-level guard.
+        package.signature_storage_key = "compliance/exports/\x00.sig"
         assert get_signature_download_url(package).value is None
 
 
@@ -1169,6 +1281,32 @@ class TestSigstoreOidcAdversarial:
         assert outcome is not None
         assert outcome.signed_by == "ci@acme.example"
         assert outcome.signed_issuer == "https://some.random.issuer"
+
+    def test_unicode_confusable_identity_rejected(self, sample_team_with_owner_member):
+        """Latin-vs-Cyrillic homoglyph: configured
+        ``ci@acme.example`` (Latin 'a', U+0061) vs ambient
+        ``ci@аcme.example`` (Cyrillic 'а', U+0430). Byte-for-byte
+        ``!=`` rejects correctly — documents that the equality
+        check is homoglyph-safe by construction (no Unicode folding
+        / normalisation). A future "helpful" NFKC normaliser would
+        break this and enable spoofed identities."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@acme.example")
+
+        latin_a, cyrillic_a = "a", "\u0430"
+        assert latin_a != cyrillic_a  # sanity — identical-looking glyphs
+
+        cyrillic_identity = f"ci@{cyrillic_a}cme.example"
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(cyrillic_identity, "https://any")
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     @pytest.mark.parametrize(
         "ambient_identity",
