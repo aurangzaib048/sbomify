@@ -153,7 +153,10 @@
                                 {# Per-file manifest summary #}
                                 <div class="border border-border rounded-lg overflow-hidden">
                                     <div class="px-3 py-2 bg-surface-hover text-xs font-medium text-text-muted flex items-center justify-between">
-                                        <span>Files in bundle</span>
+                                        <span>Files listed in manifest
+                                            <span class="tooltip text-[10px] text-text-muted ml-1"
+                                                  title="Excludes the integrity primitives themselves (metadata/manifest.json, metadata/manifest.sha256, metadata/INTEGRITY.md). The ZIP contains three more entries than shown here.">(?)</span>
+                                        </span>
                                         <span class="font-mono"
                                               x-text="(lastExport.files?.length || 0) + ' entries'"></span>
                                     </div>

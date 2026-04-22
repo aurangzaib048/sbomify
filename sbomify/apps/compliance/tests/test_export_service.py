@@ -545,6 +545,114 @@ class TestBuildExportPackage:
 
 
 @pytest.mark.django_db
+class TestBuildExportPackageFailurePaths:
+    """Covers the non-happy paths in ``build_export_package``.
+
+    Previously uncovered because every earlier test exercised the
+    successful upload branch only. These tests pin the 502 error
+    contract and the bundle-prefix fallback to product.id."""
+
+    def test_s3_upload_failure_returns_502(self, assessment_with_docs, sample_user):
+        """Simulate the final ZIP upload to S3 failing. The function
+        must convert the boto exception into a clean
+        ``ServiceResult.failure(502)`` — no stack leak."""
+
+        class _FailingS3:
+            def upload_data_as_file(self, bucket, key, data):
+                raise RuntimeError("S3 unavailable")
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            mock_s3_cls.return_value = _FailingS3()
+            result = build_export_package(assessment_with_docs, sample_user)
+
+        assert not result.ok
+        assert result.status_code == 502
+        assert "storage" in (result.error or "").lower()
+
+    def test_bundle_prefix_falls_back_to_product_id_when_slug_empty(
+        self, sample_team_with_owner_member, sample_user
+    ):
+        """Product name made of punctuation only: ``slugify`` returns
+        empty, so the bundle root would be ``cra-package-/``. The
+        fallback to ``product.id`` keeps the slug segment non-empty,
+        matching ``get_download_url``'s filename contract."""
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs",
+            email="legal@acme.test",
+            is_manufacturer=True,
+        )
+        p = Product.objects.create(name="---", team=team)  # slugifies to ""
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+
+        with patch("sbomify.apps.core.object_store.S3Client"):
+            regenerate_all(ares.value)
+
+        captured: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["bytes"] = data
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            mock_s3_cls.return_value = _Capture()
+            result = build_export_package(ares.value, sample_user)
+
+        assert result.ok
+        # Inspect the manifest — every file path must live under
+        # ``cra-package-<product_id>/``, never ``cra-package-/``.
+        import json
+        import zipfile
+        from io import BytesIO
+
+        zf = zipfile.ZipFile(BytesIO(captured["bytes"]))
+        manifest_name = f"cra-package-{p.id}/metadata/manifest.json"
+        assert manifest_name in zf.namelist(), (
+            f"Bundle prefix did not fall back to product.id; expected {manifest_name!r}"
+        )
+        manifest = json.loads(zf.read(manifest_name))
+        for entry in manifest["files"]:
+            assert entry["path"].startswith(f"cra-package-{p.id}/")
+
+
+class TestIntegrityReadmeFormatVersion:
+    """``_integrity_readme`` must quote the same ``format_version`` as
+    the manifest itself. Regression guard against drift when the
+    schema bumps."""
+
+    def test_readme_version_matches_constant(self):
+        from sbomify.apps.compliance.services.export_service import _MANIFEST_FORMAT_VERSION
+
+        readme = _integrity_readme("deadbeef" * 8)
+        assert f"**{_MANIFEST_FORMAT_VERSION}**" in readme
+
+    def test_readme_uses_metadata_prefixed_paths(self):
+        """Follow-up to the Copilot review: README must refer to
+        ``metadata/manifest.json`` (full relative path), not bare
+        ``manifest.json``, so operators running the commands from the
+        bundle root don't get confused."""
+        readme = _integrity_readme("deadbeef" * 8)
+        assert "`metadata/manifest.json`" in readme
+        assert "`metadata/manifest.sha256`" in readme
+        assert "`metadata/INTEGRITY.md`" in readme
+
+
+@pytest.mark.django_db
 class TestGetDownloadUrl:
     def test_generates_presigned_url(self, mock_s3_client):
         mock_package = MagicMock()

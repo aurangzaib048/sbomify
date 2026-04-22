@@ -64,6 +64,13 @@ _DOC_CRA_REF: dict[str, str] = {
 # SBOM format → file extension for ZIP packaging
 _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
 
+# Single source of truth for the bundle's manifest schema version.
+# Bump here; the integrity README and the manifest body both read from
+# this constant so they can't drift. 1.0 was the original CRA export
+# scaffolding; 1.1 added manufacturer.is_placeholder and the integrity
+# block; bump to 1.2+ on the next schema change.
+_MANIFEST_FORMAT_VERSION = "1.1"
+
 
 def _integrity_readme(manifest_sha256: str) -> str:
     """Human-readable bundle verification guide embedded in the export.
@@ -76,7 +83,7 @@ def _integrity_readme(manifest_sha256: str) -> str:
     """
     return (
         "# Bundle Integrity\n\n"
-        "Manifest `format_version` **1.1** — changes vs 1.0 (shipped in\n"
+        f"Manifest `format_version` **{_MANIFEST_FORMAT_VERSION}** — changes vs 1.0 (shipped in\n"
         "the initial CRA export scaffolding):\n\n"
         "- `manufacturer.is_placeholder: bool` — flags when the team\n"
         "  profile still carries a stub name. Downstream consumers can\n"
@@ -88,12 +95,13 @@ def _integrity_readme(manifest_sha256: str) -> str:
         "  `format_version: 1.0` should ignore unknown keys.\n\n"
         "This CRA export bundle ships with two integrity primitives:\n\n"
         "- `metadata/manifest.json` — per-file SHA-256 hashes for every "
-        "artefact listed in its `files` array. `manifest.json`, "
-        "`manifest.sha256`, and this `INTEGRITY.md` are NOT listed (they "
-        "are the integrity primitives themselves — listing them would be "
-        "circular).\n"
-        "- `metadata/manifest.sha256` — SHA-256 of `manifest.json` itself, "
-        "so the manifest cannot be tampered with without detection.\n\n"
+        "artefact listed in its `files` array. `metadata/manifest.json`, "
+        "`metadata/manifest.sha256`, and this `metadata/INTEGRITY.md` are "
+        "NOT listed (they are the integrity primitives themselves — "
+        "listing them would be circular).\n"
+        "- `metadata/manifest.sha256` — SHA-256 of `metadata/manifest.json` "
+        "itself, so the manifest cannot be tampered with without "
+        "detection.\n\n"
         "## 1. Verifying the manifest\n\n"
         "Run from the extracted bundle root (the `cra-package-<slug>/` "
         "directory inside the ZIP):\n\n"
@@ -207,7 +215,13 @@ def build_export_package(
             └── manifest.json
     """
     product = assessment.product
-    prefix = f"cra-package-{slugify(product.name)}"
+    # Mirror the presigned-URL filename convention: fall back to the
+    # product id when slugify(name) returns empty (e.g. a name made
+    # entirely of punctuation). Without this fallback, the bundle root
+    # would be ``cra-package-/`` and every INTEGRITY.md command that
+    # references ``cra-package-<slug>/`` would leave the slug segment
+    # blank and confuse auditors.
+    prefix = f"cra-package-{slugify(product.name) or product.id}"
     import tempfile
 
     manifest_files: list[dict[str, str]] = []
@@ -296,7 +310,7 @@ def build_export_package(
         manufacturer_name_is_placeholder = _is_placeholder_manufacturer(manufacturer_name)
 
         manifest = {
-            "format_version": "1.1",
+            "format_version": _MANIFEST_FORMAT_VERSION,
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "product": {
                 "id": product.id,

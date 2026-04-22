@@ -66,11 +66,21 @@ def _load_cached() -> dict[str, Any]:
             f"cra-harmonised-standards.json is missing or unreadable at {HARMONISED_STANDARDS_PATH}"
         ) from exc
     try:
-        data: dict[str, Any] = json.loads(raw)
+        data: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ReferenceDataError(
             f"cra-harmonised-standards.json at {HARMONISED_STANDARDS_PATH} is not valid JSON"
         ) from exc
+    # Valid JSON is not enough — the loader contract is "returns a
+    # dict with a ``standards`` list". Parsing ``[...]`` or ``"foo"``
+    # would pass ``json.loads`` but blow up later at ``.get("standards")``
+    # with an opaque AttributeError. Surface the shape mismatch as the
+    # same :class:`ReferenceDataError` so operators see one error.
+    if not isinstance(data, dict) or not isinstance(data.get("standards"), list):
+        raise ReferenceDataError(
+            f"cra-harmonised-standards.json at {HARMONISED_STANDARDS_PATH} "
+            "must be a JSON object with a top-level 'standards' list"
+        )
     return data
 
 

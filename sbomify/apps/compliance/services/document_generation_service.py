@@ -156,6 +156,44 @@ def _sanitize(value: str, escape_pipe: bool = False, escape_markdown: bool = Fal
     return sanitized
 
 
+# URL schemes allowed in operator-supplied URL fields rendered into
+# regulated artefacts. Anything else — javascript:, data:, file:, ftp:,
+# mailto: masquerading as a URL — is dropped to empty string so the
+# template emits a blank link target instead of an attacker-controlled
+# protocol handler.
+_SAFE_URL_SCHEMES = ("http://", "https://")
+
+
+def _sanitize_url(value: str) -> str:
+    """Scheme-allowlist + control-char strip for URL-ish operator input.
+
+    Fails closed on anything that doesn't start with ``http://`` or
+    ``https://`` (case-insensitive) — a crafted value like
+    ``text](javascript:alert(1))`` carries no allowed scheme and is
+    dropped. Also rejects URLs whose literal body contains Markdown
+    metacharacters (``[``, ``]``, ``(``, ``)``, whitespace, backticks)
+    that real RFC 3986 URLs would percent-encode. Legitimate URLs pass
+    through untouched so the template can render them as plain text.
+    """
+    cleaned = _sanitize(value or "")
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    matched_scheme = next((s for s in _SAFE_URL_SCHEMES if lowered.startswith(s)), None)
+    if matched_scheme is None:
+        return ""
+    # Require at least one character of host after the scheme. ``http://``
+    # alone would render as a visible-but-broken link in the DoC.
+    if len(cleaned) <= len(matched_scheme):
+        return ""
+    # Reject URLs carrying Markdown-active characters. Real URLs
+    # percent-encode these; anything leaking through is either malformed
+    # or an injection attempt.
+    if any(c in cleaned for c in '[]()`<>" '):
+        return ""
+    return cleaned
+
+
 def _build_common_context(assessment: CRAAssessment) -> dict[str, Any]:
     """Build context shared across all templates."""
     product = assessment.product
@@ -203,11 +241,11 @@ def _build_common_context(assessment: CRAAssessment) -> dict[str, Any]:
         "manufacturer_address": _sanitize(manufacturer.address, escape_markdown=True) if manufacturer else "",
         "manufacturer_email": _sanitize(manufacturer.email) if manufacturer else "",
         "manufacturer_website": (
-            _sanitize(str(manufacturer.website_urls[0])) if manufacturer and manufacturer.website_urls else ""
+            _sanitize_url(str(manufacturer.website_urls[0])) if manufacturer and manufacturer.website_urls else ""
         ),
         "security_contact_email": _sanitize(security_contact.email) if security_contact else "",
-        "security_contact_url": _sanitize(assessment.security_contact_url),
-        "vdp_url": _sanitize(assessment.vdp_url),
+        "security_contact_url": _sanitize_url(assessment.security_contact_url),
+        "vdp_url": _sanitize_url(assessment.vdp_url),
         "csirt_contact_email": _sanitize(assessment.csirt_contact_email),
         "csirt_country": _sanitize(assessment.csirt_country)[:2].upper(),
         "acknowledgment_timeline_days": assessment.acknowledgment_timeline_days,
@@ -327,9 +365,9 @@ def _build_document_context(assessment: CRAAssessment, kind: str) -> dict[str, A
         # fields (frequency, method, hours, instructions) are escaped.
         base["update_frequency"] = _sanitize(assessment.update_frequency or "", escape_markdown=True)
         base["update_method"] = _sanitize(assessment.update_method or "", escape_markdown=True)
-        base["update_channel_url"] = _sanitize(assessment.update_channel_url or "")
+        base["update_channel_url"] = _sanitize_url(assessment.update_channel_url or "")
         base["support_email"] = _sanitize(assessment.support_email or "")
-        base["support_url"] = _sanitize(assessment.support_url or "")
+        base["support_url"] = _sanitize_url(assessment.support_url or "")
         base["support_phone"] = _sanitize(assessment.support_phone or "", escape_markdown=True)
         base["support_hours"] = _sanitize(assessment.support_hours or "", escape_markdown=True)
         base["data_deletion_instructions"] = _sanitize(

@@ -106,6 +106,50 @@ class TestGetManufacturer:
 
         assert get_manufacturer(team) == entity
 
+    def test_prefers_shared_over_component_private(self):
+        """Two manufacturer entities in a team: one on a shared
+        profile, one on a component-private profile. The shared one
+        must win regardless of insertion order (determinism ordering:
+        ``is_component_private`` ASC, so False=shared beats True=private)."""
+        team = _make_team("Tenant A")
+        private_profile = _make_profile(team, name="Private", private=True)
+        private_mfr = _make_manufacturer(private_profile, "Private Mfr")
+        shared_profile = _make_profile(team, name="Shared")
+        shared_mfr = _make_manufacturer(shared_profile, "Shared Mfr")
+
+        assert get_manufacturer(team) == shared_mfr
+        assert get_manufacturer(team) != private_mfr
+
+    def test_prefers_default_profile_over_other_shared(self):
+        """Two shared profiles, one marked default. The default one
+        must win. Ordering: ``-is_default`` so True (default) sorts
+        before False."""
+        team = _make_team("Tenant A")
+        # Create secondary FIRST to prove insertion order doesn't decide
+        secondary = _make_profile(team, name="Aaa Secondary")
+        secondary_mfr = _make_manufacturer(secondary, "Secondary Mfr")
+        default_profile = ContactProfile.objects.create(
+            team=team, name="Default Profile", is_default=True
+        )
+        default_mfr = _make_manufacturer(default_profile, "Default Mfr")
+
+        assert get_manufacturer(team) == default_mfr
+        assert get_manufacturer(team) != secondary_mfr
+
+    def test_deterministic_across_calls(self):
+        """Stable selection under insertion-order permutation. Create
+        entities in reverse profile-name order and confirm the accessor
+        still returns the alphabetically-first profile's entity."""
+        team = _make_team("Tenant A")
+        z_profile = _make_profile(team, name="Zeta")
+        a_profile = _make_profile(team, name="Alpha")
+        _make_manufacturer(z_profile, "Zeta Mfr")
+        a_mfr = _make_manufacturer(a_profile, "Alpha Mfr")
+
+        # Call multiple times — same result every time.
+        assert get_manufacturer(team) == a_mfr
+        assert get_manufacturer(team) == a_mfr
+
 
 @pytest.mark.django_db
 class TestGetSecurityContact:
@@ -204,7 +248,24 @@ class TestContactBelongsToTeam:
 
         assert contact_belongs_to_team("does-not-exist", team) is False
 
-    @pytest.mark.parametrize("bad_value", [None, "", 123, ["abc"], {"id": "abc"}])
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            None,
+            "",
+            123,
+            1.5,
+            True,  # bool is technically an int — must still reject
+            False,
+            ["abc"],
+            {"id": "abc"},
+            (),
+            set(),
+            b"bytes-not-str",
+            bytearray(b"abc"),
+            object(),
+        ],
+    )
     def test_false_for_malformed_payload(self, bad_value):
         """A malformed JSON body (``null`` / missing / wrong type)
         must resolve cleanly to False rather than crashing on
@@ -212,3 +273,18 @@ class TestContactBelongsToTeam:
         team = _make_team("Tenant A")
 
         assert contact_belongs_to_team(bad_value, team) is False
+
+    def test_sql_wildcard_in_contact_id_is_parameterised(self):
+        """Django's ORM parameterises every filter value, so SQL
+        wildcards in ``contact_id`` get matched literally — there's
+        no injection vector, and the query returns False. Regression
+        guard documenting the ORM contract."""
+        team = _make_team("Tenant A")
+        mfr = _make_manufacturer(_make_profile(team))
+        _make_contact(mfr, "Alice")
+
+        # ``%`` is a valid CharField value; the ORM sends it as a
+        # parameterised placeholder and no row's id equals ``%``.
+        assert contact_belongs_to_team("%", team) is False
+        assert contact_belongs_to_team("_", team) is False
+        assert contact_belongs_to_team("'; DROP TABLE--", team) is False

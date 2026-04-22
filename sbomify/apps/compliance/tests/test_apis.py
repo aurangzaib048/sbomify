@@ -23,7 +23,23 @@ def product(sample_team_with_owner_member):
 
 
 @pytest.fixture
-def assessment(sample_team_with_owner_member, sample_user, product):
+def _valid_manufacturer(sample_team_with_owner_member):
+    """Configure a non-placeholder manufacturer so Step 1 save-path
+    tests don't trip the Annex V item 2 server-side guard (#908)."""
+    team = sample_team_with_owner_member.team
+    # Don't collide with ``assessment_with_contacts`` which creates its
+    # own ``Default`` profile; use a distinct name that still passes
+    # the placeholder check.
+    profile, _ = ContactProfile.objects.get_or_create(team=team, name="Default", defaults={"is_default": True})
+    ContactEntity.objects.get_or_create(
+        profile=profile,
+        name="Acme Labs GmbH",
+        defaults={"email": "legal@acmelabs.example", "is_manufacturer": True},
+    )
+
+
+@pytest.fixture
+def assessment(sample_team_with_owner_member, sample_user, product, _valid_manufacturer):
     team = sample_team_with_owner_member.team
     result = get_or_create_assessment(product.id, sample_user, team)
     assert result.ok

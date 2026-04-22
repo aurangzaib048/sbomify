@@ -31,14 +31,22 @@ def get_manufacturer(team: Team) -> ContactEntity | None:
 
     Walks ``ContactProfile → ContactEntity`` — the entity is scoped to
     any profile within the team, not pinned to the default profile.
-    Returns the first match found if multiple entities are flagged
-    (data-model shouldn't allow multiple manufacturers per team but the
-    accessor stays resilient to that).
+    The data model only enforces "one manufacturer per profile"
+    (``ContactEntity.clean``), so a team with multiple profiles can
+    legitimately carry multiple manufacturer entities. The selection
+    below is deterministic: prefer shared (non-component-private)
+    profiles, then the default profile, then stable ordering by profile
+    name and entity id — so the CRA wizard always picks the same entity
+    across runs regardless of insertion order.
     """
-    return ContactEntity.objects.filter(
-        profile__team=team,
-        is_manufacturer=True,
-    ).first()
+    return (
+        ContactEntity.objects.filter(
+            profile__team=team,
+            is_manufacturer=True,
+        )
+        .order_by("profile__is_component_private", "-profile__is_default", "profile__name", "id")
+        .first()
+    )
 
 
 def get_security_contact(team: Team) -> ContactProfileContact | None:
@@ -87,21 +95,22 @@ def list_workspace_contacts(team: Team) -> list[dict[str, Any]]:
                 entity__profile__team=team,
                 entity__profile__is_component_private=False,
             )
-            .select_related("entity__profile")
             .order_by("entity__profile__name", "name")
             .values("id", "name", "email", "phone", "entity__profile__name")
         )
     ]
 
 
-def contact_belongs_to_team(contact_id: str | None, team: Team) -> bool:
+def contact_belongs_to_team(contact_id: object, team: Team) -> bool:
     """True iff ``contact_id`` identifies a ContactProfileContact in ``team``.
 
-    ``None``, empty strings, and non-string payloads are rejected up
-    front so a malformed request body (``{"support_contact_id": null}``
-    or ``{"support_contact_id": ["abc"]}``) resolves cleanly to
-    "not a valid contact" instead of hitting ``.filter(id=None)`` or
-    an ORM type-coercion error further down.
+    Typed ``object`` deliberately — callers deserialise ``contact_id``
+    from request JSON where the runtime type is not guaranteed. The
+    isinstance guard rejects ``None``, empty strings, and non-string
+    payloads (``{"support_contact_id": null}``, ``["abc"]``,
+    ``{"id": "x"}``) up front so a malformed body resolves cleanly to
+    "not a valid contact" instead of hitting ``.filter(id=<non-str>)``
+    or an ORM type-coercion error.
     """
     if not isinstance(contact_id, str) or not contact_id:
         return False

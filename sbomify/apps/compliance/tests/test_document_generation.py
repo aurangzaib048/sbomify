@@ -15,8 +15,9 @@ from sbomify.apps.compliance.services._manufacturer_policy import (
 )
 from sbomify.apps.compliance.services.document_generation_service import (
     _load_harmonised_standards,
-    _select_applied_standards,
     _sanitize,
+    _sanitize_url,
+    _select_applied_standards,
     generate_document,
     get_document_preview,
     regenerate_all,
@@ -116,6 +117,28 @@ class TestGenerateDocument:
 
     def test_rejects_invalid_kind(self, assessment):
         result = generate_document(assessment, "bogus")
+        assert not result.ok
+        assert result.status_code == 400
+
+    @patch("sbomify.apps.core.object_store.S3Client")
+    def test_s3_upload_failure_surfaces_502(self, mock_s3_cls, assessment):
+        """Covers the ``except Exception`` path in ``generate_document``
+        where the upload to S3 throws after the template renders. Must
+        not leak the stack trace to the client — the ServiceResult
+        carries a generic 502 message."""
+        mock_s3_cls.return_value.upload_data_as_file.side_effect = RuntimeError("S3 unavailable")
+
+        result = generate_document(assessment, CRAGeneratedDocument.DocumentKind.VDP)
+
+        assert not result.ok
+        assert result.status_code == 502
+        assert "storage" in (result.error or "").lower()
+
+    def test_rejects_invalid_kind_for_preview(self, assessment):
+        """Mirror of the generate-path rejection, on the preview path
+        (``get_document_preview``). Covers the 400 branch before the
+        template engine is hit."""
+        result = get_document_preview(assessment, "does-not-exist")
         assert not result.ok
         assert result.status_code == 400
 
@@ -501,6 +524,72 @@ class TestHarmonisedStandardsFallback:
         second = _reference_data.load_harmonised_standards()
         assert "poison" not in {s.get("id") for s in second["standards"]}
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "[]",  # top-level array — valid JSON, wrong shape
+            '"a string"',  # valid JSON, primitive
+            "42",  # valid JSON, number
+            "null",  # valid JSON, null
+            "true",  # valid JSON, boolean
+            '{"standards": "not a list"}',  # dict but standards wrong type
+            '{"standards": null}',  # standards present but null
+            "{}",  # dict but missing standards key entirely
+            '{"standards": 42}',  # standards wrong primitive type
+        ],
+    )
+    def test_shape_violations_raise_reference_data_error(self, tmp_path, raw):
+        """``json.loads`` succeeds on these payloads but the loader
+        contract is ``dict[str, Any]`` with a ``standards`` list.
+        Anything else surfaces as :class:`ReferenceDataError` so the
+        caller (``_select_applied_standards``) doesn't later blow up
+        with an opaque ``AttributeError`` / ``TypeError``."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        f = tmp_path / "cra-harmonised-standards.json"
+        f.write_text(raw, encoding="utf-8")
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", f):
+            with pytest.raises(_reference_data.ReferenceDataError):
+                _reference_data.load_harmonised_standards()
+
+    def test_standards_list_with_unexpected_items_still_loads(self, tmp_path):
+        """The shape check is shallow — it validates ``standards`` is
+        a list, not that every item is a dict. Downstream predicates
+        (``_select_applied_standards``) use ``.get()`` so non-dict
+        list items are skipped. Document this tolerance so a future
+        dev doesn't tighten the guard unnecessarily."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        f = tmp_path / "cra-harmonised-standards.json"
+        f.write_text('{"standards": [{"id": "ok"}, "oops", 42, null]}', encoding="utf-8")
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", f):
+            data = _reference_data.load_harmonised_standards()
+        assert data["standards"][0]["id"] == "ok"
+
+    def test_empty_file_raises_reference_data_error(self, tmp_path):
+        """Zero-byte file — ``json.loads('')`` raises ``JSONDecodeError``.
+        Regression test ensuring the catch block fires for the empty
+        case specifically (not just for malformed JSON)."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        f = tmp_path / "empty.json"
+        f.write_bytes(b"")
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", f):
+            with pytest.raises(_reference_data.ReferenceDataError):
+                _reference_data.load_harmonised_standards()
+
+    def test_path_is_directory_raises_reference_data_error(self, tmp_path):
+        """Pathological deploy: a directory shadowing the JSON file.
+        ``Path.read_text`` raises ``OSError`` (IsADirectoryError), which
+        must surface as ``ReferenceDataError`` not an unexplained 500."""
+        from sbomify.apps.compliance.services import _reference_data
+
+        d = tmp_path / "cra-harmonised-standards.json"
+        d.mkdir()
+        with patch.object(_reference_data, "HARMONISED_STANDARDS_PATH", d):
+            with pytest.raises(_reference_data.ReferenceDataError):
+                _reference_data.load_harmonised_standards()
+
     def test_read_bytes_returns_none_on_missing_file(self, tmp_path):
         """The export service's ``read_harmonised_standards_bytes``
         shortcut returns None (not bytes) when the file is gone, so
@@ -577,6 +666,38 @@ class TestSelectAppliedStandards:
         assert "Annex I, Part II, §1" in {
             req["cra_reference"] for req in bsi["cra_requirements_covered"]
         }
+
+
+@pytest.mark.django_db
+class TestRegenerateAllFailurePath:
+    """Covers ``regenerate_all``'s ``failed_kinds`` bookkeeping. If
+    any kind fails, the batch returns ``ServiceResult.failure(502)``
+    naming the failed kinds in the error message. Previously
+    uncovered because happy-path tests short-circuit before the
+    else branch."""
+
+    @patch("sbomify.apps.core.object_store.S3Client")
+    def test_partial_failure_reports_failed_kinds(self, mock_s3_cls, assessment):
+        from sbomify.apps.compliance.services.document_generation_service import regenerate_all
+
+        # First call succeeds, second raises — the exact interleave
+        # of kinds is implementation-defined so we only assert the
+        # outer contract: status_code=502 and a count hint.
+        calls = {"n": 0}
+
+        def _maybe_fail(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 3:  # fail exactly one kind mid-run
+                raise RuntimeError("simulated S3 blip")
+            return None
+
+        mock_s3_cls.return_value.upload_data_as_file.side_effect = _maybe_fail
+
+        result = regenerate_all(assessment)
+
+        assert not result.ok
+        assert result.status_code == 502
+        assert "Failed to generate" in (result.error or "")
 
 
 @pytest.mark.django_db
@@ -726,6 +847,158 @@ class TestSanitizeMarkdownEscape:
         out = _sanitize("a|b<c>", escape_pipe=True, escape_markdown=True)
         assert "\\|" in out
         assert "\\<" in out
+
+
+class TestSanitizeUrl:
+    """``_sanitize_url`` is the scheme-allowlist used for every
+    operator-supplied URL field rendered into regulated artefacts
+    (manufacturer_website, vdp_url, security_contact_url,
+    update_channel_url, support_url). Wizard saves persist these
+    fields without URL validation, so the render-time guard is the
+    last line of defence against Markdown-link injection into the
+    DoC and user instructions."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com",
+            "http://example.com/path?q=1&r=2",
+            "HTTPS://EXAMPLE.COM",  # scheme check is case-insensitive
+            "https://example.com/a/b/c",
+        ],
+    )
+    def test_passes_well_formed_http_urls(self, url):
+        assert _sanitize_url(url) == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Scheme allow-list violations
+            "javascript:alert(1)",
+            "JAVASCRIPT:alert(1)",  # case-insensitive rejection
+            "data:text/html,<script>alert(1)</script>",
+            "data:image/svg+xml,<svg onload=alert(1)>",
+            "file:///etc/passwd",
+            "ftp://example.com/",
+            "ftps://example.com/",
+            "mailto:a@b.c",
+            "tel:+1234567890",
+            "vbscript:msgbox(1)",
+            "about:blank",
+            "chrome://settings",
+            "//example.com",  # protocol-relative
+            "example.com",  # no scheme
+            "://example.com",  # empty scheme
+            # Markdown-link injection attempts (no allowed scheme)
+            "[x](javascript:alert(1))",
+            "text](javascript:alert(1))",
+            "[click](https://real.com)",  # leading [ kills scheme match
+            # Body-level injection — real URLs would percent-encode these
+            "http://a.com/ onclick=alert(1)",
+            "http://a.com/`backtick`",
+            "http://a.com/<img>",
+            'http://a.com/"onmouseover="alert(1)',
+            "http://a.com/(x)",
+            "http://a.com/[x]",
+            # Empty / whitespace / None-ish
+            "",
+            "   ",
+            "\t\n\r",
+            # Scheme-only
+            "http://",  # stripped to empty after sanitize
+        ],
+    )
+    def test_rejects_unsafe_schemes_and_injection_payloads(self, url):
+        assert _sanitize_url(url) == ""
+
+    def test_strips_control_chars_before_scheme_check(self):
+        """An attacker may try to smuggle newlines past the scheme
+        check to corrupt plain-text artefacts (security.txt). The
+        control-char strip runs BEFORE the scheme check so the
+        sanitized URL either passes cleanly or is dropped."""
+        # Control chars inside an otherwise-valid URL are collapsed
+        # to space, which then trips the "whitespace in body" reject.
+        assert _sanitize_url("https://example.com/\n\rpath") == ""
+
+    def test_none_coerced_to_empty(self):
+        """Database fields default to empty string but callers pass
+        ``assessment.vdp_url or ""`` just in case — make sure both
+        paths land cleanly on empty."""
+        assert _sanitize_url("") == ""
+
+    def test_long_url_preserved(self):
+        """Real-world URLs with many path segments and a query string
+        must pass unchanged; length isn't a reason to reject."""
+        url = "https://example.com/" + "/".join(["segment"] * 30) + "?a=1&b=2&c=3"
+        assert _sanitize_url(url) == url
+
+    def test_https_scheme_preserved_with_port(self):
+        assert _sanitize_url("https://example.com:8443/path") == "https://example.com:8443/path"
+
+    def test_userinfo_not_stripped(self):
+        """URLs with userinfo pass through (the template renders them
+        as plain text; no password-in-clear vulnerability exists).
+        Documented so a future dev doesn't think this is a bug."""
+        assert _sanitize_url("https://user:pass@example.com/") == "https://user:pass@example.com/"
+
+
+@pytest.mark.django_db
+class TestBuildCommonContextUrlScrubbing:
+    """Integration check: hostile URL payloads saved into the
+    assessment model must not survive into ``_build_common_context``'s
+    output dict. Covers the full wizard → save → render boundary."""
+
+    def test_vdp_url_with_markdown_injection_empties_field(self, sample_team_with_owner_member, sample_user):
+        from sbomify.apps.compliance.services.document_generation_service import _build_common_context
+
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs GmbH",
+            email="legal@acme.example",
+            is_manufacturer=True,
+            website_urls=["javascript:alert('mfr_site')"],
+        )
+        p = Product.objects.create(name="Lithium", team=team)
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+        a = ares.value
+        a.vdp_url = "[phish](javascript:alert(1))"
+        a.security_contact_url = "data:text/html,<script>alert(1)</script>"
+        a.save()
+
+        ctx = _build_common_context(a)
+
+        assert ctx["vdp_url"] == ""
+        assert ctx["security_contact_url"] == ""
+        assert ctx["manufacturer_website"] == ""
+
+    def test_user_instructions_urls_scrubbed(self, sample_team_with_owner_member, sample_user):
+        """Step 4 update_channel_url / support_url end up in the
+        user-instructions context — hostile values must empty out."""
+        from sbomify.apps.compliance.services.document_generation_service import _build_document_context
+
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs GmbH",
+            email="legal@acme.example",
+            is_manufacturer=True,
+        )
+        p = Product.objects.create(name="Lithium", team=team)
+        ares = get_or_create_assessment(p.id, sample_user, team)
+        assert ares.ok
+        a = ares.value
+        a.update_channel_url = "javascript:alert(1)"
+        a.support_url = "file:///etc/passwd"
+        a.save()
+
+        ctx = _build_document_context(a, CRAGeneratedDocument.DocumentKind.USER_INSTRUCTIONS)
+
+        assert ctx["update_channel_url"] == ""
+        assert ctx["support_url"] == ""
 
 
 @pytest.mark.django_db

@@ -517,6 +517,22 @@ def _save_step_1(
         assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
     )
 
+    # Server-side mirror of the wizard's canContinue gate. The client
+    # already refuses to call this endpoint when the manufacturer is a
+    # placeholder, but the SDK / curl / a misbehaving client could hit
+    # it directly. Reject with 400 + Annex V item 2 message so the
+    # same guard applies from both surfaces (issue #908 follow-up).
+    from sbomify.apps.compliance.services._manufacturer_policy import is_placeholder_manufacturer
+
+    manufacturer = get_manufacturer(assessment.team)
+    manufacturer_name = manufacturer.name if manufacturer else ""
+    if is_placeholder_manufacturer(manufacturer_name):
+        return ServiceResult.failure(
+            "Annex V item 2 requires a legal manufacturer name. "
+            "Configure a real manufacturer entity in team settings before advancing Step 1.",
+            status_code=400,
+        )
+
     _mark_step_complete(assessment, 1)
     assessment.save(
         update_fields=[
