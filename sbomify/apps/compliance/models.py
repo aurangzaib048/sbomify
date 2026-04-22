@@ -247,6 +247,13 @@ class CRAAssessment(models.Model):
     support_hours = models.CharField(max_length=100, blank=True, default="")
     data_deletion_instructions = models.TextField(blank=True, default="")
 
+    # Step 2 — BSI tooling-limitation waivers (issue #907).
+    # Maps finding id → {justification: str, waived_at: ISO8601, waived_by: user_id}.
+    # Only ``remediation_type=tooling_limitation`` findings may be
+    # waived; operator-action findings must be fixed rather than
+    # waived because they represent genuine Annex I Part II(1) gaps.
+    bsi_waivers = models.JSONField(default=dict, blank=True)
+
     # Wizard state
     status = models.CharField(max_length=20, choices=WizardStatus.choices, default=WizardStatus.DRAFT)
     current_step = models.PositiveSmallIntegerField(default=1)

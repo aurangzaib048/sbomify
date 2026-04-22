@@ -22,6 +22,79 @@ _MIN_FORMAT_VERSIONS: dict[str, str] = {
     "spdx": "3.0.1",
 }
 
+# CRA-compliance-level classification of BSI findings (issue #907).
+# Every finding id emitted by the BSI plugin (see
+# ``plugins.builtins.bsi.FINDING_IDS``) gets a remediation_type:
+#
+# - ``tooling_limitation`` — the field is missing because an upstream
+#   scanner (syft, trivy, anchore) does not emit it for apt/yum-
+#   packaged components. The operator can fix this by re-running
+#   ``sbomify-action`` with ``--enrich`` or by scanning the source
+#   manifest (pyproject.toml, package.json, go.mod) instead of the
+#   container image. A waiver is acceptable when the limitation is
+#   documented and accepted.
+#
+# - ``operator_action`` — the field is expected to be configured
+#   by the operator (contact email, licence text, attestation
+#   signature) or represents a fundamental SBOM structural gap that
+#   must be fixed before CRA submission. No waiver is appropriate;
+#   the operator has to author the missing content.
+#
+# The wizard Step 2 UI renders the remediation_type inline so
+# operators understand what action to take without digging through
+# the full BSI remediation text.
+_BSI_REMEDIATION_TYPE: dict[str, str] = {
+    # Tooling-limitation checks — scanners don't emit these for
+    # apt/yum-packaged components.
+    "bsi-tr03183:hash-value": "tooling_limitation",
+    "bsi-tr03183:executable-property": "tooling_limitation",
+    "bsi-tr03183:archive-property": "tooling_limitation",
+    "bsi-tr03183:structured-property": "tooling_limitation",
+    "bsi-tr03183:filename": "tooling_limitation",
+    "bsi-tr03183:source-code-uri": "tooling_limitation",
+    "bsi-tr03183:uri-deployable-form": "tooling_limitation",
+    # Operator-action checks — the operator authors, configures, or
+    # structurally fixes these.
+    "bsi-tr03183:sbom-format": "operator_action",
+    "bsi-tr03183:sbom-creator": "operator_action",
+    "bsi-tr03183:timestamp": "operator_action",
+    "bsi-tr03183:component-creator": "operator_action",
+    "bsi-tr03183:component-name": "operator_action",
+    "bsi-tr03183:component-version": "operator_action",
+    "bsi-tr03183:dependencies": "operator_action",
+    "bsi-tr03183:distribution-licences": "operator_action",
+    "bsi-tr03183:original-licences": "operator_action",
+    "bsi-tr03183:sbom-uri": "operator_action",
+    "bsi-tr03183:unique-identifiers": "operator_action",
+    "bsi-tr03183:no-vulnerabilities": "operator_action",
+    "bsi-tr03183:attestation-check": "operator_action",
+}
+
+# Single source of truth for the sbomify-action enrichment docs so
+# every guidance link points at the same page. Overridable per-
+# finding via ``_BSI_GUIDANCE_URL_OVERRIDES`` below.
+_SBOMIFY_ACTION_ENRICHMENT_URL = "https://sbomify.com/docs/sbomify-action/enrichment"
+
+# Per-finding doc links when the default URL isn't the right target
+# (e.g. CycloneDX / SPDX schema reference for format issues).
+_BSI_GUIDANCE_URL_OVERRIDES: dict[str, str] = {
+    "bsi-tr03183:sbom-format": "https://sbomify.com/docs/sbom-format",
+    "bsi-tr03183:attestation-check": "https://sbomify.com/docs/attestations",
+}
+
+
+def _classify_bsi_finding(finding_id: str) -> tuple[str, str]:
+    """Return ``(remediation_type, guidance_url)`` for a BSI finding id.
+
+    Unknown finding ids fall back to ``operator_action`` + the
+    enrichment URL — the conservative default keeps the wizard gate
+    strict when the BSI plugin gains a new check that this classifier
+    hasn't been updated for yet.
+    """
+    remediation_type = _BSI_REMEDIATION_TYPE.get(finding_id, "operator_action")
+    guidance_url = _BSI_GUIDANCE_URL_OVERRIDES.get(finding_id, _SBOMIFY_ACTION_ENRICHMENT_URL)
+    return remediation_type, guidance_url
+
 
 def _is_format_compliant(sbom_format: str | None, format_version: str | None) -> bool:
     """Check whether the SBOM format version meets BSI TR-03183-2 requirements.
@@ -47,16 +120,24 @@ def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
     summary = result.get("summary", {})
     raw_findings = result.get("findings", [])
 
-    # Extract failing findings with fix guidance
+    # Extract failing findings with fix guidance + CRA-compliance
+    # classification (issue #907). ``remediation_type`` tells the
+    # wizard whether this is an operator action or a known tooling
+    # limitation; ``guidance_url`` points at the sbomify-action docs
+    # covering the remediation path.
     failing_checks: list[dict[str, str]] = []
     for f in raw_findings:
         if f.get("status") == "fail":
+            finding_id = f.get("id", "")
+            remediation_type, guidance_url = _classify_bsi_finding(finding_id)
             failing_checks.append(
                 {
-                    "id": f.get("id", ""),
+                    "id": finding_id,
                     "title": f.get("title", ""),
                     "description": f.get("description", ""),
                     "remediation": f.get("remediation", ""),
+                    "remediation_type": remediation_type,
+                    "guidance_url": guidance_url,
                 }
             )
 

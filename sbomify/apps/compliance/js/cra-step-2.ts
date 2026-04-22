@@ -6,6 +6,15 @@ interface BSICheck {
   title: string;
   description: string;
   remediation: string;
+  // Issue #907: classification of the finding so the wizard can
+  // render "tooling limitation" vs "operator action" inline.
+  remediation_type: 'operator_action' | 'tooling_limitation' | '';
+  guidance_url: string;
+  // Waiver overlay populated by _build_step_2_context when the
+  // operator has accepted a tooling-limitation gap.
+  waived?: boolean;
+  justification?: string;
+  waived_at?: string;
 }
 
 interface BSIAssessment {

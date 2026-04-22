@@ -220,11 +220,62 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
 
 
 def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
-    """Step 2: SBOM Compliance (BSI TR-03183-2)."""
+    """Step 2: SBOM Compliance (BSI TR-03183-2).
+
+    Overlays the BSI findings with any tooling-limitation waivers
+    persisted on the assessment (issue #907). A waived finding is
+    flagged on the payload (``waived: true`` plus ``justification``)
+    so the template can render it as "accepted" instead of "failing".
+    The overall gate also recomputes — a product whose only failing
+    checks are all waived passes Step 2.
+    """
     result = get_bsi_assessment_status(assessment.product)
     if not result.ok:
         return ServiceResult.failure(result.error or "Failed to get BSI status")
-    return ServiceResult.success(result.value)
+
+    payload: dict[str, Any] = dict(result.value or {})
+    waivers: dict[str, Any] = assessment.bsi_waivers or {}
+
+    components: list[dict[str, Any]] = payload.get("components") or []
+    summary: dict[str, Any] = payload.get("summary") or {}
+    any_unwaived_fail_gate = False
+    any_passing_gate = False
+    for component in components:
+        bsi = component.get("bsi_assessment")
+        if not bsi:
+            continue
+        failing = bsi.get("failing_checks", [])
+        unwaived_fail_count = 0
+        for check in failing:
+            finding_id = check.get("id", "")
+            waiver = waivers.get(finding_id)
+            if waiver and check.get("remediation_type") == "tooling_limitation":
+                # Only tooling-limitation findings can be waived;
+                # operator_action waivers are dropped to keep the
+                # Annex I Part II(1) guard honest.
+                check["waived"] = True
+                check["justification"] = waiver.get("justification", "")
+                check["waived_at"] = waiver.get("waived_at", "")
+            else:
+                check["waived"] = False
+                unwaived_fail_count += 1
+        bsi["unwaived_fail_count"] = unwaived_fail_count
+        # Component now "effectively passing" if every failing check
+        # is waived AND the scan itself completed + the format is
+        # compliant (those are separate gates upstream).
+        if unwaived_fail_count == 0 and component.get("format_compliant") and bsi.get("status") == "completed":
+            component["effectively_passing"] = True
+            any_passing_gate = True
+        else:
+            component["effectively_passing"] = False
+            if unwaived_fail_count > 0:
+                any_unwaived_fail_gate = True
+
+    # Recompute the gate with waivers applied.
+    summary["overall_gate"] = any_passing_gate and not any_unwaived_fail_gate
+    summary["has_waivers"] = bool(waivers)
+    payload["summary"] = summary
+    return ServiceResult.success(payload)
 
 
 def _build_step_3_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
@@ -571,9 +622,60 @@ def _save_step_2(
     data: dict[str, Any],
     user: User,
 ) -> ServiceResult[CRAAssessment]:
-    """Save Step 2: SBOM Compliance (read-only step, just mark complete)."""
+    """Save Step 2: SBOM Compliance.
+
+    Accepts an optional ``waivers`` payload: a dict mapping BSI
+    finding id to ``{"justification": str}``. Every entry is stamped
+    with ``waived_at`` (ISO-8601) and ``waived_by`` (user id) before
+    persisting — the wizard / DoC renderers show these as
+    attribution. Empty justification rejects the waiver; an
+    auditable waiver needs a reason text so Annex VII technical
+    documentation can show why a tooling gap was accepted.
+
+    Only known BSI finding ids (``bsi-tr03183:*``) are accepted to
+    stop typos from silently poisoning the ``bsi_waivers`` map.
+    Submitted finding ids that fail the whitelist return 400 —
+    waiver management is belt-and-braces, not best-effort.
+    """
+    import datetime
+
+    from sbomify.apps.compliance.services.sbom_compliance_service import _BSI_REMEDIATION_TYPE
+
+    update_fields = ["status", "current_step", "completed_steps", "updated_at"]
+
+    if "waivers" in data:
+        raw = data.get("waivers") or {}
+        if not isinstance(raw, dict):
+            return ServiceResult.failure("waivers must be an object", status_code=400)
+
+        waivers: dict[str, dict[str, Any]] = {}
+        now_iso = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        for finding_id, entry in raw.items():
+            if not isinstance(finding_id, str) or finding_id not in _BSI_REMEDIATION_TYPE:
+                return ServiceResult.failure(f"Unknown BSI finding id: {finding_id!r}", status_code=400)
+            if _BSI_REMEDIATION_TYPE[finding_id] != "tooling_limitation":
+                return ServiceResult.failure(
+                    f"{finding_id!r} is an operator-action finding and cannot be waived",
+                    status_code=400,
+                )
+            justification = ""
+            if isinstance(entry, dict):
+                justification = str(entry.get("justification") or "").strip()
+            if not justification:
+                return ServiceResult.failure(
+                    f"Waiver for {finding_id!r} requires a justification",
+                    status_code=400,
+                )
+            waivers[finding_id] = {
+                "justification": justification,
+                "waived_at": now_iso,
+                "waived_by": user.id if user else None,
+            }
+        assessment.bsi_waivers = waivers
+        update_fields.append("bsi_waivers")
+
     _mark_step_complete(assessment, 2)
-    assessment.save(update_fields=["status", "current_step", "completed_steps", "updated_at"])
+    assessment.save(update_fields=update_fields)
     return ServiceResult.success(assessment)
 
 
