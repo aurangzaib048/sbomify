@@ -628,23 +628,27 @@ class TestSignerDispatchAdversarial:
             team=team, signing_enabled=True, signing_provider=provider
         )
 
-    def test_signer_returning_empty_bytes_treated_as_signature(
+    def test_signer_returning_empty_bundle_bytes_treated_as_signature(
         self, sample_team_with_owner_member
     ):
-        """Edge case: signer returns ``b""`` (empty bytes). The
-        current contract treats None as "no signature" and any
-        bytes as "signature present". Empty bytes therefore count
-        as a signature — even though the side-car would be empty
-        on download. Documents this behaviour; a future tightening
-        should reject zero-length signatures explicitly."""
+        """Edge case: signer returns a SigningOutcome whose
+        ``bundle_bytes=b""``. The current contract treats any
+        non-None return as "signature present" — empty bundle
+        bytes therefore count, even though downloading would
+        return an empty file. Documents the behaviour; a future
+        tightening should reject zero-length bundle_bytes in
+        ``SigningOutcome.__post_init__``."""
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
+
         team = sample_team_with_owner_member.team
         self._with_signing_settings(team)
-        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: b""}):
+        empty = SigningOutcome(
+            bundle_bytes=b"", rekor_log_index=0, signed_by="", signed_issuer=""
+        )
+        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: empty}):
             result = sign_bundle(b"zip", team)
-        # Today: empty bytes is not None, so it flows through as a
-        # signature. This behaviour is pinned so a future fix is
-        # deliberate.
-        assert result == b""
+        assert result is empty
+        assert result.bundle_bytes == b""
 
     def test_signer_raising_keyboard_interrupt_swallowed(self, sample_team_with_owner_member):
         """Best-effort contract: ANY exception from the signer
@@ -701,6 +705,8 @@ class TestSignerDispatchAdversarial:
         the dispatcher. Pins the contract so a future "helpful"
         pre-hash doesn't silently break the cosign verify-blob
         flow."""
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
+
         team = sample_team_with_owner_member.team
         self._with_signing_settings(team)
         captured = {}
@@ -708,7 +714,7 @@ class TestSignerDispatchAdversarial:
         def _capturing_signer(z, s):
             captured["zip"] = z
             captured["settings_team"] = s.team_id
-            return b"sig"
+            return SigningOutcome(b"sig", 1, "x", "y")
 
         with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": _capturing_signer}):
             sign_bundle(b"exact-zip-bytes", team)
@@ -923,9 +929,9 @@ class TestSignerDispatchXdistSafety:
         """Sanity: patch.dict restores the original mapping on
         context exit. Required for test isolation."""
         original = dict(_SIGNERS_BY_PROVIDER)
-        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: b"override"}):
-            assert _SIGNERS_BY_PROVIDER["sigstore_keyless"](b"", None) == b"override"
-        # Original signer reinstalled.
+        sentinel = object()
+        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: sentinel}):
+            assert _SIGNERS_BY_PROVIDER["sigstore_keyless"](b"", None) is sentinel
         assert _SIGNERS_BY_PROVIDER == original
 
     def test_module_level_dispatch_is_readable(self):

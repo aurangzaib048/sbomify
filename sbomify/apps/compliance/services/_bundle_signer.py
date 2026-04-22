@@ -34,6 +34,7 @@ unsigned with a logged warning.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,33 @@ if TYPE_CHECKING:
     from sbomify.apps.teams.models import Team
 
 
-SigningCallable = Callable[[bytes, "TeamComplianceSettings"], bytes | None]
+@dataclass(frozen=True)
+class SigningOutcome:
+    """Structured result of a successful signing pass.
+
+    Carries everything that needs to be persisted on
+    :class:`CRAExportPackage` for the audit trail:
+      - ``bundle_bytes``: the Sigstore bundle JSON (uploaded to S3
+        at ``<storage_key>.sig``).
+      - ``rekor_log_index``: the Rekor transparency-log index of the
+        signing entry. Combined with the bundle's log_id this is a
+        complete auditor pointer.
+      - ``signed_by``: the OIDC subject that was ATTESTED TO —
+        always matches ``settings.signing_identity`` when configured
+        (enforced by the signer before returning).
+      - ``signed_issuer``: the OIDC issuer URL ditto.
+    """
+
+    bundle_bytes: bytes
+    rekor_log_index: int
+    signed_by: str
+    signed_issuer: str
 
 
-def _sign_noop(zip_bytes: bytes, settings: "TeamComplianceSettings") -> bytes | None:
+SigningCallable = Callable[[bytes, "TeamComplianceSettings"], "SigningOutcome | None"]
+
+
+def _sign_noop(zip_bytes: bytes, settings: "TeamComplianceSettings") -> "SigningOutcome | None":
     """No-op signer — returned when ``signing_provider == "none"``.
 
     Kept separate from the "signing disabled" short-circuit so a
@@ -61,34 +85,89 @@ def _sign_noop(zip_bytes: bytes, settings: "TeamComplianceSettings") -> bytes | 
     return None
 
 
-def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings") -> bytes | None:
+def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings") -> "SigningOutcome | None":
     """Sigstore keyless signing via Fulcio-issued ephemeral certs.
 
-    Requires an ambient OIDC identity at signing time — env var
-    ``SIGSTORE_ID_TOKEN``, a GitHub Actions workflow token, or any
-    credential chain sigstore-python's ``SigningContext.production()``
-    knows how to resolve. When the identity can't be resolved the
-    library raises; the outer ``sign_bundle`` catches and the export
-    ships unsigned.
+    Implements the full OIDC flow:
 
-    The minimal implementation below delegates OIDC issuer selection
-    to ``SigningContext.production()`` — good enough for local /
-    CI-driven flows with an ambient token. A production-grade
-    follow-up will: (a) pin the OIDC issuer per team, (b) capture
-    the Rekor transparency-log UUID from the signing result and
-    persist it on ``CRAExportPackage``, (c) verify the resolved
-    subject against ``settings.signing_identity`` before returning.
-    Tracked as the #906 sigstore-python integration follow-up.
+    1. Resolve the ambient OIDC identity via ``detect_credential()``.
+       Checks ``SIGSTORE_ID_TOKEN`` env var, GitHub Actions workflow
+       token, GCP / AWS / Azure ambient identity, and interactive
+       OAuth (the last is disabled in server contexts but the same
+       entrypoint). Returns ``None`` when no identity is available.
+
+    2. Validate the resolved subject against
+       ``settings.signing_identity`` — the ``sub`` claim of the
+       ambient token must match the team's configured identity.
+       Prevents the "server's local service account silently signs
+       in place of the CI identity" class of bug. Empty
+       ``signing_identity`` disables the check (first-time setup).
+
+    3. Validate the issuer against ``settings.signing_issuer`` —
+       the ``iss`` claim must match. Pins the OIDC provider so a
+       token from a different issuer (same email, wrong IdP) is
+       rejected.
+
+    4. Sign via ``SigningContext.production()`` which uses
+       Sigstore's public Fulcio + Rekor instances. The Bundle
+       returned by ``Signer.sign_artifact`` already contains the
+       log-entry inclusion proof — we capture ``log_index`` for
+       persistence on :class:`CRAExportPackage`.
+
+    Every rejection path returns ``None``; the outer ``sign_bundle``
+    wrapper logs + returns ``None`` so the export ships unsigned.
+    The bundle bytes round-trip through
+    ``sbomify.apps.plugins.builtins.verification._verify_cosign_bundle``
+    (same Sigstore bundle v0.3 JSON format) so a downstream
+    verifier can confirm the signature without sbomify-specific
+    knowledge.
     """
+    from sigstore.oidc import detect_credential  # type: ignore[import-not-found,unused-ignore]
     from sigstore.sign import SigningContext  # type: ignore[import-not-found,unused-ignore]
 
+    token = detect_credential()
+    if token is None:
+        logger.warning(
+            "Sigstore keyless signing enabled for team %s but no ambient "
+            "OIDC identity is available (set SIGSTORE_ID_TOKEN or run under "
+            "a supported CI with workload identity); exporting unsigned.",
+            settings.team_id,
+        )
+        return None
+
+    token_identity: str = token.identity  # type: ignore[attr-defined]
+    token_issuer: str = token.issuer  # type: ignore[attr-defined]
+
+    if settings.signing_identity and token_identity != settings.signing_identity:
+        logger.warning(
+            "Sigstore identity mismatch for team %s: configured=%r, ambient=%r; "
+            "exporting unsigned to prevent impersonation.",
+            settings.team_id,
+            settings.signing_identity,
+            token_identity,
+        )
+        return None
+
+    if settings.signing_issuer and token_issuer != settings.signing_issuer:
+        logger.warning(
+            "Sigstore issuer mismatch for team %s: configured=%r, ambient=%r; "
+            "exporting unsigned to prevent cross-IdP substitution.",
+            settings.team_id,
+            settings.signing_issuer,
+            token_issuer,
+        )
+        return None
+
     ctx = SigningContext.production()  # type: ignore[attr-defined,unused-ignore]
-    with ctx.signer() as signer:  # type: ignore[attr-defined,unused-ignore]
-        result = signer.sign_artifact(zip_bytes)
-    # Returns the Sigstore bundle v0.3 JSON — same shape the
-    # existing ``verification.py`` plugin consumes.
-    bundle_json: str = result.to_bundle().to_json()
-    return bundle_json.encode("utf-8")
+    with ctx.signer(token) as signer:  # type: ignore[attr-defined,unused-ignore]
+        bundle = signer.sign_artifact(zip_bytes)
+
+    return SigningOutcome(
+        bundle_bytes=bundle.to_json().encode("utf-8"),
+        rekor_log_index=int(bundle.log_entry.log_index),
+        signed_by=token_identity,
+        signed_issuer=token_issuer,
+    )
 
 
 # Dispatch table. Tests override entries here to inject deterministic
@@ -99,8 +178,8 @@ _SIGNERS_BY_PROVIDER: dict[str, SigningCallable] = {
 }
 
 
-def sign_bundle(zip_bytes: bytes, team: "Team") -> bytes | None:
-    """Return signature bytes for ``zip_bytes``, or ``None``.
+def sign_bundle(zip_bytes: bytes, team: "Team") -> "SigningOutcome | None":
+    """Return a :class:`SigningOutcome` for ``zip_bytes``, or ``None``.
 
     Resolves the team's :class:`TeamComplianceSettings`. Returns
     ``None`` when:
@@ -108,15 +187,17 @@ def sign_bundle(zip_bytes: bytes, team: "Team") -> bytes | None:
     - the team has no ``compliance_settings`` row (default state)
     - ``signing_enabled`` is ``False``
     - the configured provider can't produce a signature right now
-      (missing dep, missing OIDC token, runtime failure, provider
-      callable raises)
+      (missing OIDC token, identity/issuer mismatch, runtime
+      failure, provider callable raises)
 
     This is the public contract: the caller at
     ``build_export_package`` must be able to treat signing as
     best-effort. Exceptions raised by a provider callable are caught
     and logged here so a single broken signer can't kill a regulated
-    export. The non-None return is raw signature bytes — typically a
-    Sigstore bundle JSON — persisted as a side-car object in S3.
+    export. The non-None return carries the Sigstore bundle bytes
+    plus the Rekor log index plus the resolved OIDC identity that
+    was attested to — all persisted on :class:`CRAExportPackage`
+    for the audit trail.
     """
     from sbomify.apps.compliance.models import TeamComplianceSettings
 

@@ -424,9 +424,20 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     # the package wasn't signed (team has signing disabled, or signer
     # couldn't produce one at export time); the client renders the
     # "Download signature" affordance only when this is present.
+    # When signed, also surface the OIDC identity the bundle was
+    # attested to + the Rekor log-entry address — downstream
+    # verification needs these to run ``cosign verify-blob`` with
+    # the correct ``--certificate-identity`` /
+    # ``--certificate-oidc-issuer`` flags without guessing.
     sig = get_signature_download_url(package)
     if sig.ok and sig.value:
         body["signature_url"] = sig.value
+        body["signature"] = {
+            "provider": package.signature_provider,
+            "rekor_log_index": package.rekor_log_index,
+            "signed_by": package.signed_by,
+            "signed_issuer": package.signed_issuer,
+        }
 
     return 200, body
 

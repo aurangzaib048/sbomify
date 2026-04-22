@@ -449,24 +449,31 @@ def build_export_package(
     # row, populated below when the side-car upload succeeds.
     from sbomify.apps.compliance.services._bundle_signer import sign_bundle
 
-    signature_bytes = sign_bundle(zip_bytes, assessment.team)
+    signing_outcome = sign_bundle(zip_bytes, assessment.team)
     signature_storage_key = ""
     signature_provider = ""
-    if signature_bytes is not None:
+    rekor_log_index: int | None = None
+    signed_by = ""
+    signed_issuer = ""
+    if signing_outcome is not None:
         candidate_key = f"{storage_key}.sig"
         try:
             docs_s3.upload_data_as_file(
                 django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
                 candidate_key,
-                signature_bytes,
+                signing_outcome.bundle_bytes,
             )
-            signature_storage_key = candidate_key
-            signature_provider = assessment.team.compliance_settings.signing_provider
         except Exception:
             # Signing failures never fail the export; log and leave
-            # ``signature_storage_key`` empty so the download endpoint
+            # the signature fields empty so the download endpoint
             # doesn't advertise a URL that will 404.
             logger.exception("Failed to upload signature side-car for export %s", storage_key)
+        else:
+            signature_storage_key = candidate_key
+            signature_provider = assessment.team.compliance_settings.signing_provider
+            rekor_log_index = signing_outcome.rekor_log_index
+            signed_by = signing_outcome.signed_by
+            signed_issuer = signing_outcome.signed_issuer
 
     package = CRAExportPackage.objects.create(
         assessment=assessment,
@@ -475,6 +482,9 @@ def build_export_package(
         manifest=manifest,
         signature_storage_key=signature_storage_key,
         signature_provider=signature_provider,
+        rekor_log_index=rekor_log_index,
+        signed_by=signed_by,
+        signed_issuer=signed_issuer,
         created_by=user,
     )
 

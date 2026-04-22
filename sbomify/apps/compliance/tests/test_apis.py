@@ -488,7 +488,10 @@ class TestDownloadExport:
     ):
         """Issue #906: when the model records a signature_storage_key,
         the download response must include a second presigned URL
-        pointing at the ``.zip.sig`` side-car."""
+        pointing at the ``.zip.sig`` side-car, plus a ``signature``
+        block with the provider + Rekor log index + OIDC identity
+        so the auditor can run ``cosign verify-blob`` with the
+        correct flags without guessing."""
         from sbomify.apps.compliance.models import CRAExportPackage
 
         package = CRAExportPackage.objects.create(
@@ -498,6 +501,9 @@ class TestDownloadExport:
             manifest={"format_version": "1.1", "integrity": {"hash_algorithm": "sha256"}},
             signature_storage_key=f"compliance/exports/{assessment.id}/signed.zip.sig",
             signature_provider="sigstore_keyless",
+            rekor_log_index=424242,
+            signed_by="ci@acme.example",
+            signed_issuer="https://token.actions.githubusercontent.com",
         )
         client, token = authenticated_api_client
 
@@ -509,9 +515,13 @@ class TestDownloadExport:
         assert response.status_code == 200
         body = response.json()
         assert "download_url" in body
-        assert "signature_url" in body
-        # Both URLs point at the stubbed presigned URL from the fixture.
         assert body["signature_url"] == "https://s3.example.com/presigned"
+        assert body["signature"] == {
+            "provider": "sigstore_keyless",
+            "rekor_log_index": 424242,
+            "signed_by": "ci@acme.example",
+            "signed_issuer": "https://token.actions.githubusercontent.com",
+        }
 
 
 class TestStaleness:

@@ -719,11 +719,12 @@ class TestBuildExportPackageSigning:
     ):
         """Team with signing enabled + mock signer → ``.sig`` side-car
         uploaded to S3 at ``<storage_key>.sig`` and the export package
-        row records ``signature_storage_key`` + ``signature_provider``
-        so the download API can hand out a presigned URL for the
-        side-car without re-reading S3."""
+        row records every signing field (storage_key, provider,
+        rekor_log_index, signed_by, signed_issuer) so the download
+        API can hand out the full audit trail without re-reading S3."""
         from sbomify.apps.compliance.models import TeamComplianceSettings
         from sbomify.apps.compliance.services import _bundle_signer
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
 
         TeamComplianceSettings.objects.create(
             team=assessment_with_docs.team,
@@ -732,7 +733,12 @@ class TestBuildExportPackageSigning:
             signing_identity="ci@example.test",
         )
 
-        mock_sig = b'{"bundle":"mock-signature"}'
+        mock_outcome = SigningOutcome(
+            bundle_bytes=b'{"bundle":"mock-signature"}',
+            rekor_log_index=424242,
+            signed_by="ci@example.test",
+            signed_issuer="https://token.actions.githubusercontent.com",
+        )
         captured: dict[str, list[tuple[str, bytes]]] = {"uploads": []}
 
         class _Capture:
@@ -746,30 +752,28 @@ class TestBuildExportPackageSigning:
                 return b""
 
         with patch.dict(
-            _bundle_signer._SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: mock_sig}
+            _bundle_signer._SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: mock_outcome}
         ):
             with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
                 mock_s3_cls.return_value = _Capture()
                 result = build_export_package(assessment_with_docs, sample_user)
 
         assert result.ok
-        # .sig side-car uploaded at <storage_key>.sig
         sig_uploads = [key for key, _ in captured["uploads"] if key.endswith(".sig")]
         assert len(sig_uploads) == 1
         expected_sig_key = f"{result.value.storage_key}.sig"
         assert sig_uploads[0] == expected_sig_key
-        # Model fields record the signature — authoritative signal for
-        # downstream consumers (download API) to detect signing state
-        # without parsing the manifest. The manifest itself (both the
-        # DB copy and the copy embedded in the ZIP) does NOT carry a
-        # signature block — the signature is external to the ZIP.
+        # Every audit field populated from the SigningOutcome.
         assert result.value.signature_storage_key == expected_sig_key
         assert result.value.signature_provider == "sigstore_keyless"
+        assert result.value.rekor_log_index == 424242
+        assert result.value.signed_by == "ci@example.test"
+        assert result.value.signed_issuer == "https://token.actions.githubusercontent.com"
         assert result.value.is_signed is True
         assert "signature" not in result.value.manifest.get("integrity", {})
-        # Bytes uploaded match what the signer returned.
+        # Bytes uploaded match the SigningOutcome.
         uploaded_sig = dict(captured["uploads"])[expected_sig_key]
-        assert uploaded_sig == mock_sig
+        assert uploaded_sig == mock_outcome.bundle_bytes
 
     def test_signer_returning_none_produces_no_sig(self, assessment_with_docs, sample_user):
         """Enabled but signer can't sign right now (e.g. missing OIDC
@@ -816,6 +820,7 @@ class TestBuildExportPackageSigning:
         a 404 presigned URL)."""
         from sbomify.apps.compliance.models import TeamComplianceSettings
         from sbomify.apps.compliance.services import _bundle_signer
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
 
         TeamComplianceSettings.objects.create(
             team=assessment_with_docs.team,
@@ -838,9 +843,15 @@ class TestBuildExportPackageSigning:
             def get_sbom_data(self, filename):
                 return b""
 
+        outcome = SigningOutcome(
+            bundle_bytes=b'{"bundle":"mock"}',
+            rekor_log_index=1,
+            signed_by="ci@example.test",
+            signed_issuer="https://any",
+        )
         with patch.dict(
             _bundle_signer._SIGNERS_BY_PROVIDER,
-            {"sigstore_keyless": lambda z, s: b'{"bundle":"mock"}'},
+            {"sigstore_keyless": lambda z, s: outcome},
         ):
             with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
                 mock_s3_cls.return_value = _PartialFailS3()
@@ -849,9 +860,14 @@ class TestBuildExportPackageSigning:
         assert result.ok
         # No signature recorded on the model because the side-car
         # upload failed — otherwise the download endpoint would
-        # hand out a presigned URL to a missing key.
+        # hand out a presigned URL to a missing key. Every signing
+        # field must stay empty/None even though the signer
+        # successfully produced a SigningOutcome.
         assert result.value.signature_storage_key == ""
         assert result.value.signature_provider == ""
+        assert result.value.rekor_log_index is None
+        assert result.value.signed_by == ""
+        assert result.value.signed_issuer == ""
         assert result.value.is_signed is False
 
 

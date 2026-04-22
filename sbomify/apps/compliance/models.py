@@ -330,6 +330,18 @@ class CRAExportPackage(models.Model):
     # beside it in S3), so it can't be in-bundle metadata.
     signature_storage_key = models.CharField(max_length=500, blank=True, default="")
     signature_provider = models.CharField(max_length=32, blank=True, default="")
+    # Rekor transparency-log address captured at signing time. The
+    # log index uniquely identifies the entry within the Rekor v2
+    # transparency log; combined with the bundle's log_id it's a
+    # complete pointer an auditor can fetch and verify independently.
+    # Positive bigint because the global Rekor index is continuously
+    # increasing and already exceeds 2^31 on production.
+    rekor_log_index = models.PositiveBigIntegerField(null=True, blank=True)
+    # Resolved OIDC identity at signing time. Persisted verbatim so
+    # auditors can confirm the expected signer without re-verifying
+    # the bundle. Empty when unsigned.
+    signed_by = models.CharField(max_length=255, blank=True, default="")
+    signed_issuer = models.URLField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
@@ -379,10 +391,25 @@ class TeamComplianceSettings(models.Model):
         choices=SigningProvider.choices,
         default=SigningProvider.NONE,
     )
-    # OIDC identity (email / issuer subject) that the keyless signer
-    # will attest to. Free-form for now — a follow-up will validate
-    # against a configured OIDC issuer's expected subject format.
+    # OIDC subject the keyless signer must attest to — the ambient
+    # identity token's ``sub`` claim is compared to this value before
+    # signing. Empty string disables the check (any ambient identity
+    # accepted — useful for first-time setup / local experimentation).
+    # Examples:
+    #   ``ci@acme.example``
+    #   ``https://github.com/acme/product/.github/workflows/release.yml@refs/heads/main``
     signing_identity = models.CharField(max_length=255, blank=True, default="")
+    # OIDC issuer URL the keyless signer must accept. Enforced
+    # alongside ``signing_identity`` — the ambient token's ``iss``
+    # claim must match. Prevents a scenario where the ambient token
+    # is valid but from a different OIDC provider than the team
+    # configured (e.g. server's local GCE service account
+    # masquerading as the CI system the team expects).
+    # Examples:
+    #   ``https://token.actions.githubusercontent.com``
+    #   ``https://accounts.google.com``
+    #   ``https://oauth2.sigstore.dev/auth``
+    signing_issuer = models.URLField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
