@@ -732,6 +732,32 @@ class TestSelectAppliedStandards:
         assert en_1["restrictions"], "EN 18031-1 must surface OJ restrictions on the DoC"
         assert any("default password" in r.lower() for r in en_1["restrictions"])
 
+    def test_en_18031_2_carries_restrictions_text(self, assessment):
+        """OJ L_202500138 applies the default-password restriction
+        to ALL THREE parts (-1, -2, -3). Previously only -1 carried
+        the text — operators claiming conformity against -2 would
+        miss the disqualifier on the DoC."""
+        assessment.is_radio_equipment = True
+        assessment.processes_personal_data = True
+        assessment.save(update_fields=["is_radio_equipment", "processes_personal_data"])
+
+        en_2 = next(
+            s for s in _select_applied_standards(assessment) if "EN 18031-2" in s["citation"]
+        )
+        assert en_2["restrictions"], "EN 18031-2 must surface OJ restrictions on the DoC"
+        assert any("default password" in r.lower() for r in en_2["restrictions"])
+
+    def test_en_18031_3_carries_restrictions_text(self, assessment):
+        assessment.is_radio_equipment = True
+        assessment.handles_financial_value = True
+        assessment.save(update_fields=["is_radio_equipment", "handles_financial_value"])
+
+        en_3 = next(
+            s for s in _select_applied_standards(assessment) if "EN 18031-3" in s["citation"]
+        )
+        assert en_3["restrictions"], "EN 18031-3 must surface OJ restrictions on the DoC"
+        assert any("default password" in r.lower() for r in en_3["restrictions"])
+
     def test_all_three_flags_pull_the_full_set(self, assessment):
         """Belt-and-braces: a radio-equipment product that both
         processes personal data AND handles financial value picks up

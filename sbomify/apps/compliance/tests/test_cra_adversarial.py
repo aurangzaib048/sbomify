@@ -534,6 +534,49 @@ class TestBsiWaiverLifecycle:
 # ---------------------------------------------------------------------------
 
 
+class TestBsiClassifierCompleteness:
+    """Invariant: every known finding id carries a specific
+    ``human_summary`` — the generic "Unclassified" fallback should
+    only ever fire for genuinely unknown ids. Drift here means the
+    Step 2 wizard would show the unhelpful fallback for a real BSI
+    check."""
+
+    def test_every_known_finding_has_human_summary(self):
+        from sbomify.apps.compliance.services.sbom_compliance_service import (
+            _BSI_HUMAN_SUMMARY,
+            _BSI_REMEDIATION_TYPE,
+            _UNKNOWN_FINDING_SUMMARY,
+        )
+
+        missing = [fid for fid in _BSI_REMEDIATION_TYPE if fid not in _BSI_HUMAN_SUMMARY]
+        assert not missing, f"Finding ids with no human_summary: {missing}"
+        # And every human_summary entry corresponds to a known finding
+        # (no typos in the summary map that would silently shadow the
+        # fallback for a never-fired id).
+        strays = [fid for fid in _BSI_HUMAN_SUMMARY if fid not in _BSI_REMEDIATION_TYPE]
+        assert not strays, f"human_summary ids not in the classifier: {strays}"
+        assert _UNKNOWN_FINDING_SUMMARY  # sanity
+
+    def test_tooling_limitation_summaries_name_a_scanner_or_workflow(self):
+        """Every tooling_limitation summary must mention the
+        scanner / workflow the operator should change. Generic
+        "run sbomify-action" text isn't enough — the issue asked
+        for specific explanations like "syft doesn't emit X"."""
+        from sbomify.apps.compliance.services.sbom_compliance_service import (
+            _BSI_HUMAN_SUMMARY,
+            _BSI_REMEDIATION_TYPE,
+        )
+
+        tooling_ids = [fid for fid, t in _BSI_REMEDIATION_TYPE.items() if t == "tooling_limitation"]
+        for fid in tooling_ids:
+            summary = _BSI_HUMAN_SUMMARY[fid].lower()
+            # Either names a scanner or the enrichment workflow.
+            mentions_workflow = any(
+                token in summary for token in ("syft", "trivy", "scanner", "enrich", "sbomify-action")
+            )
+            assert mentions_workflow, f"{fid}: summary should name a scanner or enrichment workflow"
+
+
 class TestBsiClassifierDefensive:
     """Public predicates (``is_known_bsi_finding`` / ``is_waivable_bsi_finding``)
     are the waiver-save gatekeepers. Adversarial inputs must fail
@@ -559,12 +602,13 @@ class TestBsiClassifierDefensive:
 
     def test_unknown_finding_fallback_consistent(self):
         """``_classify_bsi_finding`` unknown-id fallback returns a
-        valid (remediation_type, guidance_url) pair even for fake
-        ids. Regression guard for the "conservative default"
-        contract."""
-        rt, url = _classify_bsi_finding("bsi-tr03183:this-is-not-real")
+        valid (remediation_type, guidance_url, human_summary) tuple
+        even for fake ids. Regression guard for the "conservative
+        default" contract."""
+        rt, url, human = _classify_bsi_finding("bsi-tr03183:this-is-not-real")
         assert rt == "operator_action"
         assert url.startswith("https://")
+        assert "Unclassified" in human
 
 
 # ---------------------------------------------------------------------------
