@@ -667,6 +667,159 @@ class TestSelectAppliedStandards:
             req["cra_reference"] for req in bsi["cra_requirements_covered"]
         }
 
+    def test_radio_equipment_opt_in_pulls_en_18031_1(self, assessment):
+        """Ticking ``is_radio_equipment`` on Step 1 must add EN 18031-1
+        to the DoC's applied-standards list (issue #905). EN 18031-2
+        and -3 stay out unless the scope flags are also set."""
+        assessment.is_radio_equipment = True
+        assessment.save(update_fields=["is_radio_equipment"])
+
+        standards = _select_applied_standards(assessment)
+        citations = [s["citation"] for s in standards]
+
+        assert any("EN 18031-1" in c for c in citations)
+        assert not any("EN 18031-2" in c for c in citations)
+        assert not any("EN 18031-3" in c for c in citations)
+
+    def test_radio_plus_personal_data_pulls_en_18031_2(self, assessment):
+        """RED + personal-data flag triggers EN 18031-2 on top of -1."""
+        assessment.is_radio_equipment = True
+        assessment.processes_personal_data = True
+        assessment.save(update_fields=["is_radio_equipment", "processes_personal_data"])
+
+        citations = [s["citation"] for s in _select_applied_standards(assessment)]
+
+        assert any("EN 18031-1" in c for c in citations)
+        assert any("EN 18031-2" in c for c in citations)
+        assert not any("EN 18031-3" in c for c in citations)
+
+    def test_radio_plus_financial_pulls_en_18031_3(self, assessment):
+        """RED + financial-value flag triggers EN 18031-3."""
+        assessment.is_radio_equipment = True
+        assessment.handles_financial_value = True
+        assessment.save(update_fields=["is_radio_equipment", "handles_financial_value"])
+
+        citations = [s["citation"] for s in _select_applied_standards(assessment)]
+
+        assert any("EN 18031-1" in c for c in citations)
+        assert not any("EN 18031-2" in c for c in citations)
+        assert any("EN 18031-3" in c for c in citations)
+
+    def test_personal_data_without_radio_does_not_pull_en_18031_2(self, assessment):
+        """EN 18031-2 requires BOTH RED applicability and personal-data
+        processing — the standard is a RED harmonised standard, not a
+        standalone privacy standard."""
+        assessment.is_radio_equipment = False
+        assessment.processes_personal_data = True
+        assessment.save(update_fields=["is_radio_equipment", "processes_personal_data"])
+
+        citations = [s["citation"] for s in _select_applied_standards(assessment)]
+
+        assert not any("EN 18031" in c for c in citations)
+
+    def test_en_18031_1_entry_carries_restrictions_text(self, assessment):
+        """OJ L_202500138 restrictions (default-password disqualifier)
+        must appear in the returned entry so the DoC template can
+        render them inline. Surfacing these verbatim on the DoC is
+        the whole reason operators tick the RED box knowingly."""
+        assessment.is_radio_equipment = True
+        assessment.save(update_fields=["is_radio_equipment"])
+
+        standards = _select_applied_standards(assessment)
+        en_1 = next(s for s in standards if "EN 18031-1" in s["citation"])
+
+        assert en_1["harmonised"] is True
+        assert en_1["restrictions"], "EN 18031-1 must surface OJ restrictions on the DoC"
+        assert any("default password" in r.lower() for r in en_1["restrictions"])
+
+    def test_all_three_flags_pull_the_full_set(self, assessment):
+        """Belt-and-braces: a radio-equipment product that both
+        processes personal data AND handles financial value picks up
+        all three EN 18031 parts."""
+        assessment.is_radio_equipment = True
+        assessment.processes_personal_data = True
+        assessment.handles_financial_value = True
+        assessment.save(update_fields=["is_radio_equipment", "processes_personal_data", "handles_financial_value"])
+
+        citations = [s["citation"] for s in _select_applied_standards(assessment)]
+
+        assert any("EN 18031-1" in c for c in citations)
+        assert any("EN 18031-2" in c for c in citations)
+        assert any("EN 18031-3" in c for c in citations)
+
+    def test_draft_standards_never_selected(self, assessment):
+        """Draft ETSI EN 304 626 (Operating Systems) is in the
+        reference JSON but must not appear on any DoC until OJ-listed.
+        The ``draft`` substring in the id is the gate."""
+        # Even if we somehow satisfy its applies_when, draft stays out.
+        assessment.product_category = "operating_system"
+        assessment.save(update_fields=["product_category"])
+
+        citations = [s["citation"] for s in _select_applied_standards(assessment)]
+
+        assert not any("EN 304 626" in c for c in citations)
+
+
+class TestEvaluateAppliesWhen:
+    """Unit coverage for the rule-tree evaluator used by
+    ``_select_applied_standards``. Kept separate from the DoC-level
+    tests so a regression in the combinator logic is isolated to the
+    predicate, not the whole pipeline."""
+
+    def test_empty_rule_vacuously_true(self):
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        assert _evaluate_applies_when(None, {}) is True
+        assert _evaluate_applies_when({}, {"product_category": "anything"}) is True
+
+    def test_simple_equality_match(self):
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        assert _evaluate_applies_when({"product_category": "radio_equipment"}, {"product_category": "radio_equipment"})
+        assert not _evaluate_applies_when({"product_category": "radio_equipment"}, {"product_category": "default"})
+
+    def test_any_of_short_circuits_on_first_match(self):
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        rule = {"any_of": [{"product_category": "radio_equipment"}, {"operator_opt_in": True}]}
+        assert _evaluate_applies_when(rule, {"product_category": "radio_equipment", "operator_opt_in": False})
+        assert _evaluate_applies_when(rule, {"product_category": "default", "operator_opt_in": True})
+        assert not _evaluate_applies_when(rule, {"product_category": "default", "operator_opt_in": False})
+
+    def test_all_of_requires_every_predicate(self):
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        rule = {"all_of": [{"product_category": "radio_equipment"}, {"processes_personal_data": True}]}
+        assert _evaluate_applies_when(rule, {"product_category": "radio_equipment", "processes_personal_data": True})
+        assert not _evaluate_applies_when(
+            rule, {"product_category": "radio_equipment", "processes_personal_data": False}
+        )
+        assert not _evaluate_applies_when(rule, {"product_category": "default", "processes_personal_data": True})
+
+    def test_nested_combinators(self):
+        """Future-proofing: combinators can nest. A future rule like
+        "radio AND (personal OR financial)" must evaluate correctly."""
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        rule = {
+            "all_of": [
+                {"product_category": "radio_equipment"},
+                {"any_of": [{"processes_personal_data": True}, {"handles_financial_value": True}]},
+            ]
+        }
+        facts = {"product_category": "radio_equipment", "processes_personal_data": False, "handles_financial_value": True}
+        assert _evaluate_applies_when(rule, facts)
+        facts_neither = dict(facts, handles_financial_value=False)
+        assert not _evaluate_applies_when(rule, facts_neither)
+
+    def test_unknown_key_fails_closed(self):
+        """A typo in the JSON (``{"widget_type": "x"}``) must never
+        match — unknown keys resolve to ``None`` in the facts dict
+        and ``None != "x"``. Prevents an accidental rule opening up."""
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        assert not _evaluate_applies_when({"widget_type": "x"}, {"product_category": "radio_equipment"})
+
 
 @pytest.mark.django_db
 class TestRegenerateAllFailurePath:

@@ -208,6 +208,13 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "product_category": assessment.product_category,
             "is_open_source_steward": assessment.is_open_source_steward,
             "conformity_assessment_procedure": assessment.conformity_assessment_procedure,
+            # EN 18031 applicability flags (issue #905). Orthogonal to
+            # ``product_category``; surface separately so the wizard
+            # renders both a CRA risk-tier selector and a RED-scope
+            # checklist.
+            "is_radio_equipment": assessment.is_radio_equipment,
+            "processes_personal_data": assessment.processes_personal_data,
+            "handles_financial_value": assessment.handles_financial_value,
         }
     )
 
@@ -411,7 +418,12 @@ def _compute_compliance_summary(assessment: CRAAssessment) -> dict[str, Any]:
 # ---- Step 1 fields that can be saved ----
 _STEP_1_TEXT_FIELDS = ("intended_use",)
 _STEP_1_CHAR_FIELDS = ("product_category",)
-_STEP_1_BOOL_FIELDS = ("is_open_source_steward",)
+_STEP_1_BOOL_FIELDS = (
+    "is_open_source_steward",
+    "is_radio_equipment",
+    "processes_personal_data",
+    "handles_financial_value",
+)
 _STEP_1_DATE_FIELDS = ("support_period_end",)
 _STEP_1_JSON_FIELDS = ("target_eu_markets",)
 
@@ -542,6 +554,9 @@ def _save_step_1(
             "intended_use",
             "target_eu_markets",
             "support_period_end",
+            "is_radio_equipment",
+            "processes_personal_data",
+            "handles_financial_value",
             "status",
             "current_step",
             "completed_steps",

@@ -200,6 +200,27 @@ class CRAAssessment(models.Model):
     conformity_assessment_procedure = models.CharField(
         max_length=20, choices=ConformityProcedure.choices, default=ConformityProcedure.MODULE_A
     )
+    # RED / EN 18031 applicability. Orthogonal to ``product_category``
+    # (which is the CRA risk-tier classification Default/Class I/II/Critical).
+    # A product can be Class I AND radio equipment; these flags decide
+    # whether the EN 18031 harmonised-standard entries show up on the
+    # DoC as presumption-of-conformity evidence. See issue #905 and
+    # ``cra-harmonised-standards.json`` for the applies_when rule tree.
+    is_radio_equipment = models.BooleanField(
+        default=False,
+        help_text="Product falls under the EU Radio Equipment Directive — triggers EN 18031-1 applicability.",
+    )
+    processes_personal_data = models.BooleanField(
+        default=False,
+        help_text="Product processes personal data under GDPR — triggers EN 18031-2 (privacy) when combined with RED.",
+    )
+    handles_financial_value = models.BooleanField(
+        default=False,
+        help_text=(
+            "Product handles monetary value or virtual currency — "
+            "triggers EN 18031-3 (fraud protection) when combined with RED."
+        ),
+    )
 
     # Step 3b — Vulnerability disclosure
     vdp_url = models.URLField(blank=True, default="")
