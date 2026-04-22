@@ -81,6 +81,25 @@ function craStep1() {
           (d.conformity_assessment_procedure as string) || '';
       }
       this.assessmentId = getAssessmentId();
+      // EN 18031-2/-3 only apply to radio equipment (issue #905).
+      // When the operator un-ticks ``isRadioEquipment`` the two
+      // dependent scope flags must follow — the template disables
+      // them but the bound values survive, which persists an
+      // inconsistent state and renders as "disabled-but-checked"
+      // on the next page load. The backend's _save_step_1 already
+      // clears these defensively; this mirror prevents the stale
+      // tick from reaching the save call in the first place.
+      // Uses Alpine's $watch, typed here via `this` cast because
+      // registerAlpineComponent doesn't propagate Alpine's magics.
+      (this as unknown as { $watch: (prop: string, cb: (val: unknown) => void) => void }).$watch(
+        'isRadioEquipment',
+        (val: unknown) => {
+          if (!val) {
+            this.processesPersonalData = false;
+            this.handlesFinancialValue = false;
+          }
+        },
+      );
     },
 
     get canContinue(): boolean {

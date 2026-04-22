@@ -2,13 +2,17 @@
 
 Opt-in per team via :class:`TeamComplianceSettings` (issue #906). The
 public entry point is :func:`sign_bundle`, which returns a
-:class:`SigningOutcome` or ``None``:
+:class:`SigningOutcome` or ``None``. Callers must distinguish on
+``is not None`` — an empty-but-non-None outcome is rejected at
+``SigningOutcome.__post_init__`` so a truthy check would behave the
+same, but ``is not None`` is the documented contract:
 
     outcome = sign_bundle(zip_bytes, team)
     if outcome is not None:
         # outcome.bundle_bytes uploaded to S3 at f"{storage_key}.sig"
-        # outcome.rekor_log_index + .signed_by + .signed_issuer
-        # persisted on :class:`CRAExportPackage` for the audit trail.
+        # outcome.rekor_log_index + .signed_by + .signed_issuer +
+        # .provider persisted on :class:`CRAExportPackage` for the
+        # audit trail.
 
 ``None`` is returned when the team hasn't enabled signing, when the
 provider is configured but the runtime prerequisites aren't met
@@ -65,12 +69,20 @@ class SigningOutcome:
         always matches ``settings.signing_identity`` when configured
         (enforced by the signer before returning).
       - ``signed_issuer``: the OIDC issuer URL ditto.
+      - ``provider``: the dispatch key (e.g. ``"sigstore_keyless"``)
+        of the signer that actually produced this outcome. The
+        caller persists this directly instead of re-reading
+        ``TeamComplianceSettings.signing_provider`` — that row can
+        be edited or deleted between ``sign_bundle()`` returning
+        and the outcome being persisted, and the audit trail must
+        record what signed, not what's configured later.
     """
 
     bundle_bytes: bytes
     rekor_log_index: int
     signed_by: str
     signed_issuer: str
+    provider: str
 
     def __post_init__(self) -> None:
         # Reject shapes that would misrepresent a successful signing —
@@ -80,6 +92,8 @@ class SigningOutcome:
             raise ValueError("SigningOutcome.bundle_bytes must be non-empty")
         if self.rekor_log_index < 0:
             raise ValueError(f"SigningOutcome.rekor_log_index must be >= 0, got {self.rekor_log_index}")
+        if not self.provider:
+            raise ValueError("SigningOutcome.provider must be non-empty")
 
 
 SigningCallable = Callable[[bytes, "TeamComplianceSettings"], "SigningOutcome | None"]
@@ -189,6 +203,7 @@ def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings")
         rekor_log_index=int(bundle.log_entry.log_index),  # type: ignore[attr-defined,unused-ignore]
         signed_by=token_identity,
         signed_issuer=token_issuer,
+        provider="sigstore_keyless",
     )
 
 

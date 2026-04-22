@@ -52,6 +52,7 @@ def _mock_outcome(
         rekor_log_index=rekor_log_index,
         signed_by=signed_by,
         signed_issuer=signed_issuer,
+        provider="sigstore_keyless",
     )
 
 

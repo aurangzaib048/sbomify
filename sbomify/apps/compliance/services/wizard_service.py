@@ -244,7 +244,6 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
 
     components: list[dict[str, Any]] = payload.get("components") or []
     summary: dict[str, Any] = payload.get("summary") or {}
-    any_unwaived_fail_gate = False
     any_passing_gate = False
     for component in components:
         bsi = component.get("bsi_assessment")
@@ -274,11 +273,15 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             any_passing_gate = True
         else:
             component["effectively_passing"] = False
-            if unwaived_fail_count > 0:
-                any_unwaived_fail_gate = True
 
-    # Recompute the gate with waivers applied.
-    summary["overall_gate"] = any_passing_gate and not any_unwaived_fail_gate
+    # Recompute the gate with waivers applied. Match the existential
+    # semantics of ``check_sbom_gate()`` / ``get_bsi_assessment_status``
+    # — the product-level gate passes when at least one component
+    # effectively passes. Requiring every component to be unwaived-
+    # clean would be stricter than the underlying SBOM gate and
+    # block wizard progression for products that have one good
+    # component and one unresolved-but-unwaivable tail.
+    summary["overall_gate"] = any_passing_gate
     summary["has_waivers"] = bool(waivers)
     payload["summary"] = summary
     return ServiceResult.success(payload)

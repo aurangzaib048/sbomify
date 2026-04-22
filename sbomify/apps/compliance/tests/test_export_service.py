@@ -658,20 +658,28 @@ class TestIntegrityReadmeFormatVersion:
         readme = _integrity_readme("deadbeef" * 8, signed=False)
         assert "About signatures" in readme
         assert "cosign sign-blob" in readme
-        # Should NOT claim the bundle is signed.
-        assert "This bundle ships with" not in readme
+        # Should NOT claim the bundle is configured to ship signed.
+        assert "configured to ship with" not in readme
 
     def test_signed_readme_describes_verification(self):
         """Signed bundles get verification instructions for the
         side-car signature file, including the cosign verify-blob
-        command."""
+        command. The README must hedge about actual side-car
+        presence because INTEGRITY.md is embedded in the ZIP before
+        signing runs — a runtime signing failure cannot retroactively
+        amend the README, so the text instructs operators to verify
+        the ``.sig`` side-car exists before trusting the bundle as
+        signed."""
         readme = _integrity_readme("deadbeef" * 8, signed=True, provider="sigstore_keyless")
-        assert "This bundle ships with" in readme
+        assert "configured to ship with" in readme
         assert "Sigstore keyless" in readme
         assert "cosign verify-blob" in readme
         # The bundle carries the side-car externally; confirm the
         # README documents the separation explicitly.
         assert "side-car" in readme
+        # Hedging: README tells operators absence of .sig means
+        # signing failed at export time.
+        assert "signing failed at export time" in readme
 
 
 @pytest.mark.django_db
@@ -751,6 +759,7 @@ class TestBuildExportPackageSigning:
             rekor_log_index=424242,
             signed_by="ci@example.test",
             signed_issuer="https://token.actions.githubusercontent.com",
+            provider="sigstore_keyless",
         )
         captured: dict[str, list[tuple[str, bytes]]] = {"uploads": []}
 
@@ -861,6 +870,7 @@ class TestBuildExportPackageSigning:
             rekor_log_index=1,
             signed_by="ci@example.test",
             signed_issuer="https://any",
+            provider="sigstore_keyless",
         )
         with patch.dict(
             _bundle_signer._SIGNERS_BY_PROVIDER,

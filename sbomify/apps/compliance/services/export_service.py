@@ -94,10 +94,19 @@ def _signature_readme_section(signed: bool, provider: str | None) -> str:
         provider_label = _SIGNATURE_PROVIDER_LABELS.get(provider or "", "a configured cryptographic signature")
         return (
             "## 3. Bundle signature\n\n"
-            f"This bundle ships with {provider_label}. The signature is "
-            "delivered as a side-car object alongside the ZIP — the download "
-            "endpoint returns a second presigned URL ending in `.zip.sig` "
-            "whose response body is the Sigstore bundle (JSON). Verify with:\n\n"
+            f"This bundle is configured to ship with {provider_label} "
+            "delivered as a side-car object alongside the ZIP — the "
+            "download endpoint returns a second presigned URL ending "
+            "in `.zip.sig` whose response body is the Sigstore bundle "
+            "(JSON).\n\n"
+            "**Check the side-car exists before trusting the bundle as "
+            "signed.** The authoritative signal is the presence of the "
+            "`.zip.sig` object alongside the bundle; its absence means "
+            "signing failed at export time and the bundle is unsigned "
+            "regardless of this notice. This README is embedded in the "
+            "ZIP before signing runs, so it cannot reflect a runtime "
+            "signing failure.\n\n"
+            "If the side-car is present, verify with:\n\n"
             "```sh\n"
             "cosign verify-blob \\\n"
             "  --bundle cra-package-*.zip.sig \\\n"
@@ -473,7 +482,13 @@ def build_export_package(
             logger.exception("Failed to upload signature side-car for export %s", storage_key)
         else:
             signature_storage_key = candidate_key
-            signature_provider = assessment.team.compliance_settings.signing_provider
+            # Use the provider carried on the outcome rather than
+            # re-reading ``TeamComplianceSettings.signing_provider``.
+            # The settings row can be edited/deleted concurrently
+            # between ``sign_bundle()`` returning and this assignment;
+            # the audit trail must record what actually signed, not
+            # what the team has configured now.
+            signature_provider = signing_outcome.provider
             rekor_log_index = signing_outcome.rekor_log_index
             signed_by = signing_outcome.signed_by
             signed_issuer = signing_outcome.signed_issuer
@@ -579,7 +594,13 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
     S3 key. Rejection returns ``None`` so the client hides the
     signature affordance rather than handing out a mis-targeted URL.
     """
-    key = package.signature_storage_key
+    # Normalise first — an accidental admin edit that leaves trailing
+    # whitespace is truthy but would still pass the prefix check
+    # (spaces at the end only). The prefix/suffix checks below
+    # implicitly reject leading whitespace, but stripping makes the
+    # intent explicit and leaves no room for a " compliance/... .sig "
+    # style key to sneak past.
+    key = (package.signature_storage_key or "").strip()
     if not key:
         return ServiceResult.success(None)
     # Prefix + suffix + no-traversal check. ``startswith`` alone lets
@@ -612,9 +633,17 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
             "get_object",
             Params={
                 "Bucket": django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
-                "Key": package.signature_storage_key,
+                # Use the stripped/validated ``key`` rather than the
+                # raw DB field so a stray-whitespace admin edit
+                # doesn't presign a mangled S3 key.
+                "Key": key,
                 "ResponseContentDisposition": f'attachment; filename="{filename}"',
-                "ResponseContentType": "application/json",
+                # Precise Sigstore bundle media type — downstream
+                # tooling that sniffs Content-Type (cosign, auditors)
+                # uses this to distinguish the side-car from a
+                # generic JSON document. Matches the media type the
+                # sigstore Bundle JSON round-trips through.
+                "ResponseContentType": "application/vnd.dev.sigstore.bundle.v0.3+json",
             },
             ExpiresIn=_PRESIGNED_URL_EXPIRY_SECONDS,
         )

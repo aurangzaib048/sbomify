@@ -559,6 +559,52 @@ class TestDownloadExport:
             "signed_issuer": "https://token.actions.githubusercontent.com",
         }
 
+    def test_download_propagates_signature_presign_failure(
+        self, authenticated_api_client, assessment
+    ):
+        """Issue #906: when the package is recorded as signed but
+        the signature presigning fails (S3 error, transient AWS
+        outage), the endpoint must surface the failure rather than
+        silently returning 200 with only ``download_url``. A signed
+        bundle silently appearing unsigned would mislead downstream
+        verifiers and hide operational issues that need
+        investigation.
+        """
+        from unittest.mock import patch
+
+        from sbomify.apps.compliance.models import CRAExportPackage
+
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/propagate.zip",
+            content_hash="4" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key=f"compliance/exports/{assessment.id}/propagate.zip.sig",
+            signature_provider="sigstore_keyless",
+        )
+        client, token = authenticated_api_client
+
+        # Bundle presign succeeds; signature presign raises — matches
+        # a real "bundle upload worked, S3 flakes during the second
+        # presigning call" scenario.
+        from sbomify.apps.core.services.results import ServiceResult
+
+        def _sig_fail(pkg):
+            return ServiceResult.failure("simulated S3 outage", status_code=500)
+
+        with patch(
+            "sbomify.apps.compliance.services.export_service.get_signature_download_url",
+            side_effect=_sig_fail,
+        ), patch("boto3.client") as mock_boto:
+            mock_boto.return_value.generate_presigned_url.return_value = "https://ok"
+            response = client.get(
+                f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
+                **get_api_headers(token),
+            )
+
+        assert response.status_code == 500
+        assert "simulated S3 outage" in response.json()["error"]
+
 
 class TestStaleness:
     def test_returns_staleness_info(self, authenticated_api_client, assessment):

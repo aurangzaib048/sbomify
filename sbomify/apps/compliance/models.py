@@ -377,8 +377,10 @@ class TeamComplianceSettings(models.Model):
     class SigningProvider(models.TextChoices):
         NONE = "none", "None"
         # Sigstore keyless (Fulcio-issued ephemeral certs bound to an
-        # OIDC identity). Expects an ``SIGSTORE_OIDC_TOKEN`` env var
-        # or ambient OIDC identity at signing time.
+        # OIDC identity). Expects a ``SIGSTORE_ID_TOKEN`` env var
+        # (the name ``sigstore.oidc.detect_credential`` looks for)
+        # or an ambient OIDC identity — GitHub Actions workflow
+        # token, GCP/AWS/Azure workload identity — at signing time.
         SIGSTORE_KEYLESS = "sigstore_keyless", "Sigstore (keyless, Fulcio)"
 
     class Meta:

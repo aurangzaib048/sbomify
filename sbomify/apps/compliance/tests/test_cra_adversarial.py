@@ -675,7 +675,13 @@ class TestSignerDispatchAdversarial:
         from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
 
         with pytest.raises(ValueError, match="bundle_bytes must be non-empty"):
-            SigningOutcome(bundle_bytes=b"", rekor_log_index=0, signed_by="", signed_issuer="")
+            SigningOutcome(
+                bundle_bytes=b"",
+                rekor_log_index=0,
+                signed_by="",
+                signed_issuer="",
+                provider="sigstore_keyless",
+            )
 
     def test_signing_outcome_rejects_negative_rekor_index(self):
         """Rekor indexes are non-negative (``0`` is valid for a
@@ -686,7 +692,30 @@ class TestSignerDispatchAdversarial:
         from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
 
         with pytest.raises(ValueError, match="rekor_log_index must be >= 0"):
-            SigningOutcome(bundle_bytes=b"x", rekor_log_index=-1, signed_by="", signed_issuer="")
+            SigningOutcome(
+                bundle_bytes=b"x",
+                rekor_log_index=-1,
+                signed_by="",
+                signed_issuer="",
+                provider="sigstore_keyless",
+            )
+
+    def test_signing_outcome_rejects_empty_provider(self):
+        """``provider`` must be non-empty — it is persisted as
+        ``CRAExportPackage.signature_provider`` and is the
+        audit-trail record of what actually signed. Empty provider
+        would misattribute the signature and slip past a truthy
+        check downstream."""
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
+
+        with pytest.raises(ValueError, match="provider must be non-empty"):
+            SigningOutcome(
+                bundle_bytes=b"x",
+                rekor_log_index=0,
+                signed_by="",
+                signed_issuer="",
+                provider="",
+            )
 
     def test_signer_constructing_invalid_outcome_swallowed_by_sign_bundle(
         self, sample_team_with_owner_member
@@ -712,6 +741,7 @@ class TestSignerDispatchAdversarial:
                 rekor_log_index=1,
                 signed_by="who",
                 signed_issuer="where",
+                provider="sigstore_keyless",
             )
 
         with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": _broken_signer}):
@@ -783,7 +813,7 @@ class TestSignerDispatchAdversarial:
         def _capturing_signer(z, s):
             captured["zip"] = z
             captured["settings_team"] = s.team_id
-            return SigningOutcome(b"sig", 1, "x", "y")
+            return SigningOutcome(b"sig", 1, "x", "y", "sigstore_keyless")
 
         with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": _capturing_signer}):
             sign_bundle(b"exact-zip-bytes", team)

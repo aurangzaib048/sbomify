@@ -443,7 +443,17 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     # the correct ``--certificate-identity`` /
     # ``--certificate-oidc-issuer`` flags without guessing.
     sig = get_signature_download_url(package)
-    if sig.ok and sig.value:
+    if not sig.ok:
+        # ``sig.ok=False`` means the side-car exists (or should) but
+        # presigning failed. If the package is recorded as signed,
+        # silently dropping the signature_url would make a signed
+        # bundle look unsigned to the client — propagate the error
+        # so downstream verifiers aren't misled. An unsigned package
+        # short-circuits in ``get_signature_download_url`` with
+        # ``success(None)`` so this branch is only reached when
+        # something actually went wrong.
+        return sig.status_code or 500, ErrorResponse(error=sig.error or "Signature URL generation failed")
+    if sig.value:
         body["signature_url"] = sig.value
         body["signature"] = {
             "provider": package.signature_provider,

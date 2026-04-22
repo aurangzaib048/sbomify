@@ -28,6 +28,13 @@ interface BSIAssessment {
   warning_count: number;
   assessed_at: string | null;
   failing_checks: BSICheck[];
+  // Populated by wizard_service._build_step_2_context after
+  // applying waivers — equals the count of ``failing_checks``
+  // whose ``waived`` flag is false. The UI uses this (not
+  // ``failing_checks.length``) to decide the pass/fail signal
+  // so a component whose only failing checks are waived
+  // tooling limitations renders as passing.
+  unwaived_fail_count?: number;
 }
 
 interface ComponentStatus {
@@ -73,7 +80,21 @@ function craStep2() {
     },
 
     hasFailingChecks(comp: ComponentStatus): boolean {
-      return !!(comp.bsi_assessment?.failing_checks?.length);
+      // Use the server-computed ``unwaived_fail_count`` (issue #907
+      // waiver overlay) so a component whose only failing checks
+      // are waived tooling limitations doesn't render as failing
+      // in the UI. Falls back to the pre-waiver count for older
+      // payloads that don't include the field.
+      const bsi = comp.bsi_assessment;
+      if (!bsi) return false;
+      if (typeof bsi.unwaived_fail_count === 'number') {
+        return bsi.unwaived_fail_count > 0;
+      }
+      return !!(bsi.failing_checks?.length);
+    },
+
+    hasWaivedChecks(comp: ComponentStatus): boolean {
+      return (comp.bsi_assessment?.failing_checks || []).some(c => !!c.waived);
     },
 
     toggleFixes(componentId: string): void {

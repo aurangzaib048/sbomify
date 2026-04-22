@@ -23,8 +23,13 @@ _MIN_FORMAT_VERSIONS: dict[str, str] = {
 }
 
 # CRA-compliance-level classification of BSI findings (issue #907).
-# Every finding id emitted by the BSI plugin (see
-# ``plugins.builtins.bsi.FINDING_IDS``) gets a remediation_type:
+# Every normal-check finding id emitted by the BSI plugin (see
+# ``plugins.builtins.bsi.FINDING_IDS``) gets a remediation_type.
+# The special ``bsi-tr03183:error`` finding emitted on plugin
+# execution failures is NOT classified here — it isn't a check
+# result but an operational error and falls through to the
+# ``operator_action`` default in ``_classify_bsi_finding`` so the
+# operator is told to address it rather than wave it through.
 #
 # - ``tooling_limitation`` — the field is missing because an upstream
 #   scanner (syft, trivy, anchore) does not emit it for apt/yum-
@@ -263,7 +268,14 @@ def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
     failing_checks: list[dict[str, str]] = []
     for f in raw_findings:
         if f.get("status") == "fail":
-            finding_id = f.get("id", "")
+            # Coerce non-string ids to "" so a malformed/corrupted
+            # run payload (list, dict, int stored in the JSON blob)
+            # can't raise ``TypeError: unhashable type`` when
+            # ``_classify_bsi_finding`` uses the value as a dict
+            # key. Fail-closed: unknown id maps to the default
+            # ``operator_action`` classification.
+            raw_id = f.get("id", "")
+            finding_id = raw_id if isinstance(raw_id, str) else ""
             remediation_type, guidance_url, human_summary = _classify_bsi_finding(finding_id)
             failing_checks.append(
                 {
