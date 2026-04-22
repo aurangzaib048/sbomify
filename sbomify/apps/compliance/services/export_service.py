@@ -570,8 +570,24 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
 
     The signature file inherits the same short TTL as the bundle
     itself; both belong to the same unauthenticated release window.
+
+    Defense-in-depth: we sanity-check that ``signature_storage_key``
+    sits under ``compliance/exports/`` and ends in ``.sig`` before
+    presigning. Admin-only writes mitigate today, but a DB-level
+    corruption or a future policy change that opens the field would
+    otherwise let someone point the side-car URL at an arbitrary
+    S3 key. Rejection returns ``None`` so the client hides the
+    signature affordance rather than handing out a mis-targeted URL.
     """
-    if not package.signature_storage_key:
+    key = package.signature_storage_key
+    if not key:
+        return ServiceResult.success(None)
+    if not (key.startswith("compliance/exports/") and key.endswith(".sig")):
+        logger.warning(
+            "Refusing to presign signature key %r for package %s — not under compliance/exports/*.sig",
+            key,
+            package.pk,
+        )
         return ServiceResult.success(None)
 
     try:

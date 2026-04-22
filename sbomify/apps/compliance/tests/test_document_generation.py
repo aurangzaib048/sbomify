@@ -846,6 +846,38 @@ class TestEvaluateAppliesWhen:
 
         assert not _evaluate_applies_when({"widget_type": "x"}, {"product_category": "radio_equipment"})
 
+    @pytest.mark.parametrize(
+        "mixed_rule",
+        [
+            # Combinator + sibling equality at the same level — a
+            # permissive "combinator wins" resolver would silently
+            # drop the sibling, letting rule authors believe both
+            # constraints were evaluated.
+            {"any_of": [{"processes_personal_data": True}], "product_category": "radio_equipment"},
+            {"all_of": [{"processes_personal_data": True}], "product_category": "radio_equipment"},
+            # Both combinators at the same level — ambiguous.
+            {"any_of": [], "all_of": []},
+            # Combinator + multiple sibling equalities.
+            {"any_of": [{"a": 1}], "b": 2, "c": 3},
+        ],
+    )
+    def test_mixed_combinator_and_equality_rejected(self, mixed_rule):
+        """Mixed shapes (combinator key + sibling equality
+        predicates at the same level) are rejected. Fails closed;
+        rule authors must nest explicitly. Even with facts that
+        would satisfy every piece, the mixed-shape rule must
+        evaluate False."""
+        from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
+
+        facts = {
+            "product_category": "radio_equipment",
+            "processes_personal_data": True,
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        }
+        assert _evaluate_applies_when(mixed_rule, facts) is False
+
 
 @pytest.mark.django_db
 class TestRegenerateAllFailurePath:

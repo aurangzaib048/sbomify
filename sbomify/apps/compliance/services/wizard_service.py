@@ -47,6 +47,12 @@ _CATEGORY_PROCEDURE_MAP: dict[str, str] = {
 
 WIZARD_STEPS = (1, 2, 3, 4, 5)
 
+# Cap on the waiver justification text (issue #907). The field lives
+# in a JSONField which has no length constraint; an unbounded value
+# would bloat the row and could DoS JSON serialisation. 2 KB is
+# generous for a one-paragraph audit explanation.
+_MAX_WAIVER_JUSTIFICATION_CHARS = 2_000
+
 
 def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
     """Populate security contact and CSIRT email from existing contact profiles."""
@@ -685,6 +691,18 @@ def _save_step_2(
             if not justification:
                 return ServiceResult.failure(
                     f"Waiver for {finding_id!r} requires a justification",
+                    status_code=400,
+                )
+            # Defense-in-depth: the JSONField has no size cap, so an
+            # unbounded justification would bloat the row and could
+            # DoS the JSON round-trip. 2 KB is plenty for an audit
+            # sentence; anything larger is almost certainly a bug or
+            # attack. The Step 2 UI caps the textarea at the same
+            # limit so an operator with a legitimate long note hits
+            # a UI-level error, not a server-level surprise.
+            if len(justification) > _MAX_WAIVER_JUSTIFICATION_CHARS:
+                return ServiceResult.failure(
+                    f"Waiver justification for {finding_id!r} exceeds {_MAX_WAIVER_JUSTIFICATION_CHARS}-char limit",
                     status_code=400,
                 )
             waivers[finding_id] = {

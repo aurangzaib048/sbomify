@@ -415,12 +415,10 @@ class TestBsiWaiverLifecycle:
         assessment.refresh_from_db()
         assert assessment.bsi_waivers["bsi-tr03183:hash-value"]["justification"] == j
 
-    def test_very_long_justification_persists(self, assessment, sample_user):
-        """10 KB justification — TextField-sized content in a
-        JSONField has no server-side length cap today. Regression
-        guard so a future 'max 1 KB' tightening is a deliberate
-        decision, not a silent truncation."""
-        j = "x" * 10_000
+    def test_justification_under_cap_persists(self, assessment, sample_user):
+        """A 1 KB justification is within the 2 KB cap — persists
+        verbatim. Regression guard for realistic operator usage."""
+        j = "x" * 1_000
         result = save_step_data(
             assessment,
             2,
@@ -429,7 +427,22 @@ class TestBsiWaiverLifecycle:
         )
         assert result.ok
         assessment.refresh_from_db()
-        assert len(assessment.bsi_waivers["bsi-tr03183:hash-value"]["justification"]) == 10_000
+        assert len(assessment.bsi_waivers["bsi-tr03183:hash-value"]["justification"]) == 1_000
+
+    def test_justification_exceeding_cap_rejected(self, assessment, sample_user):
+        """Defense-in-depth: 10 KB justification exceeds the
+        ``_MAX_WAIVER_JUSTIFICATION_CHARS`` cap (2 KB). Rejects
+        with 400 — prevents row-bloat / JSON-serialisation DoS."""
+        j = "x" * 10_000
+        result = save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": j}}},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "limit" in (result.error or "").lower()
 
     def test_waiver_with_extra_fields_ignored(self, assessment, sample_user):
         """Payload includes unexpected keys alongside justification
@@ -628,27 +641,26 @@ class TestSignerDispatchAdversarial:
             team=team, signing_enabled=True, signing_provider=provider
         )
 
-    def test_signer_returning_empty_bundle_bytes_treated_as_signature(
-        self, sample_team_with_owner_member
-    ):
-        """Edge case: signer returns a SigningOutcome whose
-        ``bundle_bytes=b""``. The current contract treats any
-        non-None return as "signature present" — empty bundle
-        bytes therefore count, even though downloading would
-        return an empty file. Documents the behaviour; a future
-        tightening should reject zero-length bundle_bytes in
-        ``SigningOutcome.__post_init__``."""
+    def test_signing_outcome_rejects_empty_bundle_bytes(self):
+        """``SigningOutcome(bundle_bytes=b"", ...)`` must raise at
+        construction — an empty bundle is never a valid signature,
+        and accepting it would hand out a 0-byte ``.sig`` side-car
+        on download. Regression seal for the __post_init__ guard."""
         from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
 
-        team = sample_team_with_owner_member.team
-        self._with_signing_settings(team)
-        empty = SigningOutcome(
-            bundle_bytes=b"", rekor_log_index=0, signed_by="", signed_issuer=""
-        )
-        with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: empty}):
-            result = sign_bundle(b"zip", team)
-        assert result is empty
-        assert result.bundle_bytes == b""
+        with pytest.raises(ValueError, match="bundle_bytes must be non-empty"):
+            SigningOutcome(bundle_bytes=b"", rekor_log_index=0, signed_by="", signed_issuer="")
+
+    def test_signing_outcome_rejects_negative_rekor_index(self):
+        """Rekor indexes are non-negative (``0`` is valid for a
+        fresh log). Negative values would surface a corrupt state
+        — reject at construction rather than letting it land on
+        ``CRAExportPackage.rekor_log_index`` (PositiveBigIntegerField)
+        with a later DB-constraint error that's harder to diagnose."""
+        from sbomify.apps.compliance.services._bundle_signer import SigningOutcome
+
+        with pytest.raises(ValueError, match="rekor_log_index must be >= 0"):
+            SigningOutcome(bundle_bytes=b"x", rekor_log_index=-1, signed_by="", signed_issuer="")
 
     def test_signer_raising_keyboard_interrupt_swallowed(self, sample_team_with_owner_member):
         """Best-effort contract: ANY exception from the signer
@@ -748,10 +760,10 @@ class TestSignatureDownloadUrlAdversarial:
         assert result.value is None
 
     def test_whitespace_only_signature_storage_key_returns_none(self, assessment):
-        """Defensive: whitespace-only string is not a valid S3 key.
-        Current truthiness check treats it as present (non-empty
-        string) — this test documents that quirk; a future fix
-        should strip + re-check."""
+        """Defense-in-depth: whitespace-only string doesn't match the
+        ``compliance/exports/*.sig`` prefix guard, so the presigner
+        refuses it and returns ``None``. Prevents handing out a URL
+        whose Key will fail S3-side."""
         package = CRAExportPackage.objects.create(
             assessment=assessment,
             storage_key=f"compliance/exports/{assessment.id}/test.zip",
@@ -759,25 +771,18 @@ class TestSignatureDownloadUrlAdversarial:
             manifest={"format_version": "1.1"},
             signature_storage_key="   ",
         )
-        # Today: truthy string, so we attempt to generate a URL for
-        # "   " — which would fail only at S3 presign time. Either
-        # accept (and fail at S3) or tighten. Pinned as current behaviour.
-        with patch("boto3.client") as mock_client_fn:
-            mock_s3 = MagicMock()
-            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/sig"
-            mock_client_fn.return_value = mock_s3
-            result = get_signature_download_url(package)
-        # Non-None today; flag for follow-up.
+        result = get_signature_download_url(package)
         assert result.ok
-        assert result.value == "https://s3.example.com/sig"
+        assert result.value is None
 
-    def test_signature_key_with_traversal_passed_through_to_s3_layer(self, assessment):
-        """Defense-in-depth: even if a hostile DB write inserts
-        ``../other-team/file.sig`` as the signature_storage_key, the
-        presigner parameterises the Key so no ESCAPE is possible.
-        boto3 handles key validation server-side; this test pins
-        that get_signature_download_url doesn't add its own
-        transformation that could introduce a bypass."""
+    def test_signature_key_with_traversal_rejected(self, assessment):
+        """Defense-in-depth: a hostile DB write of
+        ``../../../etc/passwd`` as ``signature_storage_key`` fails
+        the ``compliance/exports/*.sig`` prefix check and returns
+        ``None`` — no presigned URL is ever handed out for a key
+        outside the compliance export tree. S3 parameterisation
+        alone would stop the traversal, but the prefix check gives
+        us a defense-in-depth layer at the app boundary."""
         package = CRAExportPackage.objects.create(
             assessment=assessment,
             storage_key=f"compliance/exports/{assessment.id}/test.zip",
@@ -785,19 +790,37 @@ class TestSignatureDownloadUrlAdversarial:
             manifest={"format_version": "1.1"},
             signature_storage_key="../../../etc/passwd",
         )
-        with patch("boto3.client") as mock_client_fn:
-            mock_s3 = MagicMock()
-            mock_s3.generate_presigned_url.return_value = "https://s3.example.com/sig"
-            mock_client_fn.return_value = mock_s3
-            result = get_signature_download_url(package)
-        # Non-None because the current impl trusts the DB row. The
-        # Key parameter is passed verbatim to boto3 — any S3-level
-        # rejection happens at presign time. Regression seal: no
-        # path-traversal hardening is needed HERE because S3 is
-        # authoritative; if that ever changes, add validation.
+        result = get_signature_download_url(package)
         assert result.ok
-        call_kwargs = mock_s3.generate_presigned_url.call_args.kwargs
-        assert call_kwargs["Params"]["Key"] == "../../../etc/passwd"
+        assert result.value is None
+
+    def test_signature_key_outside_compliance_exports_rejected(self, assessment):
+        """Valid-looking key that sits outside ``compliance/exports/``
+        (e.g. pointing at another app's S3 tree) still rejects.
+        Prefix is authoritative — nothing else should be presigned
+        via this endpoint."""
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="other-app/secret.sig",
+        )
+        assert get_signature_download_url(package).value is None
+
+    def test_signature_key_without_sig_suffix_rejected(self, assessment):
+        """Key under the correct prefix but not ending in ``.sig``
+        (e.g. someone stored ``.zip`` by mistake) is rejected —
+        the suffix constraint disambiguates which artefact the
+        URL targets."""
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key=f"compliance/exports/{assessment.id}/test.zip",
+        )
+        assert get_signature_download_url(package).value is None
 
 
 # ---------------------------------------------------------------------------
@@ -1110,6 +1133,76 @@ class TestSigstoreOidcAdversarial:
         assert outcome is not None
         assert isinstance(outcome.rekor_log_index, int)
         assert outcome.rekor_log_index == 99_999_999_999
+
+    def test_identity_pinned_issuer_unpinned_accepts_any_issuer(
+        self, sample_team_with_owner_member
+    ):
+        """``signing_identity`` set, ``signing_issuer`` empty.
+        Identity check fires, issuer check short-circuits. Real-
+        world use case: "I know who my CI identity is, but I'm OK
+        with any IdP minting it". Confirms the two checks are
+        independent (each gated by its own ``if settings.X and``)."""
+        from unittest.mock import MagicMock
+
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@acme.example")
+
+        token = self._mock_token("ci@acme.example", "https://some.random.issuer")
+        mock_bundle = MagicMock()
+        mock_bundle.to_json.return_value = '{"ok":1}'
+        mock_bundle.log_entry.log_index = "9"
+        mock_signer = MagicMock()
+        mock_signer.sign_artifact.return_value = mock_bundle
+        mock_ctx = MagicMock()
+        mock_ctx.signer.return_value.__enter__.return_value = mock_signer
+
+        with patch("sigstore.oidc.detect_credential", return_value=token):
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                trust_cls.production.return_value = MagicMock(name="trust-config")
+                ctx_cls.from_trust_config.return_value = mock_ctx
+                outcome = _sign_sigstore_keyless(b"zip", s)
+
+        assert outcome is not None
+        assert outcome.signed_by == "ci@acme.example"
+        assert outcome.signed_issuer == "https://some.random.issuer"
+
+    @pytest.mark.parametrize(
+        "ambient_identity",
+        [
+            # Suffix attack: attacker pre-pends their own local-part.
+            "attacker@ci@acme.example",
+            # Null-byte injection to truncate at logging time.
+            "ci@acme.example\x00extra",
+            # Tab/newline splice into the sub claim.
+            "ci@acme.example\tpadding",
+            # Backslash / control-char injection.
+            "ci@acme.example\\attacker",
+        ],
+    )
+    def test_exotic_identity_values_rejected(
+        self, sample_team_with_owner_member, ambient_identity
+    ):
+        """Round-trip paranoia: every exotic sub value that isn't
+        byte-equal to the configured identity must reject. String
+        equality is doing all the work here; a future normalisation
+        would be catastrophic."""
+        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+
+        team = sample_team_with_owner_member.team
+        s = self._settings_for(team, signing_identity="ci@acme.example")
+
+        with patch("sigstore.oidc.detect_credential") as detect:
+            detect.return_value = self._mock_token(ambient_identity, "https://any")
+            with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
+                "sigstore.sign.SigningContext"
+            ) as ctx_cls:
+                assert _sign_sigstore_keyless(b"zip", s) is None
+                trust_cls.production.assert_not_called()
+                ctx_cls.from_trust_config.assert_not_called()
 
     def test_settings_row_requires_refetch_after_update(self, sample_team_with_owner_member):
         """Defensive regression: the signer uses the passed-in

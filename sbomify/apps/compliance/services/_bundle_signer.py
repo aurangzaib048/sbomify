@@ -55,10 +55,12 @@ class SigningOutcome:
     Carries everything that needs to be persisted on
     :class:`CRAExportPackage` for the audit trail:
       - ``bundle_bytes``: the Sigstore bundle JSON (uploaded to S3
-        at ``<storage_key>.sig``).
+        at ``<storage_key>.sig``). Rejected if empty — an empty
+        bundle would still pass the truthiness check in the outer
+        caller but would hand out a 0-byte side-car on download.
       - ``rekor_log_index``: the Rekor transparency-log index of the
-        signing entry. Combined with the bundle's log_id this is a
-        complete auditor pointer.
+        signing entry. ``0`` is a legitimate first-entry index in a
+        fresh Rekor instance; negative values are rejected.
       - ``signed_by``: the OIDC subject that was ATTESTED TO —
         always matches ``settings.signing_identity`` when configured
         (enforced by the signer before returning).
@@ -69,6 +71,15 @@ class SigningOutcome:
     rekor_log_index: int
     signed_by: str
     signed_issuer: str
+
+    def __post_init__(self) -> None:
+        # Reject shapes that would misrepresent a successful signing —
+        # truthy-but-nonsense values slip past the "non-None means
+        # signed" check at the call site.
+        if not self.bundle_bytes:
+            raise ValueError("SigningOutcome.bundle_bytes must be non-empty")
+        if self.rekor_log_index < 0:
+            raise ValueError(f"SigningOutcome.rekor_log_index must be >= 0, got {self.rekor_log_index}")
 
 
 SigningCallable = Callable[[bytes, "TeamComplianceSettings"], "SigningOutcome | None"]

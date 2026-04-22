@@ -21,8 +21,7 @@ infrastructure.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -34,54 +33,12 @@ from sbomify.apps.compliance.services._bundle_signer import (
 )
 
 
-def _mock_identity_token(identity: str, issuer: str):
-    """Build a minimal OIDC token with the two claim-like attributes
-    the signer reads. Real ``sigstore.oidc.IdentityToken`` also has
-    ``.federated_issuer`` + ``.in_validity_period`` but the signing
-    code doesn't touch them, so duck-typing is sufficient and the
-    test stays robust to sigstore minor bumps."""
-    return type("MockIdentityToken", (), {"identity": identity, "issuer": issuer})()
-
-
-@contextmanager
-def _mock_sigstore_signer(*, bundle_json: str, log_index):
-    """Set up the sigstore 4.2 signing chain end-to-end:
-
-    ``ClientTrustConfig.production()`` → trust_config
-    → ``SigningContext.from_trust_config(trust_config)`` → ctx
-    → ``ctx.signer(token)`` → signer (context manager)
-    → ``signer.sign_artifact(bytes)`` → bundle
-    → ``bundle.log_entry.log_index`` = log_index (str in real API)
-    → ``bundle.to_json()`` = bundle_json
-
-    Yields a dict of the mock objects so tests can make call-args
-    assertions on the chain.
-    """
-    mock_bundle = MagicMock()
-    mock_bundle.to_json.return_value = bundle_json
-    mock_bundle.log_entry.log_index = log_index
-
-    mock_signer = MagicMock()
-    mock_signer.sign_artifact.return_value = mock_bundle
-
-    mock_ctx = MagicMock()
-    mock_ctx.signer.return_value.__enter__.return_value = mock_signer
-
-    mock_trust_config = MagicMock(name="ClientTrustConfig.production()")
-
-    with patch("sigstore.models.ClientTrustConfig") as trust_cls, patch(
-        "sigstore.sign.SigningContext"
-    ) as ctx_cls:
-        trust_cls.production.return_value = mock_trust_config
-        ctx_cls.from_trust_config.return_value = mock_ctx
-        yield {
-            "trust_cls": trust_cls,
-            "trust_config": mock_trust_config,
-            "ctx_cls": ctx_cls,
-            "ctx": mock_ctx,
-            "signer": mock_signer,
-            "bundle": mock_bundle,
-        }
+# Shared helpers live in conftest so tests across modules use the
+# same OIDC-token / sigstore-signer fixtures.
+from sbomify.apps.compliance.tests.conftest import (  # noqa: E402
+    mock_identity_token as _mock_identity_token,
+    mock_sigstore_signer as _mock_sigstore_signer,
+)
 
 
 def _mock_outcome(
@@ -150,6 +107,9 @@ class TestSignBundleDispatch:
             result = sign_bundle(b"zip-bytes", team)
 
         assert result is outcome
+        # Every field round-trips — pinning all four catches a
+        # regression where a refactor drops one silently.
+        assert result.bundle_bytes == outcome.bundle_bytes
         assert result.rekor_log_index == 987654321
         assert result.signed_by == "ci@example.test"
         assert result.signed_issuer == "https://token.actions.githubusercontent.com"

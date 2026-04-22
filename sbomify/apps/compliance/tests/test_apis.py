@@ -483,6 +483,42 @@ class TestDownloadExport:
         assert "download_url" in body
         assert "signature_url" not in body
 
+    def test_download_response_partial_state_omits_signature(
+        self, authenticated_api_client, assessment, mock_s3_client
+    ):
+        """Defense-in-depth: corrupt DB state where
+        ``signature_storage_key`` is empty but ``rekor_log_index``
+        is populated (never produced by the build pipeline, but
+        could exist after a partial-success migration or ORM-level
+        edit). The API must NOT expose the orphan audit fields
+        without a verifiable side-car URL — omit the whole
+        ``signature`` block so clients don't hallucinate a
+        signature that isn't really there."""
+        from sbomify.apps.compliance.models import CRAExportPackage
+
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/partial.zip",
+            content_hash="3" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="",  # empty
+            rekor_log_index=42,
+            signed_by="stray@value",
+            signed_issuer="https://stray",
+        )
+        client, token = authenticated_api_client
+
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
+            **get_api_headers(token),
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "download_url" in body
+        assert "signature_url" not in body
+        assert "signature" not in body
+
     def test_download_response_includes_signature_url_when_signed(
         self, authenticated_api_client, assessment, mock_s3_client
     ):

@@ -62,14 +62,27 @@ def _assessment_facts(assessment: CRAAssessment) -> dict[str, Any]:
     }
 
 
+_COMBINATORS = frozenset({"any_of", "all_of"})
+
+
 def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -> bool:
     """Evaluate a single ``applies_when`` rule against assessment facts.
 
-    Supported shapes (recursive):
-      - ``{"any_of": [rule, rule, ...]}`` — OR
-      - ``{"all_of": [rule, rule, ...]}`` — AND
-      - ``{"<key>": <expected>}`` — single equality predicate
-      - ``None`` or ``{}`` — vacuously true
+    Supported shapes (mutually exclusive at each level):
+
+    - ``{"any_of": [rule, rule, ...]}`` — OR over sub-rules.
+    - ``{"all_of": [rule, rule, ...]}`` — AND over sub-rules.
+    - ``{"<key>": <expected>, ...}`` — equality predicate; ALL pairs
+      must match (implicit AND across siblings).
+    - ``None`` or ``{}`` — vacuously true.
+
+    Combinators and equality predicates **cannot be mixed at the
+    same level**. ``{"any_of": [...], "product_category": "x"}``
+    would silently drop the ``product_category`` check under a
+    "combinator wins" resolution; we fail closed instead and force
+    the rule author to nest the equality inside an ``all_of``. The
+    JSON is code-controlled, but this is a real footgun for future
+    rule writers and reviewers.
 
     A missing key in the facts dict fails the predicate — unknown
     predicates fail closed so a typo in the JSON doesn't silently
@@ -77,6 +90,11 @@ def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -
     """
     if not rule:
         return True
+    combinator_keys = _COMBINATORS & rule.keys()
+    if combinator_keys and len(rule) > 1:
+        # Mixed shape — reject. Fails closed, matching the
+        # "unknown predicate fails closed" policy.
+        return False
     if "any_of" in rule:
         return any(_evaluate_applies_when(sub, facts) for sub in rule["any_of"])
     if "all_of" in rule:
