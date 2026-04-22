@@ -86,11 +86,11 @@ class TestSignBundleDispatch:
         with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: mock_sig}):
             assert sign_bundle(b"zip-bytes", team) == mock_sig
 
-    def test_signer_runtime_failure_returns_none(self, sample_team_with_owner_member):
-        """A signer that raises must not propagate — the bundle
-        export pipeline stays signing-agnostic. Covers the
-        misconfigured-at-runtime path from the acceptance
-        criteria."""
+    def test_signer_runtime_failure_is_swallowed(self, sample_team_with_owner_member):
+        """A signer that raises must never propagate — the bundle
+        export pipeline stays signing-agnostic. This is the contract
+        stated on ``sign_bundle``: signing is best-effort; a broken
+        provider must not fail a regulated export."""
         team = sample_team_with_owner_member.team
         TeamComplianceSettings.objects.create(
             team=team, signing_enabled=True, signing_provider="sigstore_keyless"
@@ -100,13 +100,8 @@ class TestSignBundleDispatch:
             raise RuntimeError("fulcio unreachable")
 
         with patch.dict(_SIGNERS_BY_PROVIDER, {"sigstore_keyless": _raising_signer}):
-            with pytest.raises(RuntimeError):
-                # By design, the current signer contract lets runtime
-                # exceptions propagate to the caller — the caller in
-                # ``build_export_package`` catches and logs. This test
-                # pins that contract; changing it requires updating
-                # both layers.
-                sign_bundle(b"zip-bytes", team)
+            # Contract: sign_bundle catches and returns None.
+            assert sign_bundle(b"zip-bytes", team) is None
 
     def test_signer_returning_none_passes_through(self, sample_team_with_owner_member):
         """Providers that can't produce a signature right now (e.g.

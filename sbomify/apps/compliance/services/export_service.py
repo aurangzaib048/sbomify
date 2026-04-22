@@ -72,6 +72,11 @@ _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
 _MANIFEST_FORMAT_VERSION = "1.1"
 
 
+_SIGNATURE_PROVIDER_LABELS: dict[str, str] = {
+    "sigstore_keyless": "a Sigstore keyless signature (Fulcio-issued ephemeral certificate)",
+}
+
+
 def _signature_readme_section(signed: bool, provider: str | None) -> str:
     """Return the "About signatures" section of INTEGRITY.md.
 
@@ -79,11 +84,14 @@ def _signature_readme_section(signed: bool, provider: str | None) -> str:
     describe how to verify it; otherwise keep the pre-existing guidance
     about applying a downstream signature. Both branches terminate the
     INTEGRITY.md — callers concatenate this at the end.
+
+    Provider strings are gated against ``_SIGNATURE_PROVIDER_LABELS``
+    so a future raw-SQL / admin write of an unexpected ``signing_provider``
+    cannot inject special characters into the bundled README. Unknown
+    providers fall back to generic wording.
     """
     if signed:
-        provider_label = {
-            "sigstore_keyless": "a Sigstore keyless signature (Fulcio-issued ephemeral certificate)",
-        }.get(provider or "", f"a {provider or 'configured'} signature")
+        provider_label = _SIGNATURE_PROVIDER_LABELS.get(provider or "", "a configured cryptographic signature")
         return (
             "## 3. Bundle signature\n\n"
             f"This bundle ships with {provider_label}. The signature is "
@@ -398,11 +406,13 @@ def build_export_package(
         # that isn't there — that's a known failure mode that surfaces
         # as "README references .sig but no .sig exists"; operators
         # see the signer's warning log and can re-export.
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+
         try:
             _settings = assessment.team.compliance_settings
             _will_sign = bool(_settings.signing_enabled and _settings.signing_provider != "none")
             _sig_provider = _settings.signing_provider if _will_sign else None
-        except Exception:
+        except TeamComplianceSettings.DoesNotExist:
             _will_sign = False
             _sig_provider = None
         zf.writestr(
@@ -429,45 +439,42 @@ def build_export_package(
 
     # Optional cosign / sigstore signing (issue #906). The signer
     # returns ``None`` when the team hasn't enabled signing or when
-    # the configured provider couldn't produce a signature right now
-    # (missing dep, missing OIDC token, runtime failure) — in every
-    # case the export still ships unsigned so signing is a layered
-    # enhancement, not a gate. Signature is stored at
-    # ``<storage_key>.sig`` so it can be fetched via a parallel
-    # presigned URL on download.
+    # the configured provider couldn't produce a signature right now —
+    # in every case the export still ships unsigned. The signature is
+    # an EXTERNAL side-car in S3 at ``<storage_key>.sig``; it is NOT
+    # embedded in the manifest.json inside the ZIP (the ZIP is already
+    # serialised at this point, and the signature signs the ZIP). The
+    # authoritative "is this bundle signed?" signal is the
+    # ``signature_storage_key`` field on the :class:`CRAExportPackage`
+    # row, populated below when the side-car upload succeeds.
     from sbomify.apps.compliance.services._bundle_signer import sign_bundle
 
     signature_bytes = sign_bundle(zip_bytes, assessment.team)
-    signature_storage_key: str | None = None
+    signature_storage_key = ""
+    signature_provider = ""
     if signature_bytes is not None:
-        signature_storage_key = f"{storage_key}.sig"
+        candidate_key = f"{storage_key}.sig"
         try:
             docs_s3.upload_data_as_file(
                 django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
-                signature_storage_key,
+                candidate_key,
                 signature_bytes,
             )
-            # Surface the signature in the manifest so downstream
-            # consumers can detect it without calling the API.
-            integrity_block = manifest["integrity"]
-            assert isinstance(integrity_block, dict)
-            integrity_block["signature"] = {
-                "present": True,
-                "file": "metadata/bundle.sig",
-                "provider": assessment.team.compliance_settings.signing_provider,
-            }
+            signature_storage_key = candidate_key
+            signature_provider = assessment.team.compliance_settings.signing_provider
         except Exception:
-            # Signing failures never fail the export; log and drop the
-            # side-car so the download endpoint doesn't advertise a
-            # URL that will 404.
+            # Signing failures never fail the export; log and leave
+            # ``signature_storage_key`` empty so the download endpoint
+            # doesn't advertise a URL that will 404.
             logger.exception("Failed to upload signature side-car for export %s", storage_key)
-            signature_storage_key = None
 
     package = CRAExportPackage.objects.create(
         assessment=assessment,
         storage_key=storage_key,
         content_hash=content_hash,
         manifest=manifest,
+        signature_storage_key=signature_storage_key,
+        signature_provider=signature_provider,
         created_by=user,
     )
 
@@ -543,17 +550,15 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
     """Generate a presigned URL for the side-car signature, if present.
 
     Returns ``ServiceResult.success(None)`` when the package wasn't
-    signed at export time (issue #906). Returns a presigned URL to
-    ``<storage_key>.sig`` when the manifest's integrity block records
-    a signature — the client renders it as a second "Download
-    signature" button next to the bundle.
+    signed at export time (issue #906). The ``signature_storage_key``
+    field on :class:`CRAExportPackage` is the authoritative signal —
+    non-empty means the side-car exists in S3 and the download
+    endpoint can hand out a presigned URL to it.
 
     The signature file inherits the same short TTL as the bundle
     itself; both belong to the same unauthenticated release window.
     """
-    integrity = (package.manifest or {}).get("integrity", {})
-    signature = integrity.get("signature") if isinstance(integrity, dict) else None
-    if not isinstance(signature, dict) or not signature.get("present"):
+    if not package.signature_storage_key:
         return ServiceResult.success(None)
 
     try:
@@ -572,7 +577,7 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
             "get_object",
             Params={
                 "Bucket": django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
-                "Key": f"{package.storage_key}.sig",
+                "Key": package.signature_storage_key,
                 "ResponseContentDisposition": f'attachment; filename="{filename}"',
                 "ResponseContentType": "application/json",
             },

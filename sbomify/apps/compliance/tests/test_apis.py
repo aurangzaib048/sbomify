@@ -468,8 +468,8 @@ class TestDownloadExport:
             assessment=assessment,
             storage_key=f"compliance/exports/{assessment.id}/unsigned.zip",
             content_hash="1" * 64,
-            # No "signature" entry in integrity block.
             manifest={"format_version": "1.1", "integrity": {"hash_algorithm": "sha256"}},
+            # signature_storage_key left empty — model default.
         )
         client, token = authenticated_api_client
 
@@ -486,7 +486,7 @@ class TestDownloadExport:
     def test_download_response_includes_signature_url_when_signed(
         self, authenticated_api_client, assessment, mock_s3_client
     ):
-        """Issue #906: when the export manifest records a signature,
+        """Issue #906: when the model records a signature_storage_key,
         the download response must include a second presigned URL
         pointing at the ``.zip.sig`` side-car."""
         from sbomify.apps.compliance.models import CRAExportPackage
@@ -495,17 +495,9 @@ class TestDownloadExport:
             assessment=assessment,
             storage_key=f"compliance/exports/{assessment.id}/signed.zip",
             content_hash="2" * 64,
-            manifest={
-                "format_version": "1.1",
-                "integrity": {
-                    "hash_algorithm": "sha256",
-                    "signature": {
-                        "present": True,
-                        "file": "metadata/bundle.sig",
-                        "provider": "sigstore_keyless",
-                    },
-                },
-            },
+            manifest={"format_version": "1.1", "integrity": {"hash_algorithm": "sha256"}},
+            signature_storage_key=f"compliance/exports/{assessment.id}/signed.zip.sig",
+            signature_provider="sigstore_keyless",
         )
         client, token = authenticated_api_client
 

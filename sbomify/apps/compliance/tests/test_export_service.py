@@ -709,16 +709,19 @@ class TestBuildExportPackageSigning:
         assert result.ok
         # No .sig object written.
         assert not any(key.endswith(".sig") for key, _ in captured["uploads"])
-        # Manifest integrity block does NOT carry a signature entry.
-        manifest = result.value.manifest
-        assert "signature" not in manifest["integrity"]
+        # Model fields left empty — is_signed reflects that.
+        assert result.value.signature_storage_key == ""
+        assert result.value.signature_provider == ""
+        assert result.value.is_signed is False
 
-    def test_enabled_signing_writes_sig_and_records_in_manifest(
+    def test_enabled_signing_writes_sig_and_records_on_model(
         self, assessment_with_docs, sample_user
     ):
         """Team with signing enabled + mock signer → ``.sig`` side-car
-        uploaded to S3 at ``<storage_key>.sig`` and manifest records
-        ``integrity.signature.present=True``."""
+        uploaded to S3 at ``<storage_key>.sig`` and the export package
+        row records ``signature_storage_key`` + ``signature_provider``
+        so the download API can hand out a presigned URL for the
+        side-car without re-reading S3."""
         from sbomify.apps.compliance.models import TeamComplianceSettings
         from sbomify.apps.compliance.services import _bundle_signer
 
@@ -755,21 +758,23 @@ class TestBuildExportPackageSigning:
         assert len(sig_uploads) == 1
         expected_sig_key = f"{result.value.storage_key}.sig"
         assert sig_uploads[0] == expected_sig_key
-        # Manifest records the signature so downstream consumers can
-        # detect it without calling the API.
-        assert result.value.manifest["integrity"]["signature"] == {
-            "present": True,
-            "file": "metadata/bundle.sig",
-            "provider": "sigstore_keyless",
-        }
+        # Model fields record the signature — authoritative signal for
+        # downstream consumers (download API) to detect signing state
+        # without parsing the manifest. The manifest itself (both the
+        # DB copy and the copy embedded in the ZIP) does NOT carry a
+        # signature block — the signature is external to the ZIP.
+        assert result.value.signature_storage_key == expected_sig_key
+        assert result.value.signature_provider == "sigstore_keyless"
+        assert result.value.is_signed is True
+        assert "signature" not in result.value.manifest.get("integrity", {})
         # Bytes uploaded match what the signer returned.
         uploaded_sig = dict(captured["uploads"])[expected_sig_key]
         assert uploaded_sig == mock_sig
 
     def test_signer_returning_none_produces_no_sig(self, assessment_with_docs, sample_user):
         """Enabled but signer can't sign right now (e.g. missing OIDC
-        token) → no ``.sig``, no manifest signature entry, bundle
-        export still succeeds (misconfigured path)."""
+        token) → no ``.sig``, no signature fields on the model,
+        bundle export still succeeds (misconfigured path)."""
         from sbomify.apps.compliance.models import TeamComplianceSettings
         from sbomify.apps.compliance.services import _bundle_signer
 
@@ -797,7 +802,8 @@ class TestBuildExportPackageSigning:
 
         assert result.ok
         assert not any(key.endswith(".sig") for key, _ in captured["uploads"])
-        assert "signature" not in result.value.manifest["integrity"]
+        assert result.value.signature_storage_key == ""
+        assert result.value.is_signed is False
 
     def test_sig_upload_failure_drops_side_car_without_failing_export(
         self, assessment_with_docs, sample_user
@@ -805,9 +811,9 @@ class TestBuildExportPackageSigning:
         """If the .sig upload to S3 fails after the ZIP upload
         succeeded, the signer returned bytes but the side-car
         doesn't land — the export must still ship unsigned, and
-        the manifest must NOT advertise a signature that isn't
-        there (would cause the download endpoint to hand out a
-        404 presigned URL)."""
+        the model must NOT record a signature_storage_key that
+        isn't there (would cause the download endpoint to hand out
+        a 404 presigned URL)."""
         from sbomify.apps.compliance.models import TeamComplianceSettings
         from sbomify.apps.compliance.services import _bundle_signer
 
@@ -841,10 +847,12 @@ class TestBuildExportPackageSigning:
                 result = build_export_package(assessment_with_docs, sample_user)
 
         assert result.ok
-        # No signature advertised in the manifest because the
-        # side-car upload failed — otherwise the download endpoint
-        # would hand out a presigned URL to a missing key.
-        assert "signature" not in result.value.manifest["integrity"]
+        # No signature recorded on the model because the side-car
+        # upload failed — otherwise the download endpoint would
+        # hand out a presigned URL to a missing key.
+        assert result.value.signature_storage_key == ""
+        assert result.value.signature_provider == ""
+        assert result.value.is_signed is False
 
 
 @pytest.mark.django_db

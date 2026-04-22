@@ -112,16 +112,23 @@ def sign_bundle(zip_bytes: bytes, team: "Team") -> bytes | None:
     - the team has no ``compliance_settings`` row (default state)
     - ``signing_enabled`` is ``False``
     - the configured provider can't produce a signature right now
-      (missing dep, missing OIDC token, runtime failure)
+      (missing dep, missing OIDC token, runtime failure, provider
+      callable raises)
 
-    The non-None return is raw signature bytes — typically a Sigstore
-    bundle JSON — that the caller persists as a side-car object in S3.
+    This is the public contract: the caller at
+    ``build_export_package`` must be able to treat signing as
+    best-effort. Exceptions raised by a provider callable are caught
+    and logged here so a single broken signer can't kill a regulated
+    export. The non-None return is raw signature bytes — typically a
+    Sigstore bundle JSON — persisted as a side-car object in S3.
     """
+    from sbomify.apps.compliance.models import TeamComplianceSettings
+
     try:
         settings = team.compliance_settings
-    except Exception:
-        # Missing settings row is the default "signing disabled"
-        # state; no log, no signature.
+    except TeamComplianceSettings.DoesNotExist:
+        # Default state: no settings row. Silent return — signing
+        # isn't enabled so there's nothing to log about.
         return None
 
     if not settings.signing_enabled:
@@ -137,4 +144,16 @@ def sign_bundle(zip_bytes: bytes, team: "Team") -> bytes | None:
         )
         return None
 
-    return signer(zip_bytes, settings)
+    try:
+        return signer(zip_bytes, settings)
+    except Exception:  # pragma: no cover - exercised via mock
+        # Per the docstring: never propagate a signer failure. A
+        # broken provider must not fail the export — the bundle ships
+        # unsigned, the manifest records no signature, the download
+        # endpoint correctly hides the signature_url affordance.
+        logger.exception(
+            "Signer %s raised for team %s; exporting unsigned.",
+            settings.signing_provider,
+            team.id,
+        )
+        return None

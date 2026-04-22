@@ -96,6 +96,32 @@ def _classify_bsi_finding(finding_id: str) -> tuple[str, str]:
     return remediation_type, guidance_url
 
 
+def is_known_bsi_finding(finding_id: str) -> bool:
+    """True iff ``finding_id`` is in the classifier whitelist.
+
+    Public waiver-save validation: the wizard rejects waiver payloads
+    that reference finding ids we don't classify. Keeps typos from
+    silently poisoning the ``bsi_waivers`` map.
+    """
+    return isinstance(finding_id, str) and finding_id in _BSI_REMEDIATION_TYPE
+
+
+def is_waivable_bsi_finding(finding_id: object) -> bool:
+    """True iff ``finding_id`` is a tooling-limitation (waiver-eligible).
+
+    Public predicate for waiver-save validation. Keeps the
+    ``_BSI_REMEDIATION_TYPE`` dict private to this module — consumers
+    ask the question "can this be waived?" without seeing the
+    classifier's internals. Typed ``object`` because the waiver save
+    path deserialises user JSON: non-string payloads (list / dict /
+    None) must fail closed rather than crash ``dict.get`` with
+    ``TypeError: unhashable type``.
+    """
+    if not isinstance(finding_id, str):
+        return False
+    return _BSI_REMEDIATION_TYPE.get(finding_id) == "tooling_limitation"
+
+
 def _is_format_compliant(sbom_format: str | None, format_version: str | None) -> bool:
     """Check whether the SBOM format version meets BSI TR-03183-2 requirements.
 

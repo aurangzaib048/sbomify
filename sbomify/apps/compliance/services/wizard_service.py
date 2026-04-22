@@ -580,6 +580,19 @@ def _save_step_1(
         assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
     )
 
+    # EN 18031-2 and -3 are RED harmonised standards — they are not
+    # standalone privacy / fraud standards. A product that doesn't fall
+    # under the RED can't claim presumption of conformity against them,
+    # so ``processes_personal_data`` and ``handles_financial_value``
+    # are meaningless when ``is_radio_equipment=False``. The client
+    # disables those checkboxes in that state; mirror the constraint
+    # on the server so a non-browser client (SDK / curl) can't persist
+    # a nonsensical "privacy scope without RED scope" combination that
+    # would show up on the Step 1 page but produce no DoC effect.
+    if not assessment.is_radio_equipment:
+        assessment.processes_personal_data = False
+        assessment.handles_financial_value = False
+
     # Server-side mirror of the wizard's canContinue gate. The client
     # already refuses to call this endpoint when the manufacturer is a
     # placeholder, but the SDK / curl / a misbehaving client could hit
@@ -639,7 +652,10 @@ def _save_step_2(
     """
     import datetime
 
-    from sbomify.apps.compliance.services.sbom_compliance_service import _BSI_REMEDIATION_TYPE
+    from sbomify.apps.compliance.services.sbom_compliance_service import (
+        is_known_bsi_finding,
+        is_waivable_bsi_finding,
+    )
 
     update_fields = ["status", "current_step", "completed_steps", "updated_at"]
 
@@ -651,16 +667,21 @@ def _save_step_2(
         waivers: dict[str, dict[str, Any]] = {}
         now_iso = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
         for finding_id, entry in raw.items():
-            if not isinstance(finding_id, str) or finding_id not in _BSI_REMEDIATION_TYPE:
+            if not is_known_bsi_finding(finding_id):
                 return ServiceResult.failure(f"Unknown BSI finding id: {finding_id!r}", status_code=400)
-            if _BSI_REMEDIATION_TYPE[finding_id] != "tooling_limitation":
+            if not is_waivable_bsi_finding(finding_id):
                 return ServiceResult.failure(
                     f"{finding_id!r} is an operator-action finding and cannot be waived",
                     status_code=400,
                 )
             justification = ""
             if isinstance(entry, dict):
-                justification = str(entry.get("justification") or "").strip()
+                # Require justification to be a string literal. Nested
+                # dicts / lists coerce via str() to their repr, which
+                # is truthy and would paper over malformed payloads.
+                raw_justification = entry.get("justification")
+                if isinstance(raw_justification, str):
+                    justification = raw_justification.strip()
             if not justification:
                 return ServiceResult.failure(
                     f"Waiver for {finding_id!r} requires a justification",

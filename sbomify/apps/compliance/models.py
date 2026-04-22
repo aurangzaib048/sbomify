@@ -321,6 +321,15 @@ class CRAExportPackage(models.Model):
     storage_key = models.CharField(max_length=500)
     content_hash = models.CharField(max_length=64)
     manifest = models.JSONField()
+    # Cosign / sigstore side-car (issue #906). Both fields default to
+    # empty — non-empty ``signature_storage_key`` is the single
+    # authoritative signal for "this bundle was signed at export time".
+    # Stored on the package row rather than inside the manifest to keep
+    # the manifest.json EMBEDDED in the ZIP consistent with the
+    # post-signing state: the signature is external to the ZIP (stored
+    # beside it in S3), so it can't be in-bundle metadata.
+    signature_storage_key = models.CharField(max_length=500, blank=True, default="")
+    signature_provider = models.CharField(max_length=32, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
@@ -328,6 +337,11 @@ class CRAExportPackage(models.Model):
 
     def __str__(self) -> str:
         return f"Export package {self.pk} for {self.assessment}"
+
+    @property
+    def is_signed(self) -> bool:
+        """True when the package has a sigstore/cosign side-car in S3."""
+        return bool(self.signature_storage_key)
 
 
 class TeamComplianceSettings(models.Model):
