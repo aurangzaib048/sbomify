@@ -18,10 +18,26 @@ interface StepStatus {
   documents_stale?: number;
 }
 
+interface ExportFileEntry {
+  path: string;
+  sha256: string;
+  cra_reference: string;
+}
+
+interface ExportIntegrity {
+  hash_algorithm: string;
+  manifest_hash_file: string;
+  verification_doc: string;
+}
+
 interface ExportInfo {
   id: string;
   content_hash: string;
   created_at: string;
+  format_version?: string | null;
+  manufacturer_is_placeholder?: boolean;
+  integrity?: ExportIntegrity | null;
+  files?: ExportFileEntry[];
 }
 
 interface ComplianceSummary {

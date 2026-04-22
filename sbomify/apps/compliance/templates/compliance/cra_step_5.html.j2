@@ -94,6 +94,13 @@
                                 <span x-show="!isRefreshing"><i class="fas fa-sync mr-2"></i> Refresh Stale Documents</span>
                                 <span x-show="isRefreshing" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Refreshing...</span>
                             </button>
+                            {# Prominent DoC preview — CRA Article 28 declaration must be reviewed before signing #}
+                            <button type="button"
+                                    @click="previewDocument('declaration_of_conformity', 'Declaration of Conformity')"
+                                    data-testid="preview-doc-btn"
+                                    class="tw-btn-secondary w-full">
+                                <i class="fas fa-eye mr-2"></i> Preview Declaration of Conformity
+                            </button>
                             <button @click="exportBundle()"
                                     :disabled="isExporting || !exportAvailable"
                                     class="tw-btn-primary w-full">
@@ -105,13 +112,77 @@
                             </template>
                         </div>
                     </div>
-                    {# Mark Assessment Complete — prominent treatment #}
+                    {# Bundle manifest preview — what's actually in the ZIP #}
+                    <template x-if="lastExport">
+                        <div class="tw-card" data-testid="bundle-manifest-card">
+                            <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+                                <div>
+                                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                                        <i class="fas fa-box-open text-primary"></i>
+                                        Last Export Bundle
+                                    </h2>
+                                    <p class="text-sm text-text-muted mt-1">
+                                        <span x-text="lastExport.files?.length || 0"></span> files · format_version
+                                        <code class="text-xs" x-text="lastExport.format_version || '—'"></code>
+                                    </p>
+                                </div>
+                                <template x-if="lastExport.manufacturer_is_placeholder">
+                                    <span class="tw-badge-danger text-xs"
+                                          data-testid="bundle-placeholder-badge"
+                                          title="Manufacturer field is still a placeholder in this bundle. Re-export after configuring a real manufacturer.">
+                                        <i class="fas fa-triangle-exclamation mr-1"></i>
+                                        Placeholder manufacturer
+                                    </span>
+                                </template>
+                            </div>
+                            <div class="p-6 space-y-4">
+                                {# Integrity block — lastExport.content_hash is SHA-256 of the ZIP bytes; manifest self-hash lives in metadata/manifest.sha256 and is verified by the sha256sum command below. #}
+                                <template x-if="lastExport.integrity">
+                                    <div class="text-xs text-text-muted space-y-1">
+                                        <p class="m-0">
+                                            <i class="fas fa-shield-halved text-text-muted mr-1"></i>
+                                            Verify the manifest from the extracted bundle root:
+                                        </p>
+                                        <pre class="bg-surface-hover text-text rounded p-2 overflow-x-auto text-xs m-0"><code>sha256sum -c metadata/manifest.sha256</code></pre>
+                                        <p class="m-0 mt-1">Bundle SHA-256 (ZIP bytes stored in sbomify):</p>
+                                        <code class="font-mono text-xs break-all"
+                                              data-testid="bundle-content-hash"
+                                              x-text="lastExport.content_hash"></code>
+                                    </div>
+                                </template>
+                                {# Per-file manifest summary #}
+                                <div class="border border-border rounded-lg overflow-hidden">
+                                    <div class="px-3 py-2 bg-surface-hover text-xs font-medium text-text-muted flex items-center justify-between">
+                                        <span>Files listed in manifest
+                                            <span class="tooltip text-[10px] text-text-muted ml-1"
+                                                  title="Excludes the integrity primitives themselves (metadata/manifest.json, metadata/manifest.sha256, metadata/INTEGRITY.md). The ZIP contains three more entries than shown here.">(?)</span>
+                                        </span>
+                                        <span class="font-mono"
+                                              x-text="(lastExport.files?.length || 0) + ' entries'"></span>
+                                    </div>
+                                    <div class="divide-y divide-border max-h-64 overflow-y-auto">
+                                        <template x-for="f in lastExport.files || []" :key="f.path">
+                                            <div class="px-3 py-2 text-xs flex items-start gap-3">
+                                                <code class="font-mono text-text flex-1 break-all"
+                                                      data-testid="bundle-file-path"
+                                                      x-text="f.path"></code>
+                                                <span class="shrink-0 text-text-muted"
+                                                      x-text="f.cra_reference"
+                                                      :title="f.cra_reference"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                    {# Mark Assessment Complete — uses fa-circle-check (solid, high-contrast) instead of fa-flag-checkered which vanished against bg-green-100 in light mode. #}
                     <template x-if="overallReady">
                         <div class="tw-card border-green-300 dark:border-green-700">
                             <div class="p-6">
                                 <div class="flex items-start gap-4">
                                     <div class="shrink-0 w-10 h-10 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center">
-                                        <i class="fas fa-flag-checkered text-green-600 dark:text-green-400"></i>
+                                        <i class="fas fa-circle-check text-xl text-green-600 dark:text-green-400"></i>
                                     </div>
                                     <div class="flex-1">
                                         <h3 class="font-semibold text-text m-0">Ready to Complete</h3>
@@ -121,7 +192,7 @@
                                         <button @click="finishAssessment()"
                                                 :disabled="isFinishing"
                                                 class="tw-btn-primary mt-3">
-                                            <span x-show="!isFinishing"><i class="fas fa-flag-checkered mr-2"></i> Mark Assessment Complete</span>
+                                            <span x-show="!isFinishing"><i class="fas fa-circle-check mr-2"></i> Mark Assessment Complete</span>
                                             <span x-show="isFinishing" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Completing...</span>
                                         </button>
                                     </div>

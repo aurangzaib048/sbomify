@@ -26,7 +26,12 @@ from sbomify.apps.compliance.services.sbom_compliance_service import (
     get_bsi_assessment_status,
 )
 from sbomify.apps.core.services.results import ServiceResult
-from sbomify.apps.teams.models import ContactEntity, ContactProfileContact
+from sbomify.apps.teams.services.contacts import (
+    contact_belongs_to_team,
+    get_manufacturer,
+    get_security_contact,
+    list_workspace_contacts,
+)
 
 if TYPE_CHECKING:
     from sbomify.apps.core.models import User
@@ -47,24 +52,13 @@ def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
     """Populate security contact and CSIRT email from existing contact profiles."""
     team = assessment.team
 
-    # Find the security contact across all team contact profiles
-    security_contact = (
-        ContactProfileContact.objects.filter(
-            entity__profile__team=team,
-            is_security_contact=True,
-        )
-        .select_related("entity")
-        .first()
-    )
+    security_contact = get_security_contact(team)
     if security_contact:
         if not assessment.csirt_contact_email:
             assessment.csirt_contact_email = security_contact.email
 
     # Find manufacturer entity for VDP/support info
-    manufacturer = ContactEntity.objects.filter(
-        profile__team=team,
-        is_manufacturer=True,
-    ).first()
+    manufacturer = get_manufacturer(team)
     if manufacturer:
         if not assessment.support_email and manufacturer.email:
             assessment.support_email = manufacturer.email
@@ -174,12 +168,11 @@ def get_step_context(
 
 def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
     """Step 1: Product Profile & Classification."""
+    from sbomify.apps.compliance.services._manufacturer_policy import is_placeholder_manufacturer
+
     product = assessment.product
 
-    manufacturer = ContactEntity.objects.filter(
-        profile__team=assessment.team,
-        is_manufacturer=True,
-    ).first()
+    manufacturer = get_manufacturer(assessment.team)
     manufacturer_data = None
     if manufacturer:
         manufacturer_data = {
@@ -188,6 +181,14 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "email": manufacturer.email,
             "website_urls": manufacturer.website_urls,
         }
+    # Annex V item 2 — DoC requires the manufacturer's legal name.
+    # Surface a boolean the wizard UI can use to render a prevention
+    # banner BEFORE the operator discovers "[Manufacturer Name — not
+    # configured]" on the generated DoC. This is the wizard-side guard
+    # that complements the render-time safety net in
+    # document_generation_service._build_common_context.
+    manufacturer_name = manufacturer.name if manufacturer else ""
+    manufacturer_is_placeholder = is_placeholder_manufacturer(manufacturer_name)
 
     return ServiceResult.success(
         {
@@ -200,6 +201,7 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
                 "end_of_life": product.end_of_life.isoformat() if product.end_of_life else None,
             },
             "manufacturer": manufacturer_data,
+            "manufacturer_is_placeholder": manufacturer_is_placeholder,
             "intended_use": assessment.intended_use,
             "target_eu_markets": assessment.target_eu_markets,
             "support_period_end": assessment.support_period_end.isoformat() if assessment.support_period_end else None,
@@ -301,18 +303,7 @@ def _build_step_4_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "generated_at": doc.generated_at.isoformat(),
         }
 
-    # Fetch contact profiles for the support contact dropdown
-    from sbomify.apps.teams.models import ContactProfileContact
-
-    team = assessment.product.team
-    contacts = list(
-        ContactProfileContact.objects.filter(
-            entity__profile__team=team,
-            entity__profile__is_component_private=False,
-        )
-        .select_related("entity__profile")
-        .values("id", "name", "email", "phone", "entity__profile__name")
-    )
+    contacts = list_workspace_contacts(assessment.product.team)
 
     return ServiceResult.success(
         {
@@ -352,14 +343,31 @@ def _compute_compliance_summary(assessment: CRAAssessment) -> dict[str, Any]:
     docs_generated = docs.count()
     docs_stale = docs.filter(is_stale=True).count()
 
-    # Export status
+    # Export status — includes the full manifest of the last exported
+    # bundle so the Step 5 UI can show what was actually packaged
+    # (files, CRA references, per-file hashes) without re-downloading
+    # the ZIP. The ``integrity`` block surfaces the hash algorithm and
+    # the verification-doc paths so the operator can cross-check the
+    # bundle without reading our code.
     last_export = assessment.export_packages.order_by("-created_at").first()
     export_data = None
     if last_export:
+        manifest = last_export.manifest or {}
         export_data = {
             "id": last_export.id,
             "content_hash": last_export.content_hash,
             "created_at": last_export.created_at.isoformat(),
+            "format_version": manifest.get("format_version"),
+            "manufacturer_is_placeholder": bool((manifest.get("manufacturer") or {}).get("is_placeholder", False)),
+            "integrity": manifest.get("integrity"),
+            "files": [
+                {
+                    "path": f.get("path", "").split("/", 1)[-1] if "/" in f.get("path", "") else f.get("path", ""),
+                    "sha256": f.get("sha256", ""),
+                    "cra_reference": f.get("cra_reference", ""),
+                }
+                for f in manifest.get("files", [])
+            ],
         }
 
     steps = {
@@ -509,6 +517,22 @@ def _save_step_1(
         assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
     )
 
+    # Server-side mirror of the wizard's canContinue gate. The client
+    # already refuses to call this endpoint when the manufacturer is a
+    # placeholder, but the SDK / curl / a misbehaving client could hit
+    # it directly. Reject with 400 + Annex V item 2 message so the
+    # same guard applies from both surfaces (issue #908 follow-up).
+    from sbomify.apps.compliance.services._manufacturer_policy import is_placeholder_manufacturer
+
+    manufacturer = get_manufacturer(assessment.team)
+    manufacturer_name = manufacturer.name if manufacturer else ""
+    if is_placeholder_manufacturer(manufacturer_name):
+        return ServiceResult.failure(
+            "Annex V item 2 requires a legal manufacturer name. "
+            "Configure a real manufacturer entity in team settings before advancing Step 1.",
+            status_code=400,
+        )
+
     _mark_step_complete(assessment, 1)
     assessment.save(
         update_fields=[
@@ -651,13 +675,8 @@ def _save_step_4(
     """Save Step 4: User Information."""
     # Validate support_contact_id belongs to the assessment's team
     contact_id = data.get("support_contact_id", "")
-    if contact_id:
-        from sbomify.apps.teams.models import ContactProfileContact
-
-        if not ContactProfileContact.objects.filter(
-            id=contact_id, entity__profile__team=assessment.product.team
-        ).exists():
-            return ServiceResult.failure("Invalid support contact", status_code=400)
+    if contact_id and not contact_belongs_to_team(contact_id, assessment.product.team):
+        return ServiceResult.failure("Invalid support contact", status_code=400)
 
     for field in _STEP_4_FIELDS:
         if field in data:

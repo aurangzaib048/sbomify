@@ -39,6 +39,11 @@ function craStep1() {
     assessmentId: '',
     product: {} as ProductInfo,
     manufacturer: null as ManufacturerInfo | null,
+    // Wizard-side mirror of the backend placeholder check so the UI can
+    // warn the operator BEFORE they reach Step 5 and discover the
+    // DoC rendered "[Manufacturer Name — not configured]". Backend
+    // source of truth: services._manufacturer_policy.is_placeholder_manufacturer.
+    manufacturerIsPlaceholder: false as boolean,
     category: 'default',
     isOpenSourceSteward: false,
     euMarkets: [] as string[],
@@ -55,6 +60,7 @@ function craStep1() {
         const d = data as Record<string, unknown>;
         this.product = (d.product as ProductInfo) || {};
         this.manufacturer = (d.manufacturer as ManufacturerInfo) || null;
+        this.manufacturerIsPlaceholder = Boolean(d.manufacturer_is_placeholder);
         this.category = (d.product_category as string) || 'default';
         this.isOpenSourceSteward = !!(d.is_open_source_steward);
         this.euMarkets = (d.target_eu_markets as string[]) || [];
@@ -67,6 +73,13 @@ function craStep1() {
     },
 
     get canContinue(): boolean {
+      // CRA Annex V item 2 requires the manufacturer's legal name on
+      // the generated DoC. When the team profile still carries a
+      // placeholder (or none) we refuse to advance past Step 1 — this
+      // is the wizard-side prevention that pairs with the render-time
+      // safety net in document_generation_service._build_common_context.
+      // Issue #908.
+      if (this.manufacturerIsPlaceholder) return false;
       return !!this.category && this.euMarkets.length > 0 && !!this.supportPeriodEnd;
     },
 

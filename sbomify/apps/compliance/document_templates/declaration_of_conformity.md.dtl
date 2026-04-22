@@ -13,6 +13,12 @@
 ## 2. Manufacturer
 
 **Name:** {{ manufacturer_name }}
+{% if manufacturer_is_placeholder %}
+> ⚠️  Annex V item 2 requires the manufacturer's legal name. This
+> placeholder MUST be replaced before the declaration is signed —
+> configure the manufacturer entity on the team profile and regenerate
+> the document.
+{% endif %}
 {% if manufacturer_address %}
 **Address:** {{ manufacturer_address }}
 {% endif %}
@@ -33,18 +39,34 @@ This EU declaration of conformity is issued under the sole responsibility of the
 The object of the declaration described above is in conformity with Regulation (EU) 2024/2847 of the European Parliament and of the Council (Cyber Resilience Act).
 
 ## 6. Standards & Specifications Applied
-
-- Regulation (EU) 2024/2847 — Cyber Resilience Act
-{% if applied_standards %}
 {% for standard in applied_standards %}
-- {{ standard }}
+- **{{ standard.citation }}**{% if standard.url %}  [ref]({{ standard.url }}){% endif %}{% if standard.harmonised %}  (harmonised standard — presumption of conformity){% endif %}
+{% for covered in standard.cra_requirements_covered %}
+    - {{ covered.cra_reference }}{% if covered.clause %} — *{{ covered.clause }}*{% endif %}{% if covered.summary %}: {{ covered.summary }}{% endif %}
 {% endfor %}
-{% endif %}
+{% endfor %}
 
 ## 7. Conformity Assessment
 
 **Product Category:** {{ product_category_display }}
 **Procedure:** {{ conformity_procedure_display }}
+{% if support_period_end %}
+**Support Period Ends:** {{ support_period_end }} (Article 13(8))
+{% endif %}
+
+## 8. Supporting Documentation (Annex VII)
+
+The following artefacts accompanying this declaration demonstrate conformity:
+
+- `sboms/*.cdx.json` — Software Bill of Materials in CycloneDX format (*Annex I Part II(1)*)
+- `documents/vulnerability-disclosure-policy.md` — Coordinated Vulnerability Disclosure policy (*Annex I Part II(5)-(6)*)
+- `documents/risk-assessment.md` — Cybersecurity risk assessment (*Annex VII §3*)
+- `documents/user-instructions.md` — User information and instructions (*Annex II*)
+- `documents/secure-decommissioning.md` — Secure decommissioning procedure (*Annex I Part I §13*)
+- `security.txt` — RFC 9116 machine-readable security contact
+- `article-14/*.md` — Article 14 notification templates (active from 2026-09-11)
+- `oscal/*.json` — OSCAL catalog and assessment-results for the 21 CRA Annex I controls
+- `metadata/manifest.json` + `metadata/manifest.sha256` — per-file SHA-256 manifest + self-hash for integrity verification
 
 ---
 **Signed for and on behalf of:**
