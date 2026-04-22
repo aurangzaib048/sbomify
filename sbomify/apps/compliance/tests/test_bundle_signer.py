@@ -118,21 +118,33 @@ class TestSignBundleDispatch:
 
 @pytest.mark.django_db
 class TestSigstoreKeylessSigner:
-    """The real sigstore dispatch path. Only assertion today is
-    that the library being absent is handled gracefully — full
-    end-to-end OIDC signing is a follow-up issue."""
+    """The real sigstore dispatch path. ``sigstore>=4.2`` is a
+    required project dependency (see ``pyproject.toml``), so the
+    "library absent" case doesn't apply — the signer goes straight
+    to ``SigningContext.production()``. In the test environment
+    there's no ambient OIDC token, so the real call raises
+    ``sigstore.oidc.IdentityError`` (or similar); the outer
+    ``sign_bundle`` wrapper catches it and returns ``None``.
 
-    def test_missing_sigstore_library_returns_none(self, sample_team_with_owner_member):
-        """When ``import sigstore.sign`` raises ``ImportError``
-        (default in test environment), the signer returns None so
-        the export ships unsigned instead of crashing the build."""
-        from sbomify.apps.compliance.services._bundle_signer import _sign_sigstore_keyless
+    The shared ``TestSignerDispatchAdversarial::test_signer_runtime_failure_is_swallowed``
+    test covers this swallow-at-outer-wrapper contract with a
+    deterministic raising signer, so we don't need a brittle
+    end-to-end test that depends on sigstore's OIDC error taxonomy.
+    """
+
+    def test_no_ambient_oidc_token_exports_unsigned(self, sample_team_with_owner_member):
+        """Exercise the full dispatch (no mock on the signer
+        callable) with no ambient OIDC token available. The real
+        sigstore call raises, the outer ``sign_bundle`` wrapper
+        catches, and the export ships unsigned — same "best-effort"
+        contract as the mocked path."""
+        from sbomify.apps.compliance.services._bundle_signer import sign_bundle
 
         team = sample_team_with_owner_member.team
-        settings = TeamComplianceSettings.objects.create(
+        TeamComplianceSettings.objects.create(
             team=team, signing_enabled=True, signing_provider="sigstore_keyless"
         )
-
-        result = _sign_sigstore_keyless(b"zip-bytes", settings)
-
-        assert result is None
+        # No SIGSTORE_ID_TOKEN env var, no ambient identity — the
+        # real sigstore call will fail inside ``SigningContext.signer()``
+        # or ``sign_artifact``. The outer wrapper swallows.
+        assert sign_bundle(b"zip-bytes", team) is None

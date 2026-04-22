@@ -15,12 +15,20 @@ best-effort enhancement, not a gate on the export. A warning is
 logged so operators can investigate misconfiguration without having
 a regulated export blocked.
 
-Real sigstore-python integration is behind a feature check because
-``sigstore`` is an optional dependency in this repo. When the
-library is missing, the keyless provider logs once and returns
-``None``; tests mock the signer directly via
-:data:`_SIGNERS_BY_PROVIDER` so they don't depend on sigstore being
-installed.
+Produces a **Sigstore bundle v0.3** (``application/vnd.dev.sigstore.bundle.v0.3+json``)
+in JSON form — the same shape consumed by the existing
+``sbomify.apps.plugins.builtins.verification._verify_cosign_bundle``,
+so a downstream CRA-bundle verifier can parse our output via
+``sigstore.models.Bundle.from_json(...)`` and validate it with
+``sigstore.verify.Verifier.production().verify_artifact(...)``. The
+inverse round-trip is authoritative; this module is its mirror on
+the producer side.
+
+``sigstore>=4.2`` is a required dependency of the project (see
+``pyproject.toml``); no import-time fallback is warranted. Runtime
+failures (missing OIDC token, Fulcio unreachable, signer raises)
+fall through to the outer ``sign_bundle`` catch — the export ships
+unsigned with a logged warning.
 """
 
 from __future__ import annotations
@@ -56,43 +64,31 @@ def _sign_noop(zip_bytes: bytes, settings: "TeamComplianceSettings") -> bytes | 
 def _sign_sigstore_keyless(zip_bytes: bytes, settings: "TeamComplianceSettings") -> bytes | None:
     """Sigstore keyless signing via Fulcio-issued ephemeral certs.
 
-    Requires the ``sigstore`` Python package + an ambient OIDC
-    identity (env var ``SIGSTORE_OIDC_TOKEN`` or the server's
-    ambient credential chain) at signing time. When either is
-    missing, logs a warning and returns ``None`` so the export can
-    still ship — signing is a layered enhancement, not a gate.
-    """
-    try:
-        from sigstore.sign import SigningContext  # type: ignore[import-not-found,unused-ignore]
-    except ImportError:
-        logger.warning(
-            "Team %s has sigstore_keyless signing enabled but the sigstore "
-            "Python package is not installed; signature skipped. "
-            "Install sigstore>=3.0 to enable.",
-            settings.team_id,
-        )
-        return None
+    Requires an ambient OIDC identity at signing time — env var
+    ``SIGSTORE_ID_TOKEN``, a GitHub Actions workflow token, or any
+    credential chain sigstore-python's ``SigningContext.production()``
+    knows how to resolve. When the identity can't be resolved the
+    library raises; the outer ``sign_bundle`` catches and the export
+    ships unsigned.
 
-    try:
-        # The signing flow below is intentionally minimal — a full
-        # production implementation will negotiate the OIDC flow via
-        # the sbomify server's configured issuer, resolve the
-        # expected subject against ``settings.signing_identity``, and
-        # upload the transparency-log entry to Rekor. That's more
-        # infrastructure than fits in this PR; the follow-up issue
-        # tracks the remaining work. Today we use the sigstore
-        # library's ``SigningContext.production()`` which picks up
-        # ambient OIDC identity when available.
-        ctx = SigningContext.production()  # type: ignore[attr-defined,unused-ignore]
-        with ctx.signer() as signer:  # type: ignore[attr-defined,unused-ignore]
-            result = signer.sign_artifact(zip_bytes)
-        return bytes(result.to_bundle().to_json(), "utf-8")
-    except Exception:  # pragma: no cover - exercised via mock
-        logger.exception(
-            "Sigstore keyless signing failed for team %s; exporting unsigned.",
-            settings.team_id,
-        )
-        return None
+    The minimal implementation below delegates OIDC issuer selection
+    to ``SigningContext.production()`` — good enough for local /
+    CI-driven flows with an ambient token. A production-grade
+    follow-up will: (a) pin the OIDC issuer per team, (b) capture
+    the Rekor transparency-log UUID from the signing result and
+    persist it on ``CRAExportPackage``, (c) verify the resolved
+    subject against ``settings.signing_identity`` before returning.
+    Tracked as the #906 sigstore-python integration follow-up.
+    """
+    from sigstore.sign import SigningContext  # type: ignore[import-not-found,unused-ignore]
+
+    ctx = SigningContext.production()  # type: ignore[attr-defined,unused-ignore]
+    with ctx.signer() as signer:  # type: ignore[attr-defined,unused-ignore]
+        result = signer.sign_artifact(zip_bytes)
+    # Returns the Sigstore bundle v0.3 JSON — same shape the
+    # existing ``verification.py`` plugin consumes.
+    bundle_json: str = result.to_bundle().to_json()
+    return bundle_json.encode("utf-8")
 
 
 # Dispatch table. Tests override entries here to inject deterministic
