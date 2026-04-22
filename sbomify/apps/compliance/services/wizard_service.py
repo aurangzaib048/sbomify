@@ -700,9 +700,10 @@ def _save_step_2(
             # unbounded justification would bloat the row and could
             # DoS the JSON round-trip. 2 KB is plenty for an audit
             # sentence; anything larger is almost certainly a bug or
-            # attack. The Step 2 UI caps the textarea at the same
-            # limit so an operator with a legitimate long note hits
-            # a UI-level error, not a server-level surprise.
+            # attack. Enforce the limit here so oversized payloads
+            # are rejected consistently — waiver authoring currently
+            # happens via the API (Django admin or scripted setup),
+            # so the server must not rely on a client-side cap.
             if len(justification) > _MAX_WAIVER_JUSTIFICATION_CHARS:
                 return ServiceResult.failure(
                     f"Waiver justification for {finding_id!r} exceeds {_MAX_WAIVER_JUSTIFICATION_CHARS}-char limit",

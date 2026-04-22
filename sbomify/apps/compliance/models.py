@@ -352,8 +352,18 @@ class CRAExportPackage(models.Model):
 
     @property
     def is_signed(self) -> bool:
-        """True when the package has a sigstore/cosign side-car in S3."""
-        return bool(self.signature_storage_key)
+        """True when the package has a sigstore/cosign side-car in S3.
+
+        Matches the normalisation done by
+        :func:`sbomify.apps.compliance.services.export_service.get_signature_download_url`
+        — a whitespace-only storage key is truthy as a plain string
+        but not a real S3 key, so it must not make the package
+        appear signed. The API-level presign check enforces the
+        full prefix/suffix validation; keeping this model property
+        consistent prevents a ``.is_signed=True`` / ``signature_url``
+        absent divergence in the download response.
+        """
+        return bool((self.signature_storage_key or "").strip())
 
 
 class TeamComplianceSettings(models.Model):

@@ -893,6 +893,62 @@ class TestBuildExportPackageSigning:
         assert result.value.signed_issuer == ""
         assert result.value.is_signed is False
 
+    def test_unknown_provider_writes_unsigned_readme(self, assessment_with_docs, sample_user):
+        """A team row with ``signing_enabled=True`` but a provider
+        the dispatcher doesn't know about (legacy DB state, manual
+        SQL edit, choices removed in a migration) must produce the
+        *unsigned* INTEGRITY.md section — otherwise the ZIP ships
+        with a README that promises a ``.sig`` side-car that
+        ``sign_bundle()`` silently skips. Regression seal for the PR
+        914 reviewer finding — gate ``_will_sign`` on the
+        ``_SIGNATURE_PROVIDER_LABELS`` allowlist, not just the
+        ``!= "none"`` check."""
+        import zipfile
+        from io import BytesIO
+
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+
+        settings = TeamComplianceSettings.objects.create(
+            team=assessment_with_docs.team,
+            signing_enabled=True,
+            signing_provider="none",  # pass model validation
+        )
+        # Sneak past the model-level choices check to simulate a
+        # corrupted row (post-choices-removal, raw SQL edit). Real
+        # prod paths can only land here through admin misuse but the
+        # README must degrade safely regardless.
+        TeamComplianceSettings.objects.filter(pk=settings.pk).update(signing_provider="unknown_legacy_provider")
+
+        captured_bytes: dict[str, bytes] = {}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured_bytes[key] = data
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            mock_s3_cls.return_value = _Capture()
+            result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        zip_bytes = next(v for k, v in captured_bytes.items() if k.endswith(".zip") and not k.endswith(".sig"))
+        zf = zipfile.ZipFile(BytesIO(zip_bytes))
+        readme_path = next(n for n in zf.namelist() if n.endswith("INTEGRITY.md"))
+        readme = zf.read(readme_path).decode("utf-8")
+        # Unsigned branch — README instructs operator to sign
+        # downstream, NOT "configured to ship with".
+        assert "About signatures" in readme
+        assert "configured to ship with" not in readme
+        # No .sig side-car uploaded because the signer dispatch
+        # rejects the unknown provider.
+        assert not any(k.endswith(".sig") for k in captured_bytes)
+        assert result.value.is_signed is False
+
 
 @pytest.mark.django_db
 class TestGetDownloadUrl:

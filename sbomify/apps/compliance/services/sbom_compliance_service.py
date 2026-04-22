@@ -189,13 +189,22 @@ _UNKNOWN_FINDING_SUMMARY = (
 )
 
 
-def _classify_bsi_finding(finding_id: str) -> tuple[str, str, str]:
+def _classify_bsi_finding(finding_id: object) -> tuple[str, str, str]:
     """Return ``(remediation_type, guidance_url, human_summary)`` for a BSI finding id.
 
-    Unknown finding ids fall back to ``operator_action`` + the
-    enrichment URL + a generic summary — the conservative default
-    keeps the wizard gate strict when the BSI plugin gains a new
-    check that this classifier hasn't been updated for yet.
+    Accepts ``object`` rather than ``str`` because the run payload is
+    JSON round-tripped and a broken upstream plugin (or corrupted DB
+    row) can land here with a list/dict/int in place of the string
+    id. ``dict.get()`` with an unhashable key raises
+    ``TypeError``, which would break BSI classification for every
+    finding in the scan. Coerce to the fail-closed default instead.
+
+    Unknown or non-string finding ids fall back to ``operator_action``
+    + the enrichment URL + a generic summary — the conservative
+    default keeps the wizard gate strict when the BSI plugin gains a
+    new check that this classifier hasn't been updated for yet, or
+    when upstream emits a malformed id that the ``_build_bsi_assessment_dict``
+    coercion didn't catch.
 
     The ``human_summary`` is a one-line operator-facing sentence
     (issue #907) explaining in plain English why this check fails
@@ -204,6 +213,8 @@ def _classify_bsi_finding(finding_id: str) -> tuple[str, str, str]:
     alongside the badge so operators don't have to piece together
     the remediation from the BSI plugin's schema-oriented text.
     """
+    if not isinstance(finding_id, str):
+        return "operator_action", _SBOMIFY_ACTION_ENRICHMENT_URL, _UNKNOWN_FINDING_SUMMARY
     remediation_type = _BSI_REMEDIATION_TYPE.get(finding_id, "operator_action")
     guidance_url = _BSI_GUIDANCE_URL_OVERRIDES.get(finding_id, _SBOMIFY_ACTION_ENRICHMENT_URL)
     human_summary = _BSI_HUMAN_SUMMARY.get(finding_id, _UNKNOWN_FINDING_SUMMARY)

@@ -422,8 +422,21 @@ def build_export_package(
 
         try:
             _settings = assessment.team.compliance_settings
-            _will_sign = bool(_settings.signing_enabled and _settings.signing_provider != "none")
-            _sig_provider = _settings.signing_provider if _will_sign else None
+            _configured_provider = _settings.signing_provider
+            # Only claim "signed" in the README when the provider is
+            # enabled AND actually known to the signing dispatcher —
+            # a legacy DB row pointing at a provider that was later
+            # removed (or a manual SQL edit) would otherwise write a
+            # README that promises a signature ``sign_bundle()`` will
+            # silently skip. Gating on the provider-label allowlist
+            # keeps the ZIP's embedded README aligned with what the
+            # signer can actually produce.
+            _will_sign = bool(
+                _settings.signing_enabled
+                and _configured_provider != "none"
+                and _configured_provider in _SIGNATURE_PROVIDER_LABELS
+            )
+            _sig_provider = _configured_provider if _will_sign else None
         except TeamComplianceSettings.DoesNotExist:
             _will_sign = False
             _sig_provider = None

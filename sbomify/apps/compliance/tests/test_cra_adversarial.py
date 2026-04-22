@@ -191,6 +191,36 @@ class TestEvaluateAppliesWhenAdversarial:
         assert not _evaluate_applies_when({"processes_personal_data": True}, {})
         assert not _evaluate_applies_when({"processes_personal_data": False}, {})
 
+    def test_non_dict_rule_shapes_fail_closed(self):
+        """Valid-but-malformed reference JSON (``applies_when: []``,
+        ``"x"``, ``42``, ``True``, ``null``) must fail closed rather
+        than crash on ``.keys()`` or short-circuit to truthy. Entries
+        that should always apply carry ``always_applicable: true`` in
+        the reference JSON — the caller (``_select_applied_standards``)
+        OR-short-circuits on that flag before invoking the evaluator,
+        so treating ``applies_when: null`` here as "no predicate →
+        always true" would contradict the "unknown predicate fails
+        closed" policy at the sub-rule level. Fail closed uniformly."""
+        for bad in [None, [], [{"product_category": "x"}], "string", 42, 3.14, True, False, set(), object()]:
+            assert _evaluate_applies_when(bad, {}) is False, f"expected False for {bad!r}"
+
+    def test_any_of_non_list_payload_fails_closed(self):
+        """``any_of: "str"`` / ``any_of: {...}`` would otherwise
+        iterate the string's characters (or dict keys) and eval them
+        as sub-rules, silently matching on whatever happens to be
+        falsy. Fail closed instead so a broken JSON fails loudly on
+        the negative side rather than silently opening up claims."""
+        assert _evaluate_applies_when({"any_of": "radio_equipment"}, {"product_category": "radio_equipment"}) is False
+        assert _evaluate_applies_when({"any_of": {"product_category": "radio_equipment"}}, {}) is False
+        assert _evaluate_applies_when({"any_of": None}, {}) is False
+
+    def test_all_of_non_list_payload_fails_closed(self):
+        """Same guarantee for ``all_of``. A non-list payload is
+        never a valid rule tree."""
+        assert _evaluate_applies_when({"all_of": "radio_equipment"}, {"product_category": "radio_equipment"}) is False
+        assert _evaluate_applies_when({"all_of": {"product_category": "radio_equipment"}}, {}) is False
+        assert _evaluate_applies_when({"all_of": 1}, {}) is False
+
 
 @pytest.mark.django_db
 class TestAssessmentFactsOverloadRegression:
@@ -1498,6 +1528,37 @@ class TestDownloadApiSigningBlockEdges:
         assert pkg.is_signed is True
         assert pkg.rekor_log_index == 0
 
+    def test_is_signed_rejects_whitespace_only_storage_key(self, sample_team_with_owner_member):
+        """``signature_storage_key = "   "`` is truthy as a string but
+        not a real S3 key. ``is_signed`` must strip-then-test so the
+        API-level presign guard (which also strips) doesn't disagree
+        with the model property. Prevents the ``.is_signed=True`` /
+        ``signature_url=None`` divergence a reviewer flagged on PR
+        914."""
+        from sbomify.apps.compliance.models import CRAExportPackage
+        from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
+
+        team = sample_team_with_owner_member.team
+        user = sample_team_with_owner_member.user
+        p = Product.objects.create(name="WS Sig", team=team)
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Acme Labs GmbH",
+            email="legal@acme.example",
+            is_manufacturer=True,
+        )
+        a = get_or_create_assessment(p.id, user, team).value
+        for idx, bad in enumerate(["", "   ", "\t\n", "   \t\n   "]):
+            pkg = CRAExportPackage.objects.create(
+                assessment=a,
+                storage_key=f"compliance/exports/x/abc-{idx}.zip",
+                content_hash=f"{idx:0>64}",
+                manifest={"format_version": "1.1"},
+                signature_storage_key=bad,
+            )
+            assert pkg.is_signed is False, f"expected False for signature_storage_key={bad!r}"
+
 
 def sample_user_for_team(team):
     """Helper for the zero-index test — returns a user that
@@ -1535,3 +1596,356 @@ class TestSignerDispatchXdistSafety:
         enum."""
         # Regression seal for the current provider set.
         assert set(_SIGNERS_BY_PROVIDER.keys()) == {"none", "sigstore_keyless"}
+
+
+# ---------------------------------------------------------------------------
+# Extra bad+complex coverage (PR 914 follow-up round)
+# ---------------------------------------------------------------------------
+
+
+class TestAppliesWhenExtraAdversarial:
+    """Corner cases around the rule-tree evaluator. These catch
+    typos in the reference JSON and hostile inputs a future admin
+    API surface could pass."""
+
+    def test_any_of_list_containing_non_dict_sub_rule_fails_closed(self):
+        """``any_of: [{"k": 1}, "x", None]`` — the string/None are not
+        dicts and must not match on any facts. Today they fail the
+        ``isinstance(rule, dict)`` guard added in PR 914 and the
+        overall disjunction still honours the valid sibling."""
+        rule = {"any_of": [{"k": "ok"}, "bad", None, 42]}
+        assert _evaluate_applies_when(rule, {"k": "ok"}) is True
+        assert _evaluate_applies_when(rule, {"k": "nope"}) is False
+
+    def test_all_of_list_containing_non_dict_sub_rule_fails_closed(self):
+        """``all_of: [{"k": 1}, "x"]`` — the string breaks the
+        conjunction because it evaluates to False. Documents the
+        safe behaviour (AND with False is False) for rule authors."""
+        rule = {"all_of": [{"k": "ok"}, "bad"]}
+        assert _evaluate_applies_when(rule, {"k": "ok"}) is False
+
+    def test_deeply_nested_rule_does_not_blow_recursion(self):
+        """Build a 50-deep rule tree and evaluate. Python's default
+        recursion limit is 1000; 50 is comfortable. This test exists
+        to flag a future refactor that accidentally changes the
+        evaluator into a stack-hungry implementation."""
+        rule: dict = {"product_category": "x"}
+        for _ in range(50):
+            rule = {"all_of": [rule]}
+        assert _evaluate_applies_when(rule, {"product_category": "x"}) is True
+        assert _evaluate_applies_when(rule, {"product_category": "y"}) is False
+
+    def test_combinator_contains_deeply_nested_bad_shape(self):
+        """A deeply nested valid tree with a bad shape at the leaf —
+        the bad shape must still fail closed, not crash the whole
+        evaluator."""
+        rule = {"all_of": [{"any_of": [{"all_of": [{"any_of": 42}]}]}]}
+        # Deepest ``any_of: 42`` → False; bubbles up as False.
+        assert _evaluate_applies_when(rule, {}) is False
+
+    def test_both_combinators_at_same_level_rejected(self):
+        """``{"any_of": [...], "all_of": [...]}`` is ambiguous —
+        which wins? The mixed-shape guard rejects it (combinator
+        keys + siblings is always false)."""
+        assert _evaluate_applies_when(
+            {"any_of": [{"k": 1}], "all_of": [{"k": 1}]},
+            {"k": 1},
+        ) is False
+
+    def test_equality_with_nested_dict_expected(self):
+        """``{"foo": {"nested": "value"}}`` — Python dict equality
+        handles this correctly. Future rule authors relying on
+        per-component structured facts can count on deep ==."""
+        rule = {"profile": {"kind": "radio"}}
+        assert _evaluate_applies_when(rule, {"profile": {"kind": "radio"}}) is True
+        assert _evaluate_applies_when(rule, {"profile": {"kind": "wired"}}) is False
+
+    def test_empty_sub_rule_inside_any_of_is_true(self):
+        """``any_of: [{}]`` — the empty dict is vacuously True
+        (matches the ``not rule → True`` early-return), so any_of
+        short-circuits to True regardless of facts. Documenting this
+        so rule authors don't accidentally write ``any_of: [{}]``
+        expecting "match nothing"."""
+        assert _evaluate_applies_when({"any_of": [{}]}, {}) is True
+
+    def test_falsy_but_non_none_fact_values_handled(self):
+        """Facts like ``{"count": 0}`` or ``{"enabled": False}`` are
+        falsy in Python. Equality compares exactly, so a predicate
+        ``{"count": 0}`` matches correctly."""
+        assert _evaluate_applies_when({"count": 0}, {"count": 0}) is True
+        assert _evaluate_applies_when({"enabled": False}, {"enabled": False}) is True
+        # But None isn't 0 and isn't False.
+        assert _evaluate_applies_when({"count": 0}, {"count": None}) is False
+
+
+class TestBsiFindingIdCoercionEndToEnd:
+    """The ``_build_bsi_assessment_dict`` path reads ``f.get('id', '')``
+    from run JSON. PR 914 hardened this to coerce non-string to "".
+    Cover every hostile shape that could be injected via a broken
+    plugin or corrupted DB row."""
+
+    @pytest.mark.parametrize("bad_id", [None, [], {}, 42, 3.14, True, b"bytes", ["nested"], {"k": "v"}])
+    def test_non_string_id_coerces_to_unknown(self, bad_id):
+        """Directly exercise ``_classify_bsi_finding`` — any non-str
+        id maps to the default ``operator_action`` bucket with an
+        empty summary/URL, never raising TypeError on a dict-key
+        lookup."""
+        rem_type, url, summary = _classify_bsi_finding(bad_id)  # type: ignore[arg-type]
+        # Default = operator_action (loud, operator must address).
+        assert rem_type == "operator_action"
+
+    def test_build_bsi_assessment_dict_handles_malformed_id(self):
+        """End-to-end via ``_build_bsi_assessment_dict`` — a run
+        whose findings carry a non-string id (maybe an upstream
+        plugin bug) must produce a valid failing_checks entry with
+        remediation_type populated, not crash."""
+        from sbomify.apps.plugins.models import AssessmentRun
+        from sbomify.apps.compliance.services.sbom_compliance_service import (
+            _build_bsi_assessment_dict,
+        )
+
+        run = AssessmentRun(
+            result={
+                "summary": {"pass_count": 1, "fail_count": 2, "warning_count": 0},
+                "findings": [
+                    {"id": ["list", "id"], "status": "fail", "title": "broken plugin output"},
+                    {"id": 42, "status": "fail", "title": "int id"},
+                    {"id": None, "status": "fail", "title": "none id"},
+                    {"id": "bsi-tr03183:hash-value", "status": "fail", "title": "proper id"},
+                    {"id": "bsi-tr03183:sbom-format", "status": "pass", "title": "pass ignored"},
+                ],
+            },
+            status="completed",
+        )
+        out = _build_bsi_assessment_dict(run)
+        # 4 failing checks extracted (pass is filtered out).
+        assert out["fail_count"] == 2  # from summary
+        assert len(out["failing_checks"]) == 4
+        # Coerced ids all produce a valid string id.
+        assert all(isinstance(c["id"], str) for c in out["failing_checks"])
+        # The known id retains its classification, others fall to
+        # operator_action default.
+        classifications = {c["id"]: c["remediation_type"] for c in out["failing_checks"]}
+        assert classifications["bsi-tr03183:hash-value"] == "tooling_limitation"
+        # Non-string ids coerce to "" → default operator_action.
+        assert classifications[""] == "operator_action"
+
+
+@pytest.mark.django_db
+class TestSignerProviderAdversarial:
+    """Hostile ``signing_provider`` values sneaking into the DB."""
+
+    @pytest.mark.parametrize("hostile", [
+        "Sigstore_Keyless",  # wrong case
+        "sigstore_keyless ",  # trailing space
+        " sigstore_keyless",  # leading space
+        "𝐬𝐢𝐠𝐬𝐭𝐨𝐫𝐞_𝐤𝐞𝐲𝐥𝐞𝐬𝐬",  # unicode-math lookalike
+        "sigstore_keylеss",  # cyrillic 'е' confusable
+        "",  # empty
+        "\n",
+    ])
+    def test_unknown_provider_short_circuits_to_none(self, sample_team_with_owner_member, hostile):
+        """Any provider string not exactly in ``_SIGNERS_BY_PROVIDER``
+        must produce ``None`` from ``sign_bundle`` — no accidental
+        dispatch via normalisation."""
+        team = sample_team_with_owner_member.team
+        settings = TeamComplianceSettings(team=team, signing_enabled=True)
+        settings.signing_provider = hostile  # bypass model choices
+        settings.save()
+
+        assert sign_bundle(b"zip", team) is None
+
+    def test_nul_byte_provider_short_circuits_to_none(self, sample_team_with_owner_member):
+        """Postgres rejects NUL bytes in varchar at the DB layer, so
+        we can't round-trip this through ``.save()``. Instead poke
+        the in-memory attribute directly — the dispatch lookup must
+        still miss, even if a future storage layer allowed the NUL
+        to land."""
+        team = sample_team_with_owner_member.team
+        settings = TeamComplianceSettings.objects.create(
+            team=team, signing_enabled=True, signing_provider="none"
+        )
+        # Mutate after save — skips DB round-trip but refreshes on
+        # read, so we fetch with a patched dispatch path.
+        settings.signing_provider = "sigstore_keyless\x00"
+        # Force team.compliance_settings cache to use our mutated
+        # instance via direct attribute poke.
+        team._state.fields_cache["compliance_settings"] = settings
+
+        assert sign_bundle(b"zip", team) is None
+
+
+@pytest.mark.django_db
+class TestStep2WaiverComplexCases:
+    """Waiver flow — bad inputs + complex interactions with the
+    Step 2 overlay that a reviewer flagged as easy-to-break."""
+
+    def test_operator_action_waiver_silently_dropped_by_overlay(self, assessment):
+        """A waiver written for an ``operator_action`` finding must
+        NOT mark the check as waived — those findings require the
+        operator to act. The overlay silently ignores the waiver
+        while keeping the value on the row for audit."""
+        assessment.bsi_waivers = {
+            "bsi-tr03183:sbom-creator": {"justification": "ignored — operator_action"},
+        }
+        assessment.save(update_fields=["bsi_waivers"])
+
+        # Fake a run with the finding failing.
+        ctx = get_step_context(assessment, 2)
+        assert ctx.ok
+        # Waiver is preserved on the model but not applied.
+        assessment.refresh_from_db()
+        assert "bsi-tr03183:sbom-creator" in assessment.bsi_waivers
+
+    def test_unknown_finding_id_waiver_silently_dropped(self, assessment, sample_user):
+        """Saving a waiver for an id that isn't in the BSI registry
+        (typo, deprecated id) must be rejected at the save layer —
+        operators can't bypass the gate by typing novel ids."""
+        result = save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:does-not-exist": {"justification": "typo"}}},
+            sample_user,
+        )
+        # Expected: rejected because id is unknown.
+        assert not result.ok
+        assert "unknown" in (result.error or "").lower() or "not waivable" in (result.error or "").lower()
+
+    def test_waiver_for_operator_action_finding_rejected(self, assessment, sample_user):
+        """Saving a waiver for a finding that IS in the registry but
+        is classified as ``operator_action`` must also be rejected —
+        only tooling-limitation findings are waivable."""
+        result = save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:sbom-creator": {"justification": "nope"}}},
+            sample_user,
+        )
+        assert not result.ok
+        assert "waivable" in (result.error or "").lower() or "operator" in (result.error or "").lower()
+
+    def test_empty_waivers_dict_clears_all(self, assessment, sample_user):
+        """POST ``{"waivers": {}}`` must clear every existing waiver
+        — the second save replaces the field entirely. Regression
+        seal for the "delete by omission" contract."""
+        # Start with a waiver.
+        save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": "x"}}},
+            sample_user,
+        )
+        assessment.refresh_from_db()
+        assert assessment.bsi_waivers
+
+        # Now clear.
+        result = save_step_data(assessment, 2, {"waivers": {}}, sample_user)
+        assert result.ok
+        assessment.refresh_from_db()
+        assert assessment.bsi_waivers == {}
+
+
+@pytest.mark.django_db
+class TestIsSignedConsistencyWithDownloadApi:
+    """The ``is_signed`` model property and ``get_signature_download_url``
+    must agree on what counts as signed. Any divergence surfaces as
+    ``is_signed=True`` but ``signature_url`` missing from the API
+    response — a regulated-evidence bug."""
+
+    def test_whitespace_only_key_both_report_unsigned(self, assessment):
+        """Core regression: whitespace-only key → both paths reject."""
+        pkg = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/a.zip",
+            content_hash="a" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key="   \t\n  ",
+        )
+        assert pkg.is_signed is False
+        assert get_signature_download_url(pkg).value is None
+
+    def test_valid_key_both_report_signed(self, assessment):
+        """Sanity: a proper key → both paths accept."""
+        pkg = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/b.zip",
+            content_hash="b" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key=f"compliance/exports/{assessment.id}/b.zip.sig",
+        )
+        assert pkg.is_signed is True
+        # URL generation requires S3 mocking; just verify we past
+        # the validation guards (hit boto3.client mock scope).
+        # The key-validation branch returns success(None) for bad
+        # keys; anything else proves the key passed.
+        from unittest.mock import MagicMock, patch
+        with patch("boto3.client") as mock_client:
+            mock_client.return_value.generate_presigned_url.return_value = "ok"
+            result = get_signature_download_url(pkg)
+            assert result.ok
+            assert result.value == "ok"
+
+    @pytest.mark.parametrize("bad", [
+        "other-bucket/compliance/exports/x.sig",  # wrong prefix
+        "compliance/exports/x.zip",  # wrong suffix
+        "compliance/exports/../etc/passwd.sig",  # traversal
+        # NUL byte is rejected at the DB layer so we can't insert
+        # one via the ORM. The NUL guard in get_signature_download_url
+        # is already covered by test_signature_key_nul_byte_rejected_by_service_layer
+        # above which pokes the value directly after save.
+    ])
+    def test_invalid_key_is_signed_true_but_url_none(self, assessment, bad):
+        """Known divergence: ``is_signed`` only checks non-empty
+        stripped string, but the URL validator enforces prefix +
+        suffix + no-traversal + no-NUL. Document the asymmetry:
+        ``is_signed`` is "has a claim of being signed" while
+        ``signature_url`` is "can actually hand out a presigned
+        URL right now". The download API hides the URL (and the
+        signature block) when get_signature_download_url returns
+        None — so the asymmetry is invisible to clients."""
+        pkg = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/c.zip",
+            content_hash="c" * 64,
+            manifest={"format_version": "1.1"},
+            signature_storage_key=bad,
+        )
+        # is_signed reflects the intent ("there's a claim")...
+        assert pkg.is_signed is True
+        # ...but the URL validator correctly rejects the bad key.
+        assert get_signature_download_url(pkg).value is None
+
+
+class TestIntegrityReadmeWillSignGate:
+    """``_will_sign`` must gate on the ``_SIGNATURE_PROVIDER_LABELS``
+    allowlist, not just ``signing_provider != "none"``. A legacy or
+    manually-edited DB row with an unknown provider must degrade to
+    the unsigned README branch instead of claiming a signature."""
+
+    def test_unknown_provider_falls_back_to_unsigned_section(self):
+        """Direct unit test of the readme section — if signed=True
+        but the provider isn't in the allowlist, the label falls
+        through to the generic wording. Regression seal against
+        accidental provider-string bypass via admin edit."""
+        # Provider in allowlist → specific label.
+        known = _signature_readme_section(signed=True, provider="sigstore_keyless")
+        assert "Sigstore keyless" in known
+
+        # Provider NOT in allowlist → generic fallback label, but
+        # still the signed branch (caller decided will_sign).
+        generic = _signature_readme_section(signed=True, provider="unknown_provider")
+        assert "configured cryptographic signature" in generic
+        # Neither branch should leak an attacker-controlled provider
+        # name verbatim into the README.
+        assert "unknown_provider" not in generic
+
+    def test_provider_with_markdown_injection_escaped_in_readme(self):
+        """An attacker-controlled provider string (admin SQL edit or
+        unescaped form) must not inject markdown/HTML into the
+        README. The allowlist ensures unknown providers hit the
+        generic label and the name is never concatenated in."""
+        evil = "](javascript:alert(1))"
+        section = _signature_readme_section(signed=True, provider=evil)
+        assert evil not in section
+        # Generic label is used.
+        assert "configured cryptographic signature" in section

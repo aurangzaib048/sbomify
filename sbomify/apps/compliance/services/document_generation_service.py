@@ -88,6 +88,19 @@ def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -
     predicates fail closed so a typo in the JSON doesn't silently
     open up an unintended match.
     """
+    # Fail closed on any non-dict rule shape. A valid-but-malformed
+    # reference JSON (``applies_when: []``, ``applies_when: "x"``,
+    # ``applies_when: null``) would otherwise either short-circuit
+    # to True or crash on ``.keys()``; both are unsafe for a CRA
+    # DoC. Entries that should "always apply" set
+    # ``always_applicable: true`` in the JSON and short-circuit at
+    # the caller (see ``_select_applied_standards``) before this
+    # evaluator runs — so ``None`` here is "no predicate was
+    # authored" which we treat as fail-closed at the recursive
+    # level. An empty dict ``{}`` remains True (vacuous) to match
+    # the standard rule-tree semantics.
+    if not isinstance(rule, dict):
+        return False
     if not rule:
         return True
     combinator_keys = _COMBINATORS & rule.keys()
@@ -96,9 +109,18 @@ def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -
         # "unknown predicate fails closed" policy.
         return False
     if "any_of" in rule:
-        return any(_evaluate_applies_when(sub, facts) for sub in rule["any_of"])
+        sub_rules = rule["any_of"]
+        if not isinstance(sub_rules, list):
+            # Non-list combinator payload — fail closed rather than
+            # raising ``TypeError: 'str' object is not iterable`` or
+            # worse, silently iterating the characters of a string.
+            return False
+        return any(_evaluate_applies_when(sub, facts) for sub in sub_rules)
     if "all_of" in rule:
-        return all(_evaluate_applies_when(sub, facts) for sub in rule["all_of"])
+        sub_rules = rule["all_of"]
+        if not isinstance(sub_rules, list):
+            return False
+        return all(_evaluate_applies_when(sub, facts) for sub in sub_rules)
     for key, expected in rule.items():
         if facts.get(key) != expected:
             return False
