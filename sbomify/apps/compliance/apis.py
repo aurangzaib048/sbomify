@@ -413,13 +413,22 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     except CRAExportPackage.DoesNotExist:
         return 404, ErrorResponse(error="Export package not found", error_code="not_found")
 
-    from .services.export_service import get_download_url
+    from .services.export_service import get_download_url, get_signature_download_url
 
     url = get_download_url(package)
     if not url.ok:
         return url.status_code or 500, ErrorResponse(error=url.error or "Unknown error")
 
-    return 200, {"download_url": url.value}
+    body: dict[str, Any] = {"download_url": url.value}
+    # Issue #906: the signature side-car is optional. ``None`` means
+    # the package wasn't signed (team has signing disabled, or signer
+    # couldn't produce one at export time); the client renders the
+    # "Download signature" affordance only when this is present.
+    sig = get_signature_download_url(package)
+    if sig.ok and sig.value:
+        body["signature_url"] = sig.value
+
+    return 200, body
 
 
 @router.get(

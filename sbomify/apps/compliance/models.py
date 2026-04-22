@@ -328,3 +328,49 @@ class CRAExportPackage(models.Model):
 
     def __str__(self) -> str:
         return f"Export package {self.pk} for {self.assessment}"
+
+
+class TeamComplianceSettings(models.Model):
+    """Team-scoped compliance configuration (issue #906).
+
+    Separate from ``Team`` itself because the settings are optional,
+    compliance-specific, and expected to grow (cosign signing today;
+    potential future: SLSA provenance, SBOM signing identity, VEX
+    publication endpoint). OneToOneField keeps the 1-per-team
+    invariant at the DB layer.
+
+    Bundle signing (cosign / sigstore) is opt-in: a team with no
+    ``TeamComplianceSettings`` row, or one with ``signing_enabled=False``,
+    behaves exactly like before the feature landed — no signature is
+    produced and no change to the export manifest or INTEGRITY.md. A
+    team that flips the toggle gets a ``{content_hash}.zip.sig``
+    object next to the bundle ZIP and a second presigned URL on the
+    download response.
+    """
+
+    class SigningProvider(models.TextChoices):
+        NONE = "none", "None"
+        # Sigstore keyless (Fulcio-issued ephemeral certs bound to an
+        # OIDC identity). Expects an ``SIGSTORE_OIDC_TOKEN`` env var
+        # or ambient OIDC identity at signing time.
+        SIGSTORE_KEYLESS = "sigstore_keyless", "Sigstore (keyless, Fulcio)"
+
+    class Meta:
+        db_table = "compliance_team_settings"
+
+    team = models.OneToOneField("teams.Team", on_delete=models.CASCADE, related_name="compliance_settings")
+    signing_enabled = models.BooleanField(default=False)
+    signing_provider = models.CharField(
+        max_length=32,
+        choices=SigningProvider.choices,
+        default=SigningProvider.NONE,
+    )
+    # OIDC identity (email / issuer subject) that the keyless signer
+    # will attest to. Free-form for now — a follow-up will validate
+    # against a configured OIDC issuer's expected subject format.
+    signing_identity = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Compliance settings for team {self.team_id}"

@@ -651,6 +651,201 @@ class TestIntegrityReadmeFormatVersion:
         assert "`metadata/manifest.sha256`" in readme
         assert "`metadata/INTEGRITY.md`" in readme
 
+    def test_unsigned_readme_uses_downstream_signing_wording(self):
+        """Issue #906: with signing off, the README keeps the
+        original "apply cosign downstream" guidance — no false
+        claim that the bundle is signed."""
+        readme = _integrity_readme("deadbeef" * 8, signed=False)
+        assert "About signatures" in readme
+        assert "cosign sign-blob" in readme
+        # Should NOT claim the bundle is signed.
+        assert "This bundle ships with" not in readme
+
+    def test_signed_readme_describes_verification(self):
+        """Signed bundles get verification instructions for the
+        side-car signature file, including the cosign verify-blob
+        command."""
+        readme = _integrity_readme("deadbeef" * 8, signed=True, provider="sigstore_keyless")
+        assert "This bundle ships with" in readme
+        assert "Sigstore keyless" in readme
+        assert "cosign verify-blob" in readme
+        # The bundle carries the side-car externally; confirm the
+        # README documents the separation explicitly.
+        assert "side-car" in readme
+
+
+@pytest.mark.django_db
+class TestBuildExportPackageSigning:
+    """Issue #906: signature side-car creation in ``build_export_package``.
+
+    The three paths from the acceptance criteria:
+    - signing disabled → no ``.sig`` object, no manifest signature entry
+      (no regression vs pre-feature).
+    - signing enabled, signer happy path → ``.sig`` written, manifest
+      records ``integrity.signature.present=True``.
+    - signing enabled, signer returns None → same as disabled (misconfig
+      doesn't block the export).
+    """
+
+    def test_disabled_signing_produces_no_sig_side_car(self, assessment_with_docs, sample_user):
+        """Default team state (no ``TeamComplianceSettings``) must
+        export exactly as before the feature landed."""
+        captured: dict[str, list[tuple[str, bytes]]] = {"uploads": []}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["uploads"].append((key, data))
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+            mock_s3_cls.return_value = _Capture()
+            result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        # No .sig object written.
+        assert not any(key.endswith(".sig") for key, _ in captured["uploads"])
+        # Manifest integrity block does NOT carry a signature entry.
+        manifest = result.value.manifest
+        assert "signature" not in manifest["integrity"]
+
+    def test_enabled_signing_writes_sig_and_records_in_manifest(
+        self, assessment_with_docs, sample_user
+    ):
+        """Team with signing enabled + mock signer → ``.sig`` side-car
+        uploaded to S3 at ``<storage_key>.sig`` and manifest records
+        ``integrity.signature.present=True``."""
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+        from sbomify.apps.compliance.services import _bundle_signer
+
+        TeamComplianceSettings.objects.create(
+            team=assessment_with_docs.team,
+            signing_enabled=True,
+            signing_provider="sigstore_keyless",
+            signing_identity="ci@example.test",
+        )
+
+        mock_sig = b'{"bundle":"mock-signature"}'
+        captured: dict[str, list[tuple[str, bytes]]] = {"uploads": []}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["uploads"].append((key, data))
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch.dict(
+            _bundle_signer._SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: mock_sig}
+        ):
+            with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+                mock_s3_cls.return_value = _Capture()
+                result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        # .sig side-car uploaded at <storage_key>.sig
+        sig_uploads = [key for key, _ in captured["uploads"] if key.endswith(".sig")]
+        assert len(sig_uploads) == 1
+        expected_sig_key = f"{result.value.storage_key}.sig"
+        assert sig_uploads[0] == expected_sig_key
+        # Manifest records the signature so downstream consumers can
+        # detect it without calling the API.
+        assert result.value.manifest["integrity"]["signature"] == {
+            "present": True,
+            "file": "metadata/bundle.sig",
+            "provider": "sigstore_keyless",
+        }
+        # Bytes uploaded match what the signer returned.
+        uploaded_sig = dict(captured["uploads"])[expected_sig_key]
+        assert uploaded_sig == mock_sig
+
+    def test_signer_returning_none_produces_no_sig(self, assessment_with_docs, sample_user):
+        """Enabled but signer can't sign right now (e.g. missing OIDC
+        token) → no ``.sig``, no manifest signature entry, bundle
+        export still succeeds (misconfigured path)."""
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+        from sbomify.apps.compliance.services import _bundle_signer
+
+        TeamComplianceSettings.objects.create(
+            team=assessment_with_docs.team,
+            signing_enabled=True,
+            signing_provider="sigstore_keyless",
+        )
+        captured: dict[str, list[tuple[str, bytes]]] = {"uploads": []}
+
+        class _Capture:
+            def upload_data_as_file(self, bucket, key, data):
+                captured["uploads"].append((key, data))
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch.dict(_bundle_signer._SIGNERS_BY_PROVIDER, {"sigstore_keyless": lambda z, s: None}):
+            with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+                mock_s3_cls.return_value = _Capture()
+                result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        assert not any(key.endswith(".sig") for key, _ in captured["uploads"])
+        assert "signature" not in result.value.manifest["integrity"]
+
+    def test_sig_upload_failure_drops_side_car_without_failing_export(
+        self, assessment_with_docs, sample_user
+    ):
+        """If the .sig upload to S3 fails after the ZIP upload
+        succeeded, the signer returned bytes but the side-car
+        doesn't land — the export must still ship unsigned, and
+        the manifest must NOT advertise a signature that isn't
+        there (would cause the download endpoint to hand out a
+        404 presigned URL)."""
+        from sbomify.apps.compliance.models import TeamComplianceSettings
+        from sbomify.apps.compliance.services import _bundle_signer
+
+        TeamComplianceSettings.objects.create(
+            team=assessment_with_docs.team,
+            signing_enabled=True,
+            signing_provider="sigstore_keyless",
+        )
+
+        class _PartialFailS3:
+            def __init__(self):
+                self.calls = 0
+
+            def upload_data_as_file(self, bucket, key, data):
+                self.calls += 1
+                if key.endswith(".sig"):
+                    raise RuntimeError("S3 unavailable for sig")
+
+            def get_file_data(self, bucket, key):
+                return b""
+
+            def get_sbom_data(self, filename):
+                return b""
+
+        with patch.dict(
+            _bundle_signer._SIGNERS_BY_PROVIDER,
+            {"sigstore_keyless": lambda z, s: b'{"bundle":"mock"}'},
+        ):
+            with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
+                mock_s3_cls.return_value = _PartialFailS3()
+                result = build_export_package(assessment_with_docs, sample_user)
+
+        assert result.ok
+        # No signature advertised in the manifest because the
+        # side-car upload failed — otherwise the download endpoint
+        # would hand out a presigned URL to a missing key.
+        assert "signature" not in result.value.manifest["integrity"]
+
 
 @pytest.mark.django_db
 class TestGetDownloadUrl:
