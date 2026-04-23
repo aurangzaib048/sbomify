@@ -225,14 +225,17 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
         # is a ``TextField`` and ``exempted_legislation_name`` is a
         # ``CharField(255)``. Both are operator-controlled; unbounded
         # inputs would bloat the regulated-data row + stall JSON
-        # serialisation on subsequent GETs.
+        # serialisation on subsequent GETs. Check the coerced ``str(...)``
+        # form — a caller that hands us a ``list`` or ``dict`` would
+        # otherwise bypass the ``isinstance(x, str)`` guard and still
+        # land a huge repr string in the DB.
         _SCOPE_TEXT_CAP = 4_000
         _SCOPE_NAME_CAP = 255
-        notes_raw = data.get("screening_notes")
-        if isinstance(notes_raw, str) and len(notes_raw) > _SCOPE_TEXT_CAP:
+        notes_coerced = str(data.get("screening_notes") or "")
+        if len(notes_coerced) > _SCOPE_TEXT_CAP:
             return HttpResponse("screening_notes exceeds 4000-char cap", status=400)
-        name_raw = data.get("exempted_legislation_name")
-        if isinstance(name_raw, str) and len(name_raw) > _SCOPE_NAME_CAP:
+        name_coerced = str(data.get("exempted_legislation_name") or "")
+        if len(name_coerced) > _SCOPE_NAME_CAP:
             return HttpResponse("exempted_legislation_name exceeds 255-char cap", status=400)
 
         user: User = request.user  # type: ignore[assignment]

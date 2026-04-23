@@ -297,6 +297,31 @@ class TestCRAScopeScreeningView:
         )
         assert response.status_code == 400
 
+    def test_post_caps_non_string_legislation_name(self, web_client, product):
+        """A non-string ``exempted_legislation_name`` (list/dict/number)
+        bypasses the ``isinstance(x, str)`` guard, but the subsequent
+        ``str(...).strip()`` coercion can still materialise an
+        arbitrarily large string in the DB. Check the coerced length so
+        we reject those payloads at the edge too."""
+        import json as _json
+
+        url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+        response = web_client.post(
+            url,
+            data=_json.dumps(
+                {
+                    "has_data_connection": True,
+                    "is_covered_by_other_legislation": True,
+                    # 400+ items joined via ``str(...)`` produces a repr
+                    # string well above the 255 cap without ever passing
+                    # through ``isinstance(raw, str)``.
+                    "exempted_legislation_name": ["x" * 80] * 10,
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+
     def test_get_passes_server_resolved_urls(self, web_client, product):
         """Scope-screening page must carry server-resolved save +
         start-assessment URLs in a ``screening-urls`` json_script so
