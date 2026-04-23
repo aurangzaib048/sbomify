@@ -2679,7 +2679,7 @@ requires-dist = [
     { name = "stripe", specifier = ">=14.0.0,<16" },
     { name = "tenacity", specifier = ">=9.1.2,<10" },
     { name = "tzdata", specifier = ">=2025.2" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.40.0,<0.45" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.45.0,<0.46" },
     { name = "uvicorn-worker", specifier = ">=0.4.0,<0.5" },
     { name = "whitenoise", specifier = ">=6.11.0,<7" },
 ]
@@ -3102,15 +3102,15 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.40.0"
+version = "0.45.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/2e/62b0d9a2cfc8b4de6771322dae30f2db76c66dae9ec32e94e176a44ad563/uvicorn-0.45.0.tar.gz", hash = "sha256:3fe650df136c5bd2b9b06efc5980636344a2fbb840e9ddd86437d53144fa335d", size = 87818, upload-time = "2026-04-21T10:43:46.815Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3d/d8/2083a1daa7439a66f3a48589a57d576aa117726762618f6bb09fe3798796/uvicorn-0.40.0-py3-none-any.whl", hash = "sha256:c6c8f55bc8bf13eb6fa9ff87ad62308bbbc33d0b67f84293151efe87e0d5f2ee", size = 68502, upload-time = "2025-12-21T14:16:21.041Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/88/d0f7512465b166a4e931ccf7e77792be60fb88466a43964c7566cbaff752/uvicorn-0.45.0-py3-none-any.whl", hash = "sha256:2db26f588131aeec7439de00f2dd52d5f210710c1f01e407a52c90b880d1fd4f", size = 69838, upload-time = "2026-04-21T10:43:45.029Z" },
 ]
 
 [package.optional-dependencies]

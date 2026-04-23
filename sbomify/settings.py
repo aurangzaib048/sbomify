@@ -479,6 +479,17 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
+def _is_benign_shielded_future_error(record: logging.LogRecord) -> bool:
+    # CancelledError comes from asgiref when clients disconnect mid-request;
+    # ConnectionClosed (and its subclasses ConnectionClosedError/ConnectionClosedOK)
+    # from websockets on keepalive ping timeout or normal client close.
+    message = record.getMessage()
+    return "exception in shielded future" in message and any(
+        exc in message for exc in ("CancelledError", "ConnectionClosed")
+    )
+
+
 # Logging config
 LOGGING = {
     "version": 1,
@@ -487,13 +498,10 @@ LOGGING = {
         "default": {"format": "%(asctime)s:%(name)s:%(levelname)s:%(message)s"},
     },
     "filters": {
-        # Suppress "CancelledError exception in shielded future" from the asyncio
-        # logger. This is logged by asgiref's SyncToAsync when a client disconnects
-        # mid-request under ASGI (e.g., navigating away during a slow OIDC redirect).
-        # Already suppressed in Sentry via ignore_errors; this silences the log.
-        "suppress_cancelled_error": {
+        # Only known-benign exception types are suppressed to preserve observability.
+        "suppress_shielded_future_errors": {
             "()": "django.utils.log.CallbackFilter",
-            "callback": lambda record: "CancelledError exception in shielded future" not in record.getMessage(),
+            "callback": lambda record: not _is_benign_shielded_future_error(record),
         },
     },
     "handlers": {
@@ -506,7 +514,7 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",
             "formatter": "default",
-            "filters": ["suppress_cancelled_error"],
+            "filters": ["suppress_shielded_future_errors"],
         },
     },
     "root": {
@@ -714,7 +722,10 @@ sentry_sdk.init(
     profiles_sample_rate=float(os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
     # CancelledError is expected under ASGI when clients disconnect mid-request.
     # On Python 3.14+ it's a BaseException that propagates through middleware.
-    ignore_errors=[asyncio.CancelledError],
+    # ConnectionClosed (and its ConnectionClosedError/ConnectionClosedOK subclasses)
+    # is expected when WebSocket clients disconnect (keepalive ping timeout, browser
+    # tab closed, network change).
+    ignore_errors=[asyncio.CancelledError, "websockets.exceptions.ConnectionClosed"],
 )
 
 
