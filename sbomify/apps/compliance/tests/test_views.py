@@ -297,6 +297,50 @@ class TestCRAScopeScreeningView:
         )
         assert response.status_code == 400
 
+    def test_post_emits_audit_log(self, web_client, product):
+        """Scope-screening writes flip the ``cra_applies`` premise of
+        every subsequent DoC. CRA non-repudiation depends on recording
+        who made the change. The audit logger records structured
+        before/after deltas the moment the screening is saved."""
+        import json as _json
+        import logging as _logging
+
+        records: list[_logging.LogRecord] = []
+
+        class _ListHandler(_logging.Handler):
+            def emit(self, record: _logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _ListHandler(level=_logging.INFO)
+        audit_logger = _logging.getLogger("sbomify.compliance.audit")
+        audit_logger.addHandler(handler)
+        try:
+            url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+            response = web_client.post(
+                url,
+                data=_json.dumps(
+                    {
+                        "has_data_connection": True,
+                        "is_own_use_only": False,
+                        "is_testing_version": False,
+                        "is_covered_by_other_legislation": False,
+                        "is_dual_use": False,
+                        "screening_notes": "Initial scope determination",
+                    }
+                ),
+                content_type="application/json",
+            )
+            assert response.status_code == 200
+        finally:
+            audit_logger.removeHandler(handler)
+
+        assert records, "expected scope-screening audit record"
+        event = records[-1]
+        assert event.message == "cra.scope_screening.write"
+        assert getattr(event, "product_id", None) == product.id
+        delta = getattr(event, "delta", {})
+        assert "has_data_connection" in delta or "screening_notes" in delta
+
     def test_post_caps_non_string_legislation_name(self, web_client, product):
         """A non-string ``exempted_legislation_name`` (list/dict/number)
         bypasses the ``isinstance(x, str)`` guard, but the subsequent

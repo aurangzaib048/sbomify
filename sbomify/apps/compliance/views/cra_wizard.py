@@ -11,20 +11,11 @@ from django.urls import reverse
 from django.views import View
 
 from sbomify.apps.compliance.models import CRAAssessment, CRAScopeScreening
-from sbomify.apps.compliance.permissions import check_cra_access
-from sbomify.apps.core.utils import verify_item_access
-
-
-def _parse_bool(val: object, default: bool = False) -> bool:
-    """Parse a boolean from JSON, handling string representations safely."""
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, str):
-        return val.lower() in ("true", "1", "yes")
-    if isinstance(val, int):
-        return bool(val)
-    return default
-
+from sbomify.apps.compliance.permissions import (
+    AccessCheckFailure,
+    require_assessment_access,
+    require_product_cra_access,
+)
 
 _STEP_NAMES = {
     1: "Product Profile",
@@ -43,24 +34,21 @@ _STEP_TEMPLATES = {
 }
 
 
+def _access_failure_response(failure: AccessCheckFailure) -> HttpResponse:
+    """Translate an access-check denial into the correct HTTP response."""
+    if failure.status_code == 404:
+        return HttpResponseNotFound(failure.message)
+    if failure.status_code == 403:
+        return HttpResponseForbidden(failure.message)
+    return HttpResponse(failure.message, status=failure.status_code)
+
+
 def _get_assessment(request: HttpRequest, assessment_id: str) -> CRAAssessment | HttpResponse:
     """Fetch assessment with access checks. Returns assessment or error response."""
-    from sbomify.apps.compliance.services.wizard_service import get_assessment_by_id
-
-    result = get_assessment_by_id(assessment_id)
-    if not result.ok:
-        return HttpResponseNotFound("Not found")
-
-    assessment = result.value
-    assert assessment is not None
-
-    if not verify_item_access(request, assessment, ["owner", "admin"]):
-        return HttpResponseForbidden("Forbidden")
-
-    if not check_cra_access(assessment.team):
-        return HttpResponseForbidden("Forbidden")
-
-    return assessment
+    result = require_assessment_access(request, assessment_id)
+    if isinstance(result, AccessCheckFailure):
+        return _access_failure_response(result)
+    return result
 
 
 class CRAWizardShellView(LoginRequiredMixin, View):
@@ -129,18 +117,10 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
     """
 
     def get(self, request: HttpRequest, product_id: str) -> HttpResponse:
-        from sbomify.apps.core.models import Product
-
-        try:
-            product = Product.objects.get(pk=product_id)
-        except Product.DoesNotExist:
-            return HttpResponseNotFound("Not found")
-
-        if not verify_item_access(request, product, ["owner", "admin"]):
-            return HttpResponseForbidden("Forbidden")
-
-        if not check_cra_access(product.team):
-            return HttpResponseForbidden("Forbidden")
+        result = require_product_cra_access(request, product_id)
+        if isinstance(result, AccessCheckFailure):
+            return _access_failure_response(result)
+        product = result
 
         # If screening already exists, load it so the user can review or update answers
         try:
@@ -184,20 +164,13 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
         return render(request, "compliance/cra_scope_screening.html.j2", context)
 
     def post(self, request: HttpRequest, product_id: str) -> HttpResponse:
-        from django.db import IntegrityError, transaction
+        from sbomify.apps.compliance.services.wizard_service import save_scope_screening
+        from sbomify.apps.core.models import User
 
-        from sbomify.apps.core.models import Product, User
-
-        try:
-            product = Product.objects.get(pk=product_id)
-        except Product.DoesNotExist:
-            return HttpResponseNotFound("Not found")
-
-        if not verify_item_access(request, product, ["owner", "admin"]):
-            return HttpResponseForbidden("Forbidden")
-
-        if not check_cra_access(product.team):
-            return HttpResponseForbidden("Forbidden")
+        result = require_product_cra_access(request, product_id)
+        if isinstance(result, AccessCheckFailure):
+            return _access_failure_response(result)
+        product = result
 
         # Body-size guard — ``DATA_UPLOAD_MAX_MEMORY_SIZE`` caps at
         # 2.5 MB app-wide, but an explicit smaller cap fails faster
@@ -221,49 +194,21 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
         if not isinstance(data, dict):
             return HttpResponse("Request body must be a JSON object", status=400)
 
-        # Length caps on free-text fields (CWE-400). ``screening_notes``
-        # is a ``TextField`` and ``exempted_legislation_name`` is a
-        # ``CharField(255)``. Both are operator-controlled; unbounded
-        # inputs would bloat the regulated-data row + stall JSON
-        # serialisation on subsequent GETs. Check the coerced ``str(...)``
-        # form — a caller that hands us a ``list`` or ``dict`` would
-        # otherwise bypass the ``isinstance(x, str)`` guard and still
-        # land a huge repr string in the DB.
-        _SCOPE_TEXT_CAP = 4_000
-        _SCOPE_NAME_CAP = 255
-        notes_coerced = str(data.get("screening_notes") or "")
-        if len(notes_coerced) > _SCOPE_TEXT_CAP:
-            return HttpResponse("screening_notes exceeds 4000-char cap", status=400)
-        name_coerced = str(data.get("exempted_legislation_name") or "")
-        if len(name_coerced) > _SCOPE_NAME_CAP:
-            return HttpResponse("exempted_legislation_name exceeds 255-char cap", status=400)
-
         user: User = request.user  # type: ignore[assignment]
 
-        # ``transaction.atomic`` + ``IntegrityError`` retry because
-        # ``CRAScopeScreening.product`` is ``OneToOneField`` so a race
-        # on the get_or_create path would 500 rather than reconcile.
-        try:
-            with transaction.atomic():
-                screening, _created = CRAScopeScreening.objects.get_or_create(
-                    product=product,
-                    defaults={
-                        "team": product.team,
-                        "created_by": user,
-                    },
-                )
-        except IntegrityError:
-            screening = CRAScopeScreening.objects.get(product=product)
-        screening.team = product.team
-        screening.has_data_connection = _parse_bool(data.get("has_data_connection"), default=True)
-        screening.is_own_use_only = _parse_bool(data.get("is_own_use_only"))
-        screening.is_testing_version = _parse_bool(data.get("is_testing_version"))
-        screening.is_covered_by_other_legislation = _parse_bool(data.get("is_covered_by_other_legislation"))
-        screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
-        screening.is_dual_use = _parse_bool(data.get("is_dual_use"))
-        screening.screening_notes = str(data.get("screening_notes") or "").strip()
-        screening.save()
+        # Delegate validation + persistence + audit logging to the
+        # service layer so the rules stay in one place and future API
+        # surfaces don't have to re-implement length caps, coercion,
+        # atomic-block scope, or audit log emission.
+        save_result = save_scope_screening(product, user, data)
+        if not save_result.ok:
+            return HttpResponse(
+                save_result.error or "Bad request",
+                status=save_result.status_code or 400,
+            )
 
+        assert save_result.value is not None
+        screening = save_result.value
         if screening.cra_applies:
             start_url = reverse("compliance:cra_start_assessment", kwargs={"product_id": product_id})
             return HttpResponse(
@@ -284,18 +229,10 @@ class CRAStartAssessmentView(LoginRequiredMixin, View):
     """
 
     def post(self, request: HttpRequest, product_id: str) -> HttpResponse:
-        from sbomify.apps.core.models import Product
-
-        try:
-            product = Product.objects.get(pk=product_id)
-        except Product.DoesNotExist:
-            return HttpResponseNotFound("Not found")
-
-        if not verify_item_access(request, product, ["owner", "admin"]):
-            return HttpResponseForbidden("Forbidden")
-
-        if not check_cra_access(product.team):
-            return HttpResponseForbidden("Forbidden")
+        result = require_product_cra_access(request, product_id)
+        if isinstance(result, AccessCheckFailure):
+            return _access_failure_response(result)
+        product = result
 
         # Gate: scope screening must be completed and CRA must apply
         try:
@@ -313,11 +250,14 @@ class CRAStartAssessmentView(LoginRequiredMixin, View):
         from sbomify.apps.core.models import User
 
         user: User = request.user  # type: ignore[assignment]
-        result = get_or_create_assessment(product_id, user, product.team)
-        if not result.ok:
-            return HttpResponse(result.error or "Failed to create assessment", status=result.status_code or 500)
+        create_result = get_or_create_assessment(product_id, user, product.team)
+        if not create_result.ok:
+            return HttpResponse(
+                create_result.error or "Failed to create assessment",
+                status=create_result.status_code or 500,
+            )
 
-        assert result.value is not None
+        assert create_result.value is not None
         return HttpResponseRedirect(
-            reverse("compliance:cra_step", kwargs={"assessment_id": result.value.id, "step": 1})
+            reverse("compliance:cra_step", kwargs={"assessment_id": create_result.value.id, "step": 1})
         )

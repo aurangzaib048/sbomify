@@ -25,6 +25,23 @@ def remap_critical_eucc(apps, schema_editor):
     ).update(conformity_assessment_procedure="module_b_c")
 
 
+def refuse_reverse(apps, schema_editor):
+    """The forward migration is one-way: rolling back would leave the
+    remapped rows at ``module_b_c`` with no record of which rows were
+    originally ``eucc``. ``migrations.RunPython.noop`` would silently
+    succeed on ``migrate --fake-reverse`` — that's the wrong failure
+    mode for regulated data. Raise instead so an accidental rollback
+    trips loudly rather than silently discarding the identity.
+    """
+    raise RuntimeError(
+        "Migration 0009 is one-way. The forward path rewrites legacy "
+        "critical+eucc rows to module_b_c without preserving the "
+        "original procedure, so rollback cannot restore the prior "
+        "state. Use a fresh data fix-up migration if you need to "
+        "reintroduce EUCC on specific rows."
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -32,5 +49,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(remap_critical_eucc, migrations.RunPython.noop),
+        migrations.RunPython(remap_critical_eucc, refuse_reverse),
     ]

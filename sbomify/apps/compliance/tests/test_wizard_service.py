@@ -292,12 +292,15 @@ class TestSaveStepData:
         assert save.status_code == 400
         assert "Annex V" in (save.error or "")
 
-    def test_step_1_stale_harmonised_flag_not_unlocked_on_resave(self, assessment, sample_user):
-        """Art 32(2) stale-flag regression (P0). A prior save that set
-        ``harmonised_standard_applied=True`` must not silently allow a
-        second Class I + Module A save that omits the flag. The payload
-        is authoritative on every save — an absent flag means 'not
-        re-asserted for this save'."""
+    def test_step_1_absent_harmonised_flag_preserves_stored_value(self, assessment, sample_user):
+        """Partial-PATCH semantic: absent key means "unchanged". A
+        prior save that set ``harmonised_standard_applied=True`` must
+        survive a subsequent Step 1 save that omits the key (e.g. the
+        operator edits only ``intended_use`` on a second visit). The
+        Art 32(2) gate is evaluated after the payload is applied, so
+        the stored ``True`` keeps the Class I + Module A combination
+        valid — which preserves presumption of conformity in the next
+        DoC render."""
         support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
         first = save_step_data(
             assessment,
@@ -312,20 +315,47 @@ class TestSaveStepData:
         assert first.ok
         assert first.value.harmonised_standard_applied is True
 
-        # Re-save without the flag — must fail.
+        # Second save omits the key — must succeed, flag must stay True.
         second = save_step_data(
             assessment,
             1,
-            {"product_category": "class_i", "support_period_end": support},
+            {"intended_use": "Updated description", "support_period_end": support},
+            sample_user,
+        )
+        assert second.ok, second.error
+        assessment.refresh_from_db()
+        assert assessment.harmonised_standard_applied is True
+
+    def test_step_1_explicit_false_harmonised_flag_fails_art_32_gate(self, assessment, sample_user):
+        """The ``absent means unchanged`` semantic does not let
+        operators bypass Art 32(2). Sending ``False`` explicitly still
+        flips the flag and the gate blocks Class I + Module A."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": True,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert first.ok
+
+        second = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": False,
+                "support_period_end": support,
+            },
             sample_user,
         )
         assert not second.ok
         assert second.status_code == 400
         assert "harmonised standard" in (second.error or "").lower()
-        # The reject happens before ``assessment.save()`` so the DB
-        # still carries ``True`` from the first save — but the point
-        # of the guard is that *this* save didn't silently succeed.
-        # Re-asserting the flag is required every time.
 
     def test_step_1_support_period_justification_cleared_after_gate(self, assessment, sample_user):
         """CRA Art 13(8) audit-trail bypass regression (P0). A payload
@@ -637,6 +667,34 @@ class TestSaveStepData:
         result = save_step_data(assessment, 3, data, sample_user)
         assert not result.ok
         assert result.status_code == 400
+
+    def test_step_3_vulnerability_handling_not_dict_rejected(self, assessment, sample_user):
+        """Silent-drop regression: a non-dict ``vulnerability_handling``
+        or wrong-type inner value previously skipped the write without
+        any signal. An SDK/curl client would see a 200 while the DB
+        retained the old value. Return 400 to match Step 1's strictness."""
+        result = save_step_data(
+            assessment, 3, {"vulnerability_handling": "not-a-dict"}, sample_user
+        )
+        assert not result.ok and result.status_code == 400
+
+    def test_step_3_article_14_not_dict_rejected(self, assessment, sample_user):
+        result = save_step_data(
+            assessment, 3, {"article_14": ["not-a-dict"]}, sample_user
+        )
+        assert not result.ok and result.status_code == 400
+
+    def test_step_3_vh_wrong_type_rejected(self, assessment, sample_user):
+        """A non-string ``vdp_url`` (``list`` / ``dict`` / int) used to
+        be silently dropped. Reject so the caller learns their payload
+        shape is wrong."""
+        result = save_step_data(
+            assessment,
+            3,
+            {"vulnerability_handling": {"vdp_url": ["bypass"]}},
+            sample_user,
+        )
+        assert not result.ok and result.status_code == 400
 
     def test_step_4_saves_user_info(self, assessment, sample_user):
         data = {

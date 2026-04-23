@@ -42,6 +42,20 @@ class OSCALControl(models.Model):
     class Meta:
         db_table = "compliance_oscal_controls"
         unique_together = [("catalog", "control_id")]
+        constraints = [
+            # The Part I/II invariant holds across four code paths (schema
+            # import, migration 0007 backfill, update_finding gate, and
+            # the Alpine badge). Enforce it at the DB layer so a future
+            # edit that slips the equivalence through any one of those
+            # paths is rejected outright. CRA Art 13(4) / FAQ 4.1.3.
+            models.CheckConstraint(
+                check=(
+                    (models.Q(annex_part="part-ii") & models.Q(is_mandatory=True))
+                    | (~models.Q(annex_part="part-ii") & models.Q(is_mandatory=False))
+                ),
+                name="oscal_control_is_mandatory_iff_part_ii",
+            ),
+        ]
         indexes = [
             models.Index(fields=["catalog", "group_id"]),
         ]

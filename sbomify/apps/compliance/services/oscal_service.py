@@ -157,12 +157,25 @@ def create_assessment_result(
     return ar
 
 
-def update_finding(finding: OSCALFinding, status: str, notes: str = "", justification: str = "") -> OSCALFinding:
+def update_finding(
+    finding: OSCALFinding,
+    status: str,
+    notes: str = "",
+    justification: str = "",
+    *,
+    actor: Any = None,
+) -> OSCALFinding:
     """Update a finding's status, notes, and justification.
 
     Raises ``ValueError`` if *status* is not a valid ``FindingStatus`` choice.
     Raises ``ValueError`` if a Part II control is set to not-applicable (CRA Art 13(4)).
     Raises ``ValueError`` if a Part I control is set to not-applicable without justification.
+
+    ``actor`` is the ``User`` performing the change — recorded in the
+    audit log for CRA non-repudiation. The parameter is keyword-only so
+    existing call sites (tests, migration helpers) that don't carry a
+    user context continue to work; production callers from the API
+    layer pass ``request.user``.
     """
     # Coerce to strings to guard against None from upstream callers
     notes = str(notes) if notes else ""
@@ -187,10 +200,22 @@ def update_finding(finding: OSCALFinding, status: str, notes: str = "", justific
             f"not-applicable (CRA Art 13(4))."
         )
 
+    before = {"status": finding.status, "notes": finding.notes, "justification": finding.justification}
     finding.status = status
     finding.notes = notes
     finding.justification = justification
     finding.save(update_fields=["status", "notes", "justification", "updated_at"])
+
+    from sbomify.apps.compliance.audit import log_finding_update
+
+    log_finding_update(
+        user=actor,
+        assessment_id=str(finding.assessment_result_id),
+        finding_id=str(finding.pk),
+        control_id=finding.control.control_id,
+        before=before,
+        after={"status": status, "notes": notes, "justification": justification},
+    )
     return finding
 
 

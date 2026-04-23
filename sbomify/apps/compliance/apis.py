@@ -39,21 +39,26 @@ _Response = tuple[int, Any]
 
 
 def _get_assessment_or_error(request: HttpRequest, assessment_id: str) -> CRAAssessment | _Response:
-    """Fetch assessment with access checks (billing gate + team role)."""
-    try:
-        assessment = CRAAssessment.objects.select_related("team", "product", "oscal_assessment_result__catalog").get(
-            pk=assessment_id
-        )
-    except CRAAssessment.DoesNotExist:
-        return 404, ErrorResponse(error="Assessment not found", error_code="not_found")
+    """Fetch assessment with access checks (billing gate + team role).
 
-    if not verify_item_access(request, assessment, ["owner", "admin"]):
-        return 403, ErrorResponse(error="Forbidden", error_code="permission_denied")
+    Thin HTTP-adapter around ``permissions.require_assessment_access``
+    — keeps role, billing, and cross-team-404 logic in one place so a
+    future rule change (new role, billing plan, enumeration-resistance
+    policy) doesn't drift between the view and API surfaces.
+    """
+    from sbomify.apps.compliance.permissions import AccessCheckFailure, require_assessment_access
 
-    if not check_cra_access(assessment.team):
-        return 403, ErrorResponse(error="CRA Compliance requires Business plan or higher", error_code="billing_gate")
-
-    return assessment
+    result = require_assessment_access(request, assessment_id)
+    if isinstance(result, AccessCheckFailure):
+        if result.status_code == 404:
+            return 404, ErrorResponse(error="Assessment not found", error_code="not_found")
+        if result.status_code == 403:
+            return 403, ErrorResponse(
+                error="CRA Compliance requires Business plan or higher",
+                error_code="billing_gate",
+            )
+        return result.status_code, ErrorResponse(error=result.message, error_code="access_denied")
+    return result
 
 
 def _assessment_to_schema(a: CRAAssessment) -> CRAAssessmentSchema:
@@ -242,7 +247,13 @@ def update_finding(
     from .services.oscal_service import update_finding as _update_finding
 
     try:
-        updated = _update_finding(finding, payload.status, payload.notes, payload.justification)
+        updated = _update_finding(
+            finding,
+            payload.status,
+            payload.notes,
+            payload.justification,
+            actor=request.user,
+        )
     except ValueError as e:
         return 400, ErrorResponse(error=str(e))
 

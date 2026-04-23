@@ -165,6 +165,20 @@ class TestEnsureCraCatalog:
         assert catalog1.pk == catalog2.pk
         assert OSCALCatalog.objects.filter(name="EU CRA Annex I", version="1.1.0").count() == 1
 
+    def test_is_mandatory_biconditional_invariant(self):
+        """Every control row must satisfy ``is_mandatory == (annex_part
+        == "part-ii")``. The rule is encoded across four code paths
+        (schema import, migration 0007 backfill, ``update_finding``
+        gate, Alpine badge) — a desync between any two silently opens
+        a Part II control to N/A. Enforce the biconditional as a
+        post-condition on every import."""
+        catalog = ensure_cra_catalog()
+        for control in OSCALControl.objects.filter(catalog=catalog):
+            assert control.is_mandatory == (control.annex_part == "part-ii"), (
+                f"control {control.control_id} violates the biconditional: "
+                f"annex_part={control.annex_part!r} is_mandatory={control.is_mandatory!r}"
+            )
+
 
 @pytest.mark.django_db
 class TestCreateAssessmentResult:
@@ -283,6 +297,53 @@ class TestUpdateFinding:
         updated = update_finding(finding, "not-applicable", justification="Not applicable to this product type")
         assert updated.status == "not-applicable"
         assert updated.justification == "Not applicable to this product type"
+
+    def test_emits_audit_log_on_status_change(self, sample_team_with_owner_member, sample_user, product):
+        """CRA non-repudiation: every finding state change must leave
+        a durable trail of who/when/before/after. Without this a
+        regulator asking ``who marked control ACM-1 as not-applicable
+        on day X`` has no way to answer.
+
+        Uses a ``MemoryHandler`` installed directly on the audit logger
+        because the app-wide ``sbomify`` logger has ``propagate=False``
+        in settings, so pytest's ``caplog`` (which attaches to root)
+        never sees audit records.
+        """
+        import logging
+
+        catalog = ensure_cra_catalog()
+        team = sample_team_with_owner_member.team
+        ar = create_assessment_result(catalog, team, product, sample_user)
+        finding = OSCALFinding.objects.filter(
+            assessment_result=ar, control__is_mandatory=False
+        ).first()
+        assert finding is not None
+
+        records: list[logging.LogRecord] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _ListHandler(level=logging.INFO)
+        audit_logger = logging.getLogger("sbomify.compliance.audit")
+        audit_logger.addHandler(handler)
+        try:
+            update_finding(
+                finding,
+                "satisfied",
+                "Measured compliance in Q2 audit",
+                "",
+                actor=sample_user,
+            )
+        finally:
+            audit_logger.removeHandler(handler)
+
+        assert records, "expected at least one audit record"
+        event = records[-1]
+        assert event.message == "cra.finding.update"
+        assert getattr(event, "user_id", None) == sample_user.id
+        assert "status" in getattr(event, "delta", {})
 
 
 @pytest.mark.django_db

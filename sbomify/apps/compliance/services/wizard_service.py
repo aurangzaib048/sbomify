@@ -620,6 +620,30 @@ _STEP_4_FIELDS = (
 )
 
 
+_AUDITED_STEP_FIELDS: dict[int, tuple[str, ...]] = {
+    1: (
+        "product_category",
+        "conformity_assessment_procedure",
+        "harmonised_standard_applied",
+        "support_period_end",
+        "support_period_short_justification",
+        "target_eu_markets",
+        "is_radio_equipment",
+        "is_open_source_steward",
+        "intended_use",
+    ),
+    2: ("bsi_waivers",),
+    3: ("vdp_url", "security_contact_url", "csirt_contact_email"),
+    4: ("update_frequency", "update_method", "support_email"),
+    5: (),
+}
+
+
+def _audit_snapshot(assessment: CRAAssessment, step: int) -> dict[str, Any]:
+    """Capture the audited fields for a step as a dict for diffing."""
+    return {field: getattr(assessment, field, None) for field in _AUDITED_STEP_FIELDS.get(step, ())}
+
+
 def save_step_data(
     assessment: CRAAssessment,
     step: int,
@@ -637,7 +661,21 @@ def save_step_data(
         4: _save_step_4,
         5: _save_step_5,
     }
-    return savers[step](assessment, data, user)
+
+    before = _audit_snapshot(assessment, step)
+    result = savers[step](assessment, data, user)
+    if result.ok and result.value is not None:
+        from sbomify.apps.compliance.audit import log_step_save
+
+        log_step_save(
+            user=user,
+            assessment_id=str(result.value.pk),
+            team_id=result.value.team_id,
+            step=step,
+            before=before,
+            after=_audit_snapshot(result.value, step),
+        )
+    return result
 
 
 def _save_step_1(
@@ -718,11 +756,14 @@ def _save_step_1(
         else:
             return ServiceResult.failure("Invalid type for support_period_end", status_code=400)
 
-    # Harmonised-standard flag (CRA Art 32(2)). Require the flag to be
-    # explicitly in the payload on every save — a prior save cannot
-    # retroactively justify the current one. Payload-absence means
-    # ``False``; otherwise the stored ``True`` would silently pass the
-    # Art 32(2) gate even when the operator didn't re-confirm.
+    # Harmonised-standard flag (CRA Art 32(2)). Treat an absent key as
+    # "unchanged" — the normal PATCH semantic — so a partial save that
+    # edits ``intended_use`` doesn't silently clear an earlier operator
+    # affirmation. The Art 32(2) gate below reads the post-payload
+    # state; a re-tick is only required when the operator explicitly
+    # sends ``False`` or transitions category/procedure into the
+    # gated combination (Class I + Module A) without the stored flag
+    # being ``True``.
     if "harmonised_standard_applied" in data:
         val = data["harmonised_standard_applied"]
         if isinstance(val, bool):
@@ -732,10 +773,10 @@ def _save_step_1(
         elif isinstance(val, int):
             assessment.harmonised_standard_applied = bool(val)
         else:
-            assessment.harmonised_standard_applied = False
-    else:
-        # Absent from payload → treat as not re-asserted for this save.
-        assessment.harmonised_standard_applied = False
+            return ServiceResult.failure(
+                "harmonised_standard_applied must be a boolean, string, or integer",
+                status_code=400,
+            )
 
     # Apply support_period_short_justification from payload BEFORE the
     # 5-year gate reads it (CRA Art 13(8)). Previously the gate read the
@@ -1001,27 +1042,38 @@ def _save_step_3(
             except ValueError as e:
                 return ServiceResult.failure(str(e), status_code=400)
 
-        # Update vulnerability handling fields
+        # Update vulnerability handling fields. Reject wrong-type
+        # inputs with a controlled 400 — Step 1 already behaves this
+        # way, and a silent ``continue`` here lets an SDK client lose
+        # writes without any signal.
         vh = data.get("vulnerability_handling", {})
+        if not isinstance(vh, dict):
+            return ServiceResult.failure("vulnerability_handling must be an object", status_code=400)
         for field in _STEP_3_VH_FIELDS:
             if field in vh:
                 val = vh[field]
                 if field == "acknowledgment_timeline_days":
                     if val is not None and not isinstance(val, int):
-                        continue
+                        return ServiceResult.failure(f"{field} must be an integer or null", status_code=400)
+                elif val is None:
+                    val = ""
                 elif not isinstance(val, str):
-                    continue
+                    return ServiceResult.failure(f"{field} must be a string", status_code=400)
                 setattr(assessment, field, val)
 
         # Update Article 14 fields
         art14 = data.get("article_14", {})
+        if not isinstance(art14, dict):
+            return ServiceResult.failure("article_14 must be an object", status_code=400)
         for field in _STEP_3_ART14_FIELDS:
             if field in art14:
                 val = art14[field]
                 if field == "enisa_srp_registered":
                     setattr(assessment, field, bool(val))
+                elif val is None:
+                    setattr(assessment, field, "")
                 elif not isinstance(val, str):
-                    continue
+                    return ServiceResult.failure(f"{field} must be a string", status_code=400)
                 else:
                     setattr(assessment, field, val)
 
@@ -1163,3 +1215,118 @@ def get_assessment_list_for_team(team_id: int | str) -> ServiceResult[list[dict[
             for a in assessments
         ]
     )
+
+
+_SCOPE_TEXT_CAP = 4_000
+_SCOPE_NAME_CAP = 255
+
+
+def _parse_scope_bool(val: object, default: bool = False) -> bool:
+    """Mirror of ``views.cra_wizard._parse_bool`` for service-layer use.
+
+    Kept here to avoid a view-layer import cycle; the view still owns
+    the HTTP-only bits (JSON parsing, status codes, redirect shaping)
+    while this module owns the persistence + validation rules.
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("true", "1", "yes")
+    if isinstance(val, int):
+        return bool(val)
+    return default
+
+
+def save_scope_screening(
+    product: Any,
+    user: User,
+    data: dict[str, Any],
+) -> ServiceResult[Any]:
+    """Persist a ``CRAScopeScreening`` from validated JSON data.
+
+    Central service-layer gate for the scope-determination write path.
+    Returns ``ServiceResult`` so the view and any future Ninja/SDK
+    endpoint share the same length caps, coercion rules, and audit
+    emission — without those rules duplicated and drifting across
+    surfaces.
+    """
+    from django.db import IntegrityError, transaction
+
+    from sbomify.apps.compliance.audit import log_scope_screening_change
+    from sbomify.apps.compliance.models import CRAScopeScreening
+
+    # Length caps (CWE-400). Check the ``str(...)`` coerced form so a
+    # caller passing ``list``/``dict`` can't bypass the string-only
+    # ``isinstance`` branch and still bloat the row.
+    notes_coerced = str(data.get("screening_notes") or "")
+    if len(notes_coerced) > _SCOPE_TEXT_CAP:
+        return ServiceResult.failure("screening_notes exceeds 4000-char cap", status_code=400)
+    name_coerced = str(data.get("exempted_legislation_name") or "")
+    if len(name_coerced) > _SCOPE_NAME_CAP:
+        return ServiceResult.failure("exempted_legislation_name exceeds 255-char cap", status_code=400)
+
+    # Capture before-state so the audit log diff reflects only actual
+    # deltas. ``screening_exists`` drives the create vs update log.
+    try:
+        existing = CRAScopeScreening.objects.get(product=product)
+        before = {
+            "has_data_connection": existing.has_data_connection,
+            "is_own_use_only": existing.is_own_use_only,
+            "is_testing_version": existing.is_testing_version,
+            "is_covered_by_other_legislation": existing.is_covered_by_other_legislation,
+            "exempted_legislation_name": existing.exempted_legislation_name,
+            "is_dual_use": existing.is_dual_use,
+            "screening_notes": existing.screening_notes,
+        }
+    except CRAScopeScreening.DoesNotExist:
+        before = {}
+
+    # ``OneToOneField`` uniqueness race — wrap the get_or_create AND
+    # the field writes in the same atomic block so a concurrent POST
+    # can't squeeze between the create and the subsequent save.
+    try:
+        with transaction.atomic():
+            screening, _created = CRAScopeScreening.objects.select_for_update().get_or_create(
+                product=product,
+                defaults={"team": product.team, "created_by": user},
+            )
+            screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
+            screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
+            screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
+            screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
+            screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
+            screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
+            screening.screening_notes = str(data.get("screening_notes") or "").strip()
+            screening.save()
+    except IntegrityError:
+        # The OneToOne raced under us — reload and retry write. This
+        # loses the ``created_by`` marker on the second winner but keeps
+        # the data consistent with the losing caller's payload.
+        screening = CRAScopeScreening.objects.get(product=product)
+        screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
+        screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
+        screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
+        screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
+        screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
+        screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
+        screening.screening_notes = str(data.get("screening_notes") or "").strip()
+        screening.save()
+
+    after = {
+        "has_data_connection": screening.has_data_connection,
+        "is_own_use_only": screening.is_own_use_only,
+        "is_testing_version": screening.is_testing_version,
+        "is_covered_by_other_legislation": screening.is_covered_by_other_legislation,
+        "exempted_legislation_name": screening.exempted_legislation_name,
+        "is_dual_use": screening.is_dual_use,
+        "screening_notes": screening.screening_notes,
+    }
+    log_scope_screening_change(
+        user=user,
+        product_id=str(product.id),
+        team_id=product.team_id,
+        before=before,
+        after=after,
+    )
+
+    return ServiceResult.success(screening)

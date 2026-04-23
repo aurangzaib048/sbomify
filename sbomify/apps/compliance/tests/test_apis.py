@@ -145,6 +145,41 @@ class TestGetAssessment:
 
         assert response.status_code == 404
 
+    def test_cross_team_assessment_returns_404_not_403(self, authenticated_api_client, guest_user):
+        """IDOR + enumeration-resistance: a real assessment owned by a
+        different team must return 404, not 403. The 403-vs-404
+        differential is what lets an attacker enumerate which 12-char
+        assessment IDs exist across tenants."""
+        from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
+        from sbomify.apps.core.models import Product
+        from sbomify.apps.teams.models import ContactEntity, ContactProfile, Member, Team
+
+        # Build a parallel team+product+assessment owned by ``guest_user``
+        # (which has no membership in the authenticated client's team).
+        other_team = Team.objects.create(name="OtherTeam", key="OT01")
+        Member.objects.create(user=guest_user, team=other_team, role="owner")
+        profile = ContactProfile.objects.create(name="Default", team=other_team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="Other Labs GmbH",
+            email="legal@otherlabs.example",
+            is_manufacturer=True,
+        )
+        other_product = Product.objects.create(name="Other Product", team=other_team)
+        other_assessment = get_or_create_assessment(other_product.id, guest_user, other_team).value
+        assert other_assessment is not None
+
+        client, token = authenticated_api_client
+        response = client.get(
+            f"/api/v1/compliance/cra/{other_assessment.id}",
+            **get_api_headers(token),
+        )
+
+        assert response.status_code == 404, (
+            f"cross-team access must collapse to 404, not {response.status_code}; "
+            "otherwise the API leaks which assessment IDs exist across tenants"
+        )
+
 
 class TestGetStepContext:
     def test_returns_step_1_context(self, authenticated_api_client, assessment):
@@ -422,7 +457,10 @@ class TestDownloadExport:
         by patching ``check_cra_access``."""
         client, token = authenticated_api_client
 
-        with patch("sbomify.apps.compliance.apis.check_cra_access", return_value=False):
+        # ``check_cra_access`` is now consumed inside
+        # ``permissions.require_assessment_access``. Patch at the source
+        # so the decision propagates through both API and view surfaces.
+        with patch("sbomify.apps.compliance.permissions.check_cra_access", return_value=False):
             response = client.get(
                 f"/api/v1/compliance/cra/{assessment.id}/export/anything/download",
                 **get_api_headers(token),
