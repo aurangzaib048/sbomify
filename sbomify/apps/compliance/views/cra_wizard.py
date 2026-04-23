@@ -170,11 +170,22 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
         context = {
             "product": product,
             "screening_data": screening_data,
+            # Server-resolved URLs so the JS doesn't POST to
+            # ``window.location.href`` (which would pick up whatever
+            # ``Host`` header the request arrived with). Reverse against
+            # the URL conf here — the resolved paths are same-origin by
+            # construction and can't be poisoned by a crafted Host.
+            "screening_urls": {
+                "save": reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id}),
+                "start_assessment": reverse("compliance:cra_start_assessment", kwargs={"product_id": product.id}),
+            },
             "current_team": request.session.get("current_team", {}),
         }
         return render(request, "compliance/cra_scope_screening.html.j2", context)
 
     def post(self, request: HttpRequest, product_id: str) -> HttpResponse:
+        from django.db import IntegrityError, transaction
+
         from sbomify.apps.core.models import Product, User
 
         try:
@@ -188,20 +199,47 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
         if not check_cra_access(product.team):
             return HttpResponseForbidden("Forbidden")
 
+        # Body-size guard — ``DATA_UPLOAD_MAX_MEMORY_SIZE`` caps at
+        # 2.5 MB app-wide, but an explicit smaller cap fails faster
+        # and keeps memory pressure off the request path.
+        if len(request.body) > 100 * 1024:
+            return HttpResponse("Payload too large", status=413)
+
         try:
             data = json.loads(request.body)
         except json.JSONDecodeError:
             return HttpResponse("Invalid JSON", status=400)
 
+        # Length caps on free-text fields (CWE-400). ``screening_notes``
+        # is a ``TextField`` and ``exempted_legislation_name`` is a
+        # ``CharField(255)``. Both are operator-controlled; unbounded
+        # inputs would bloat the regulated-data row + stall JSON
+        # serialisation on subsequent GETs.
+        _SCOPE_TEXT_CAP = 4_000
+        _SCOPE_NAME_CAP = 255
+        notes_raw = data.get("screening_notes")
+        if isinstance(notes_raw, str) and len(notes_raw) > _SCOPE_TEXT_CAP:
+            return HttpResponse("screening_notes exceeds 4000-char cap", status=400)
+        name_raw = data.get("exempted_legislation_name")
+        if isinstance(name_raw, str) and len(name_raw) > _SCOPE_NAME_CAP:
+            return HttpResponse("exempted_legislation_name exceeds 255-char cap", status=400)
+
         user: User = request.user  # type: ignore[assignment]
 
-        screening, _created = CRAScopeScreening.objects.get_or_create(
-            product=product,
-            defaults={
-                "team": product.team,
-                "created_by": user,
-            },
-        )
+        # ``transaction.atomic`` + ``IntegrityError`` retry because
+        # ``CRAScopeScreening.product`` is ``OneToOneField`` so a race
+        # on the get_or_create path would 500 rather than reconcile.
+        try:
+            with transaction.atomic():
+                screening, _created = CRAScopeScreening.objects.get_or_create(
+                    product=product,
+                    defaults={
+                        "team": product.team,
+                        "created_by": user,
+                    },
+                )
+        except IntegrityError:
+            screening = CRAScopeScreening.objects.get(product=product)
         screening.team = product.team
         screening.has_data_connection = _parse_bool(data.get("has_data_connection"), default=True)
         screening.is_own_use_only = _parse_bool(data.get("is_own_use_only"))

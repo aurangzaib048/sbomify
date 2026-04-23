@@ -122,6 +122,31 @@ class TestImportCatalogToDb:
         for i, control in enumerate(controls):
             assert control.sort_order == i
 
+    def test_import_marks_vh_controls_mandatory_part_ii(self):
+        """CRA Art 13(4) + FAQ 4.1.3: Part II (vulnerability handling,
+        ``group_id='cra-vh'``) controls must be always-mandatory and
+        flagged ``annex_part='part-ii'``. Every non-VH control must be
+        Part I (risk-based, N/A allowed with justification).
+
+        This is the contract ``update_finding`` relies on — a regression
+        where the import leaves Part II rows with ``is_mandatory=False``
+        would let operators mark vulnerability-handling controls as N/A,
+        producing a legally invalid DoC.
+        """
+        trestle_catalog = load_cra_catalog()
+        db_catalog = import_catalog_to_db(trestle_catalog, "EU CRA Annex I", "1.1.0")
+
+        vh = OSCALControl.objects.filter(catalog=db_catalog, group_id="cra-vh")
+        assert vh.exists(), "expected at least one cra-vh control"
+        for c in vh:
+            assert c.is_mandatory is True, f"{c.control_id} Part II must be mandatory"
+            assert c.annex_part == "part-ii", f"{c.control_id} expected part-ii, got {c.annex_part}"
+
+        non_vh = OSCALControl.objects.filter(catalog=db_catalog).exclude(group_id="cra-vh")
+        for c in non_vh:
+            assert c.is_mandatory is False, f"{c.control_id} Part I must not be mandatory"
+            assert c.annex_part == "part-i", f"{c.control_id} expected part-i, got {c.annex_part}"
+
 
 @pytest.mark.django_db
 class TestEnsureCraCatalog:
@@ -203,6 +228,31 @@ class TestUpdateFinding:
 
         with pytest.raises(ValueError, match="always mandatory"):
             update_finding(finding, "not-applicable", justification="Some justification")
+
+    def test_rejects_not_applicable_reads_is_mandatory_not_group_id(
+        self, sample_team_with_owner_member, sample_user, product
+    ):
+        """Regression seal: the Part II gate must key off the
+        ``control.is_mandatory`` column, NOT the ``group_id`` string.
+        If a future catalog import (notified-body clone, localised
+        variant) uses a different group-id convention, the gate must
+        still hold when ``is_mandatory=True``.
+        """
+        catalog = ensure_cra_catalog()
+        team = sample_team_with_owner_member.team
+        ar = create_assessment_result(catalog, team, product, sample_user)
+
+        # Take any control, mutate its group_id to something
+        # unexpected, and confirm the gate still fires purely from
+        # is_mandatory.
+        finding = OSCALFinding.objects.filter(assessment_result=ar, control__is_mandatory=True).first()
+        assert finding is not None
+        finding.control.group_id = "totally-not-cra-vh"
+        finding.control.save(update_fields=["group_id"])
+        finding.refresh_from_db()
+
+        with pytest.raises(ValueError, match="always mandatory"):
+            update_finding(finding, "not-applicable", justification="x")
 
     def test_rejects_not_applicable_without_justification_for_part_i(
         self, sample_team_with_owner_member, sample_user, product

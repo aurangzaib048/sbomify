@@ -78,6 +78,52 @@ WIZARD_STEPS = (1, 2, 3, 4, 5)
 # generous for a one-paragraph audit explanation.
 _MAX_WAIVER_JUSTIFICATION_CHARS = 2_000
 
+# Generic caps for Step 1 free-text fields (intended_use,
+# support_period_short_justification). ``intended_use`` flows into the
+# DoC; ``support_period_short_justification`` is stored-only today but
+# is regulated audit evidence per CRA Art 13(8). Same rationale as the
+# waiver cap above — the JSONField / TextField surfaces have no server
+# cap and would otherwise accept arbitrarily large blobs that bloat
+# the row and stall JSON serialisation.
+_MAX_STEP_1_TEXT_CHARS = 4_000
+
+# EU member states (ISO 3166-1 alpha-2). Mirrors
+# ``sbomify/apps/compliance/js/eu-countries.ts`` — a market code that
+# isn't in this set is rejected at save time (CRA Art 24: DoC enumerates
+# the member states the product is placed on the market in, so an
+# invalid code would land in a regulated artefact).
+_EU_COUNTRIES: frozenset[str] = frozenset(
+    {
+        "AT",
+        "BE",
+        "BG",
+        "HR",
+        "CY",
+        "CZ",
+        "DK",
+        "EE",
+        "FI",
+        "FR",
+        "DE",
+        "GR",
+        "HU",
+        "IE",
+        "IT",
+        "LV",
+        "LT",
+        "LU",
+        "MT",
+        "NL",
+        "PL",
+        "PT",
+        "RO",
+        "SK",
+        "SI",
+        "ES",
+        "SE",
+    }
+)
+
 
 def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
     """Populate security contact and CSIRT email from existing contact profiles."""
@@ -608,10 +654,19 @@ def _save_step_1(
                 f"Invalid product_category. Must be one of: {sorted(valid_categories)}", status_code=400
             )
 
-    # Apply simple text/char fields
+    # Apply simple text/char fields. Enforce a length cap on free-text
+    # fields to prevent row-bloat / serializer DoS via unbounded payloads;
+    # the DB columns are ``TextField`` / ``CharField(255)`` but
+    # ``intended_use`` is ``TextField`` with no size limit.
     for field in (*_STEP_1_TEXT_FIELDS, *_STEP_1_CHAR_FIELDS):
         if field in data:
-            setattr(assessment, field, data[field])
+            raw = data[field]
+            if isinstance(raw, str) and len(raw) > _MAX_STEP_1_TEXT_CHARS:
+                return ServiceResult.failure(
+                    f"{field} exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
+                    status_code=400,
+                )
+            setattr(assessment, field, raw)
 
     for field in _STEP_1_BOOL_FIELDS:
         if field in data:
@@ -626,9 +681,13 @@ def _save_step_1(
     if "target_eu_markets" in data:
         markets = data["target_eu_markets"]
         if markets is not None:
-            if not isinstance(markets, list) or not all(isinstance(m, str) and len(m) == 2 for m in markets):
+            if not isinstance(markets, list) or not all(isinstance(m, str) for m in markets):
+                return ServiceResult.failure("target_eu_markets must be a list of strings", status_code=400)
+            invalid = [m for m in markets if m not in _EU_COUNTRIES]
+            if invalid:
                 return ServiceResult.failure(
-                    "target_eu_markets must be a list of 2-letter country codes", status_code=400
+                    f"Invalid EU country code(s): {invalid}. Must be an EU member-state ISO 3166-1 alpha-2 code.",
+                    status_code=400,
                 )
         assessment.target_eu_markets = markets or []
 
@@ -646,7 +705,11 @@ def _save_step_1(
         else:
             return ServiceResult.failure("Invalid type for support_period_end", status_code=400)
 
-    # Handle harmonised_standard_applied (CRA Art 32(2))
+    # Harmonised-standard flag (CRA Art 32(2)). Require the flag to be
+    # explicitly in the payload on every save — a prior save cannot
+    # retroactively justify the current one. Payload-absence means
+    # ``False``; otherwise the stored ``True`` would silently pass the
+    # Art 32(2) gate even when the operator didn't re-confirm.
     if "harmonised_standard_applied" in data:
         val = data["harmonised_standard_applied"]
         if isinstance(val, bool):
@@ -655,6 +718,20 @@ def _save_step_1(
             assessment.harmonised_standard_applied = val.lower() in ("true", "1", "yes")
         elif isinstance(val, int):
             assessment.harmonised_standard_applied = bool(val)
+        else:
+            assessment.harmonised_standard_applied = False
+    else:
+        # Absent from payload → treat as not re-asserted for this save.
+        assessment.harmonised_standard_applied = False
+
+    # Apply support_period_short_justification from payload BEFORE the
+    # 5-year gate reads it (CRA Art 13(8)). Previously the gate read the
+    # stored value, then the assignment happened after — a payload
+    # sending ``""`` would clear the justification while still passing
+    # the gate via the stored non-empty value.
+    if "support_period_short_justification" in data:
+        raw = data["support_period_short_justification"]
+        assessment.support_period_short_justification = raw if isinstance(raw, str) else ""
 
     # Handle conformity procedure selection (CRA Art 32(1-5))
     allowed = _CATEGORY_PROCEDURE_OPTIONS.get(assessment.product_category, [])
@@ -694,20 +771,12 @@ def _save_step_1(
             # Handle leap-day reference dates (e.g., Feb 29) for non-leap target years
             last_day = calendar.monthrange(new_year, reference_date.month)[1]
             min_end = datetime.date(new_year, reference_date.month, last_day)
-        if assessment.support_period_end < min_end:
-            justification = data.get("support_period_short_justification")
-            if justification is not None and isinstance(justification, str):
-                assessment.support_period_short_justification = justification
-            if not assessment.support_period_short_justification.strip():
-                return ServiceResult.failure(
-                    "Support period is less than 5 years. CRA Art 13(8) requires at least 5 years "
-                    "unless the product's expected use time is shorter. Please provide a justification.",
-                    status_code=400,
-                )
-    if "support_period_short_justification" in data:
-        val = data["support_period_short_justification"]
-        if isinstance(val, str):
-            assessment.support_period_short_justification = val
+        if assessment.support_period_end < min_end and not assessment.support_period_short_justification.strip():
+            return ServiceResult.failure(
+                "Support period is less than 5 years. CRA Art 13(8) requires at least 5 years "
+                "unless the product's expected use time is shorter. Please provide a justification.",
+                status_code=400,
+            )
 
     # EN 18031-2 and -3 are RED harmonised standards — they are not
     # standalone privacy / fraud standards. A product that doesn't fall

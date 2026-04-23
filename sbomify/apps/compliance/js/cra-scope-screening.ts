@@ -7,6 +7,11 @@ import { showError } from '../../core/js/alerts';
  *
  * Based on FAQ Section 1 (CRA Art 2-3, Art 21).
  */
+interface ScreeningUrls {
+  save: string;
+  start_assessment: string;
+}
+
 function craScopeScreening() {
   return {
     hasDataConnection: true,
@@ -17,6 +22,10 @@ function craScopeScreening() {
     isDualUse: false,
     screeningNotes: '',
     isSaving: false,
+    // Server-resolved URLs, injected via ``json_script:"screening-urls"``
+    // so the POST target doesn't come from ``window.location.href``
+    // (which would inherit a potentially attacker-controlled ``Host``).
+    urls: { save: '', start_assessment: '' } as ScreeningUrls,
 
     init() {
       const data = window.parseJsonScript('screening-data');
@@ -29,6 +38,10 @@ function craScopeScreening() {
         this.exemptedLegislationName = (d.exempted_legislation_name as string) || '';
         this.isDualUse = !!(d.is_dual_use);
         this.screeningNotes = (d.screening_notes as string) || '';
+      }
+      const urls = window.parseJsonScript('screening-urls') as ScreeningUrls | null;
+      if (urls && urls.save && urls.start_assessment) {
+        this.urls = urls;
       }
     },
 
@@ -56,10 +69,14 @@ function craScopeScreening() {
 
     async submit(): Promise<void> {
       if (this.isSaving) return;
+      if (!this.urls.save) {
+        showError('Scope-screening URL not configured; refresh the page.');
+        return;
+      }
       this.isSaving = true;
 
       try {
-        const resp = await fetch(window.location.href, {
+        const resp = await fetch(this.urls.save, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -83,11 +100,14 @@ function craScopeScreening() {
         }
 
         const result = await resp.json();
-        if (result.cra_applies && result.redirect) {
-          // Submit the form to create the assessment (POST to start URL)
+        // Trust the server-resolved start URL, not the ``redirect``
+        // the server echoes back. Same defence as the save URL — keep
+        // all navigation targets server-resolved so no request header
+        // can steer the form submission off-origin.
+        if (result.cra_applies && this.urls.start_assessment) {
           const form = document.createElement('form');
           form.method = 'POST';
-          form.action = result.redirect;
+          form.action = this.urls.start_assessment;
           const csrf = document.createElement('input');
           csrf.type = 'hidden';
           csrf.name = 'csrfmiddlewaretoken';

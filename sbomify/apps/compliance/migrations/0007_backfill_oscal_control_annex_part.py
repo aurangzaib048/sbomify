@@ -4,21 +4,70 @@ from django.db import migrations
 
 
 def backfill_annex_part(apps, schema_editor):
-    """Backfill is_mandatory and annex_part for existing OSCALControl rows.
+    """Backfill ``is_mandatory`` and ``annex_part`` for every CRA control row.
 
-    Part II controls (vulnerability handling, group_id='cra-vh') are always
-    mandatory per CRA Art 13(4), FAQ 4.1.3. All other controls are Part I
-    (risk-based).
+    Covers every ``EU CRA Annex I`` catalog version (not just the latest),
+    so assessments started against a pre-1.1.0 catalog row get the correct
+    Part II mandatory marking retroactively (CRA Art 13(4), FAQ 4.1.3).
+    Without this, a pre-deploy assessment could silently allow Part II
+    vulnerability-handling controls to be marked N/A.
+
+    Derivation order:
+      1. Read ``annex-part`` from the control's props in the catalog JSON
+         (authoritative source — matches what ``import_catalog_to_db``
+         produces for new imports).
+      2. Fall back to ``group_id == "cra-vh"`` heuristic for catalog rows
+         whose stored JSON predates the ``annex-part`` prop (legacy 1.0.0
+         imports).
     """
+    OSCALCatalog = apps.get_model("compliance", "OSCALCatalog")
     OSCALControl = apps.get_model("compliance", "OSCALControl")
 
-    # Mark Part II (vulnerability handling) controls as mandatory — scoped to CRA catalog only
-    OSCALControl.objects.filter(
-        catalog__name="EU CRA Annex I",
-        group_id="cra-vh",
-    ).update(
-        is_mandatory=True,
-        annex_part="part-ii",
+    for catalog in OSCALCatalog.objects.filter(name="EU CRA Annex I"):
+        # Build control_id → annex_part map from the catalog JSON's props.
+        control_annex_part: dict[str, str] = {}
+        catalog_json = catalog.catalog_json or {}
+        for group in catalog_json.get("groups", []) or []:
+            for control in group.get("controls", []) or []:
+                cid = control.get("id")
+                if not cid:
+                    continue
+                annex_part = "part-i"
+                for prop in control.get("props", []) or []:
+                    if prop.get("name") == "annex-part":
+                        annex_part = prop.get("value", "part-i")
+                        break
+                control_annex_part[cid] = annex_part
+
+        # Apply to every control row of this catalog. Use bulk_update to
+        # avoid per-row UPDATE overhead on large catalogs.
+        to_update = []
+        for ctl in OSCALControl.objects.filter(catalog=catalog):
+            # JSON-first, group_id heuristic second (legacy 1.0.0 imports
+            # may lack the ``annex-part`` prop in their stored JSON).
+            derived = control_annex_part.get(
+                ctl.control_id,
+                "part-ii" if ctl.group_id == "cra-vh" else "part-i",
+            )
+            ctl.annex_part = derived
+            ctl.is_mandatory = derived == "part-ii"
+            to_update.append(ctl)
+        if to_update:
+            OSCALControl.objects.bulk_update(to_update, ["annex_part", "is_mandatory"])
+
+
+def reverse_backfill(apps, schema_editor):
+    """Reset ``is_mandatory`` / ``annex_part`` on CRA controls.
+
+    Lossy but predictable: any rollback past 0007 demotes Part II to
+    Part I, matching the schema defaults set by 0006. Without an
+    explicit reverse, ``RunPython.noop`` would leave the fields
+    populated while 0006's schema reversal tries to drop them.
+    """
+    OSCALControl = apps.get_model("compliance", "OSCALControl")
+    OSCALControl.objects.filter(catalog__name="EU CRA Annex I").update(
+        is_mandatory=False,
+        annex_part="part-i",
     )
 
 
@@ -29,5 +78,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(backfill_annex_part, migrations.RunPython.noop),
+        migrations.RunPython(backfill_annex_part, reverse_backfill),
     ]

@@ -292,6 +292,173 @@ class TestSaveStepData:
         assert save.status_code == 400
         assert "Annex V" in (save.error or "")
 
+    def test_step_1_stale_harmonised_flag_not_unlocked_on_resave(self, assessment, sample_user):
+        """Art 32(2) stale-flag regression (P0). A prior save that set
+        ``harmonised_standard_applied=True`` must not silently allow a
+        second Class I + Module A save that omits the flag. The payload
+        is authoritative on every save — an absent flag means 'not
+        re-asserted for this save'."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": True,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert first.ok
+        assert first.value.harmonised_standard_applied is True
+
+        # Re-save without the flag — must fail.
+        second = save_step_data(
+            assessment,
+            1,
+            {"product_category": "class_i", "support_period_end": support},
+            sample_user,
+        )
+        assert not second.ok
+        assert second.status_code == 400
+        assert "harmonised standard" in (second.error or "").lower()
+        # The reject happens before ``assessment.save()`` so the DB
+        # still carries ``True`` from the first save — but the point
+        # of the guard is that *this* save didn't silently succeed.
+        # Re-asserting the flag is required every time.
+
+    def test_step_1_support_period_justification_cleared_after_gate(self, assessment, sample_user):
+        """CRA Art 13(8) audit-trail bypass regression (P0). A payload
+        that submits ``support_period_short_justification=""`` with a
+        <5-year support date must be rejected on the same save that
+        tries to clear the justification — not pass the gate by
+        reading the stored value and then silently overwrite it."""
+        # First save: short support period + valid justification.
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "product discontinued after 2 years",
+            },
+            sample_user,
+        )
+        assert first.ok
+        # Second save: try to clear the justification — must fail.
+        second = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "",
+            },
+            sample_user,
+        )
+        assert not second.ok
+        assert second.status_code == 400
+        assert "5 years" in (second.error or "") or "justification" in (second.error or "").lower()
+
+    def test_step_1_support_period_justification_whitespace_rejected(self, assessment, sample_user):
+        """Whitespace-only justification is not a real audit record."""
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "   \t\n   ",
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_1_rejects_non_eu_two_letter_code(self, assessment, sample_user):
+        """EU-markets allowlist (P1). ``["XY"]`` passes the
+        old length-only check but is not an EU member state; the DoC
+        would list it verbatim. The allowlist must fail-closed."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "target_eu_markets": ["XY"],
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "XY" in (result.error or "") or "country" in (result.error or "").lower()
+
+    def test_step_1_rejects_non_eu_existing_two_letter(self, assessment, sample_user):
+        """``US`` is a valid ISO 3166-1 alpha-2 code but not EU —
+        regression seal for the narrower check."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "target_eu_markets": ["US"], "support_period_end": support},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_1_leap_day_support_period_clamp(self, assessment, sample_user):
+        """Feb 29 release date → target year 5 years later (non-leap)
+        must clamp to Feb 28, not crash on ``date.replace(year=…)``.
+        Without this clamp, saving a support period of Feb 28 in the
+        target year would be rejected as < 5 years despite being
+        exactly the clamp boundary (CRA Art 13(8))."""
+        # Seed a leap-day release date on the product.
+        assessment.product.release_date = datetime.date(2024, 2, 29)
+        assessment.product.save(update_fields=["release_date"])
+
+        # 2029 is not a leap year — clamp to Feb 28. Feb 28 boundary
+        # is exactly the minimum and must be accepted.
+        boundary = str(datetime.date(2029, 2, 28))
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "support_period_end": boundary},
+            sample_user,
+        )
+        assert result.ok, result.error
+
+        # Feb 27 2029 is one day below the clamp — should require justification.
+        below = str(datetime.date(2029, 2, 27))
+        result_below = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "support_period_end": below},
+            sample_user,
+        )
+        assert not result_below.ok
+        assert "5 years" in (result_below.error or "")
+
+    def test_step_1_rejects_oversized_intended_use(self, assessment, sample_user):
+        """Length cap on free-text ``intended_use`` (P1, row-bloat /
+        DoS via JSON serialiser stall). 4 KB is generous."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "intended_use": "x" * 10_000,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "intended_use" in (result.error or "")
+
     def test_step_2_marks_complete(self, assessment, sample_user):
         result = save_step_data(assessment, 2, {}, sample_user)
         assert result.ok

@@ -3,6 +3,8 @@
 {% block content %}
     <div x-data="craScopeScreening()">
         {{ screening_data|json_script:"screening-data" }}
+        {# Server-resolved POST target so JS doesn't need window.location.href. #}
+        {{ screening_urls|json_script:"screening-urls" }}
         <div class="max-w-3xl mx-auto space-y-6">
             <div>
                 <h1 class="text-2xl font-bold text-text m-0">CRA Scope Screening</h1>

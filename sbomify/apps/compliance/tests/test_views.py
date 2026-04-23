@@ -253,6 +253,63 @@ class TestCRAScopeScreeningView:
         )
         assert response.status_code == 404
 
+    def test_post_rejects_oversized_screening_notes(self, web_client, product):
+        """Length cap on ``screening_notes`` (P1, CWE-400). Without
+        this cap, a 1 MB blob would bloat the regulated-data row and
+        stall JSON serialisation on every subsequent GET."""
+        import json as _json
+
+        url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+        response = web_client.post(
+            url,
+            data=_json.dumps(
+                {
+                    "has_data_connection": True,
+                    "is_own_use_only": False,
+                    "is_testing_version": False,
+                    "is_covered_by_other_legislation": False,
+                    "is_dual_use": False,
+                    "screening_notes": "x" * 10_000,
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        assert b"screening_notes" in response.content or b"cap" in response.content
+
+    def test_post_rejects_oversized_legislation_name(self, web_client, product):
+        """``exempted_legislation_name`` is ``CharField(255)`` — reject
+        before the DB layer so we get a clean 400 instead of a 500."""
+        import json as _json
+
+        url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+        response = web_client.post(
+            url,
+            data=_json.dumps(
+                {
+                    "has_data_connection": True,
+                    "is_own_use_only": False,
+                    "is_covered_by_other_legislation": True,
+                    "exempted_legislation_name": "x" * 500,
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+
+    def test_get_passes_server_resolved_urls(self, web_client, product):
+        """Scope-screening page must carry server-resolved save +
+        start-assessment URLs in a ``screening-urls`` json_script so
+        the JS doesn't fall back to ``window.location.href`` — which
+        would inherit whatever Host header the request arrived with
+        (P1 host-header open-redirect amplifier)."""
+        url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+        response = web_client.get(url)
+        assert response.status_code == 200
+        assert b'id="screening-urls"' in response.content
+        expected_save_url = reverse("compliance:cra_scope_screening", kwargs={"product_id": product.id})
+        assert expected_save_url.encode() in response.content
+
     def test_unauthenticated_redirects(self):
         client = Client()
         url = reverse("compliance:cra_scope_screening", kwargs={"product_id": "test123"})

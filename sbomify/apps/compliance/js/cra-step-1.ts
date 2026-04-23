@@ -159,14 +159,29 @@ function craStep1() {
     /** Whether the selected support period is less than 5 years from reference date. */
     get supportPeriodShort(): boolean {
       if (!this.supportPeriodEnd) return false;
-      // Parse YYYY-MM-DD strings as local dates to avoid UTC/local mismatch
-      const parseLocal = (s: string) => {
+      // Parse ``YYYY-MM-DD`` as a local date. JS's Date constructor
+      // silently overflows out-of-range values ("2030-13-40" becomes
+      // March 12, 2031), so we shape-check the input and round-trip
+      // back to ISO before trusting the date — anything that doesn't
+      // survive the round-trip is treated as "not short" (falsy) so
+      // the UI doesn't demand a justification for garbage input.
+      const parseLocal = (s: string): Date | null => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
         const [y, m, d] = s.split('-').map(Number);
-        return new Date(y, m - 1, d);
+        if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+        const dt = new Date(y, m - 1, d);
+        if (
+          dt.getFullYear() !== y ||
+          dt.getMonth() !== m - 1 ||
+          dt.getDate() !== d
+        ) {
+          return null;
+        }
+        return dt;
       };
-      const refDate = this.product.release_date
-        ? parseLocal(this.product.release_date)
-        : new Date();
+      const end = parseLocal(this.supportPeriodEnd);
+      if (!end) return false;
+      const refDate = (this.product.release_date && parseLocal(this.product.release_date)) || new Date();
       // Mirror backend date math: add 5 years and clamp to last valid day of month
       // (e.g. Feb 29 on a non-leap target year → Feb 28)
       const targetYear = refDate.getFullYear() + 5;
@@ -175,7 +190,7 @@ function craStep1() {
       if (minEnd.getMonth() !== baseMonth) {
         minEnd = new Date(targetYear, baseMonth + 1, 0);
       }
-      return parseLocal(this.supportPeriodEnd) < minEnd;
+      return end < minEnd;
     },
 
     /** Available conformity procedures for the current category (CRA Art 32). */
