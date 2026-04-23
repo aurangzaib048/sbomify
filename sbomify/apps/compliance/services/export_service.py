@@ -72,89 +72,7 @@ _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
 _MANIFEST_FORMAT_VERSION = "1.1"
 
 
-_SIGNATURE_PROVIDER_LABELS: dict[str, str] = {
-    "sigstore_keyless": "a Sigstore keyless signature (Fulcio-issued ephemeral certificate)",
-}
-
-
-def _is_valid_signature_key(key: str) -> bool:
-    """Return True when ``key`` is safe to presign as a .sig side-car.
-
-    Defense-in-depth: ``startswith`` alone lets
-    ``compliance/exports/../other-app/x.sig`` through (S3 treats keys
-    literally so no filesystem escape, but the URL would presign an
-    object outside the compliance tree in the same bucket). Reject
-    any key containing ``..`` or NUL segments so the security claim
-    holds at the app boundary. Extracted as a helper so the
-    condition stays readable across ruff-format runs (the single-
-    line compound expression is exactly at the 120-char limit and
-    tempts ruff to join it back) and so it can be exercised in
-    isolation by unit tests.
-    """
-    return (
-        key.startswith("compliance/exports/")
-        and key.endswith(".sig")
-        and ".." not in key.split("/")
-        and "\x00" not in key
-    )
-
-
-def _signature_readme_section(signed: bool, provider: str | None) -> str:
-    """Return the "About signatures" section of INTEGRITY.md.
-
-    When a signature side-car was produced at export time (issue #906),
-    describe how to verify it; otherwise keep the pre-existing guidance
-    about applying a downstream signature. Both branches terminate the
-    INTEGRITY.md — callers concatenate this at the end.
-
-    Provider strings are gated against ``_SIGNATURE_PROVIDER_LABELS``
-    so a future raw-SQL / admin write of an unexpected ``signing_provider``
-    cannot inject special characters into the bundled README. Unknown
-    providers fall back to generic wording.
-    """
-    if signed:
-        provider_label = _SIGNATURE_PROVIDER_LABELS.get(provider or "", "a configured cryptographic signature")
-        return (
-            "## 3. Bundle signature\n\n"
-            f"This bundle is configured to ship with {provider_label} "
-            "delivered as a side-car object alongside the ZIP — the "
-            "download endpoint returns a second presigned URL ending "
-            "in `.zip.sig` whose response body is the Sigstore bundle "
-            "(JSON).\n\n"
-            "**Check the side-car exists before trusting the bundle as "
-            "signed.** The authoritative signal is the presence of the "
-            "`.zip.sig` object alongside the bundle; its absence means "
-            "signing failed at export time and the bundle is unsigned "
-            "regardless of this notice. This README is embedded in the "
-            "ZIP before signing runs, so it cannot reflect a runtime "
-            "signing failure.\n\n"
-            "If the side-car is present, verify with:\n\n"
-            "```sh\n"
-            "cosign verify-blob \\\n"
-            "  --bundle cra-package-*.zip.sig \\\n"
-            "  --certificate-identity '<signing-identity>' \\\n"
-            "  --certificate-oidc-issuer '<oidc-issuer>' \\\n"
-            "  cra-package-*.zip\n"
-            "```\n\n"
-            "sbomify does not embed the bundle signature inside the ZIP — "
-            "keeping it external preserves verifiable provenance across "
-            "repackaging.\n"
-        )
-    return (
-        "## 3. About signatures\n\n"
-        "sbomify does not sign the bundle itself. Operators who need a "
-        "stronger integrity / provenance guarantee for regulatory filings "
-        "should sign the whole ZIP downstream with `cosign sign-blob` "
-        "or `gpg --detach-sign` and distribute the detached signature "
-        "alongside the bundle. The self-hash above bounds the manifest's "
-        "integrity; a downstream signature bounds the whole package.\n\n"
-        "To produce a signature automatically on every export, enable "
-        "cosign / Sigstore signing in the team's compliance settings "
-        "(issue #906).\n"
-    )
-
-
-def _integrity_readme(manifest_sha256: str, *, signed: bool = False, provider: str | None = None) -> str:
+def _integrity_readme(manifest_sha256: str) -> str:
     """Human-readable bundle verification guide embedded in the export.
 
     The commands below are tested end-to-end against the real bundle
@@ -203,7 +121,13 @@ def _integrity_readme(manifest_sha256: str, *, signed: bool = False, provider: s
         "since export. The `jq` `sub` expression strips the "
         "`cra-package-<slug>/` prefix so `sha256sum` resolves paths "
         "against the current working directory (the bundle root).\n\n"
-        + _signature_readme_section(signed=signed, provider=provider)
+        "## 3. About signatures\n\n"
+        "sbomify does not sign the bundle itself. Operators who need a "
+        "stronger integrity / provenance guarantee for regulatory filings "
+        "should sign the whole ZIP downstream with `cosign sign-blob` "
+        "or `gpg --detach-sign` and distribute the detached signature "
+        "alongside the bundle. The self-hash above bounds the manifest's "
+        "integrity; a downstream signature bounds the whole package.\n"
     )
 
 
@@ -433,38 +357,9 @@ def build_export_package(
         )
 
         # 9. INTEGRITY.md — human-readable verification guide.
-        # Branch on the team's configured signing state so the README
-        # describes the signature the bundle actually carries (issue
-        # #906). If signing is enabled but the signer later fails at
-        # runtime, the README optimistically describes a signature
-        # that isn't there — that's a known failure mode that surfaces
-        # as "README references .sig but no .sig exists"; operators
-        # see the signer's warning log and can re-export.
-        from sbomify.apps.compliance.models import TeamComplianceSettings
-
-        try:
-            _settings = assessment.team.compliance_settings
-            _configured_provider = _settings.signing_provider
-            # Only claim "signed" in the README when the provider is
-            # enabled AND actually known to the signing dispatcher —
-            # a legacy DB row pointing at a provider that was later
-            # removed (or a manual SQL edit) would otherwise write a
-            # README that promises a signature ``sign_bundle()`` will
-            # silently skip. Gating on the provider-label allowlist
-            # keeps the ZIP's embedded README aligned with what the
-            # signer can actually produce.
-            _will_sign = bool(
-                _settings.signing_enabled
-                and _configured_provider != "none"
-                and _configured_provider in _SIGNATURE_PROVIDER_LABELS
-            )
-            _sig_provider = _configured_provider if _will_sign else None
-        except TeamComplianceSettings.DoesNotExist:
-            _will_sign = False
-            _sig_provider = None
         zf.writestr(
             f"{prefix}/metadata/INTEGRITY.md",
-            _integrity_readme(manifest_sha256, signed=_will_sign, provider=_sig_provider).encode("utf-8"),
+            _integrity_readme(manifest_sha256).encode("utf-8"),
         )
 
     # Read entire ZIP into memory for hashing and upload. This is acceptable because
@@ -484,60 +379,11 @@ def build_export_package(
         logger.exception("Failed to upload export package to S3")
         return ServiceResult.failure("Failed to upload export package to storage", status_code=502)
 
-    # Optional cosign / sigstore signing (issue #906). The signer
-    # returns ``None`` when the team hasn't enabled signing or when
-    # the configured provider couldn't produce a signature right now —
-    # in every case the export still ships unsigned. The signature is
-    # an EXTERNAL side-car in S3 at ``<storage_key>.sig``; it is NOT
-    # embedded in the manifest.json inside the ZIP (the ZIP is already
-    # serialised at this point, and the signature signs the ZIP). The
-    # authoritative "is this bundle signed?" signal is the
-    # ``signature_storage_key`` field on the :class:`CRAExportPackage`
-    # row, populated below when the side-car upload succeeds.
-    from sbomify.apps.compliance.services._bundle_signer import sign_bundle
-
-    signing_outcome = sign_bundle(zip_bytes, assessment.team)
-    signature_storage_key = ""
-    signature_provider = ""
-    rekor_log_index: int | None = None
-    signed_by = ""
-    signed_issuer = ""
-    if signing_outcome is not None:
-        candidate_key = f"{storage_key}.sig"
-        try:
-            docs_s3.upload_data_as_file(
-                django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
-                candidate_key,
-                signing_outcome.bundle_bytes,
-            )
-        except Exception:
-            # Signing failures never fail the export; log and leave
-            # the signature fields empty so the download endpoint
-            # doesn't advertise a URL that will 404.
-            logger.exception("Failed to upload signature side-car for export %s", storage_key)
-        else:
-            signature_storage_key = candidate_key
-            # Use the provider carried on the outcome rather than
-            # re-reading ``TeamComplianceSettings.signing_provider``.
-            # The settings row can be edited/deleted concurrently
-            # between ``sign_bundle()`` returning and this assignment;
-            # the audit trail must record what actually signed, not
-            # what the team has configured now.
-            signature_provider = signing_outcome.provider
-            rekor_log_index = signing_outcome.rekor_log_index
-            signed_by = signing_outcome.signed_by
-            signed_issuer = signing_outcome.signed_issuer
-
     package = CRAExportPackage.objects.create(
         assessment=assessment,
         storage_key=storage_key,
         content_hash=content_hash,
         manifest=manifest,
-        signature_storage_key=signature_storage_key,
-        signature_provider=signature_provider,
-        rekor_log_index=rekor_log_index,
-        signed_by=signed_by,
-        signed_issuer=signed_issuer,
         created_by=user,
     )
 
@@ -607,81 +453,3 @@ def get_download_url(package: CRAExportPackage) -> ServiceResult[str]:
     except Exception:
         logger.exception("Failed to generate presigned URL")
         return ServiceResult.failure("Failed to generate download URL", status_code=500)
-
-
-def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str | None]:
-    """Generate a presigned URL for the side-car signature, if present.
-
-    Returns ``ServiceResult.success(None)`` when the package wasn't
-    signed at export time (issue #906) OR when the recorded
-    ``signature_storage_key`` fails validation. A package is treated
-    as signable only when ``signature_storage_key`` is non-empty
-    after whitespace normalisation AND
-    :func:`_is_valid_signature_key` accepts it as a
-    ``compliance/exports/*.sig`` object key. A merely non-empty DB
-    value is not enough — invalid or malformed keys (wrong prefix,
-    missing suffix, path-traversal, NUL bytes) are rejected and
-    return ``None`` too, with a warning log so operators can
-    investigate the corrupted row.
-
-    The signature file inherits the same short TTL as the bundle
-    itself; both belong to the same unauthenticated release window.
-
-    Defense-in-depth: the validation guard is the app-boundary
-    check. Admin-only writes mitigate today, but a DB-level
-    corruption or a future policy change that opens the field would
-    otherwise let someone point the side-car URL at an arbitrary
-    S3 key. Rejection returns ``None`` so the client hides the
-    signature affordance rather than handing out a mis-targeted URL.
-    """
-    # Normalise first — an accidental admin edit that leaves trailing
-    # whitespace is truthy but would still pass the prefix check
-    # (spaces at the end only). The prefix/suffix checks below
-    # implicitly reject leading whitespace, but stripping makes the
-    # intent explicit and leaves no room for a " compliance/... .sig "
-    # style key to sneak past.
-    key = (package.signature_storage_key or "").strip()
-    if not key:
-        return ServiceResult.success(None)
-    if not _is_valid_signature_key(key):
-        logger.warning(
-            "Refusing to presign signature key %r for package %s — not under compliance/exports/*.sig",
-            key,
-            package.pk,
-        )
-        return ServiceResult.success(None)
-
-    try:
-        import boto3
-
-        s3_client = boto3.client(
-            "s3",
-            region_name=django_settings.AWS_REGION,
-            endpoint_url=django_settings.AWS_ENDPOINT_URL_S3,
-            aws_access_key_id=django_settings.AWS_DOCUMENTS_ACCESS_KEY_ID,
-            aws_secret_access_key=django_settings.AWS_DOCUMENTS_SECRET_ACCESS_KEY,
-        )
-        product_slug = slugify(package.assessment.product.name) or package.assessment.product.id
-        filename = f"cra-package-{product_slug}-{package.content_hash[:12]}.zip.sig"
-        url: str = s3_client.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
-                # Use the stripped/validated ``key`` rather than the
-                # raw DB field so a stray-whitespace admin edit
-                # doesn't presign a mangled S3 key.
-                "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="{filename}"',
-                # Precise Sigstore bundle media type — downstream
-                # tooling that sniffs Content-Type (cosign, auditors)
-                # uses this to distinguish the side-car from a
-                # generic JSON document. Matches the media type the
-                # sigstore Bundle JSON round-trips through.
-                "ResponseContentType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-            },
-            ExpiresIn=_PRESIGNED_URL_EXPIRY_SECONDS,
-        )
-        return ServiceResult.success(url)
-    except Exception:
-        logger.exception("Failed to generate signature presigned URL")
-        return ServiceResult.failure("Failed to generate signature download URL", status_code=500)

@@ -393,16 +393,7 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
 
     Response shape (200):
 
-    - ``download_url``: presigned URL for the ZIP. Always present.
-    - ``signature_url``: presigned URL for the ``.zip.sig`` side-car.
-      Present only when the package is signed (issue #906).
-    - ``signature``: object with ``provider``, ``rekor_log_index``,
-      ``signed_by``, ``signed_issuer``. Present iff ``signature_url``
-      is present. Downstream auditors use these to run
-      ``cosign verify-blob --certificate-identity=<signed_by>
-      --certificate-oidc-issuer=<signed_issuer> ...`` and to fetch
-      the Rekor entry at ``/api/v2/log/entries/<rekor_log_index>``
-      for independent inclusion-proof verification.
+    - ``download_url``: presigned URL for the ZIP.
 
     The response carries ``Cache-Control: no-store`` and
     ``Pragma: no-cache`` so intermediate caches (Caddy, corporate
@@ -426,43 +417,13 @@ def download_export(request: HttpRequest, response: HttpResponse, assessment_id:
     except CRAExportPackage.DoesNotExist:
         return 404, ErrorResponse(error="Export package not found", error_code="not_found")
 
-    from .services.export_service import get_download_url, get_signature_download_url
+    from .services.export_service import get_download_url
 
     url = get_download_url(package)
     if not url.ok:
         return url.status_code or 500, ErrorResponse(error=url.error or "Unknown error")
 
-    body: dict[str, Any] = {"download_url": url.value}
-    # Issue #906: the signature side-car is optional. ``None`` means
-    # the package wasn't signed (team has signing disabled, or signer
-    # couldn't produce one at export time); the client renders the
-    # "Download signature" affordance only when this is present.
-    # When signed, also surface the OIDC identity the bundle was
-    # attested to + the Rekor log-entry address — downstream
-    # verification needs these to run ``cosign verify-blob`` with
-    # the correct ``--certificate-identity`` /
-    # ``--certificate-oidc-issuer`` flags without guessing.
-    sig = get_signature_download_url(package)
-    if not sig.ok:
-        # ``sig.ok=False`` means the side-car exists (or should) but
-        # presigning failed. If the package is recorded as signed,
-        # silently dropping the signature_url would make a signed
-        # bundle look unsigned to the client — propagate the error
-        # so downstream verifiers aren't misled. An unsigned package
-        # short-circuits in ``get_signature_download_url`` with
-        # ``success(None)`` so this branch is only reached when
-        # something actually went wrong.
-        return sig.status_code or 500, ErrorResponse(error=sig.error or "Signature URL generation failed")
-    if sig.value:
-        body["signature_url"] = sig.value
-        body["signature"] = {
-            "provider": package.signature_provider,
-            "rekor_log_index": package.rekor_log_index,
-            "signed_by": package.signed_by,
-            "signed_issuer": package.signed_issuer,
-        }
-
-    return 200, body
+    return 200, {"download_url": url.value}
 
 
 @router.get(
