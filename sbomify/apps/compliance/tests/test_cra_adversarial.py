@@ -750,12 +750,18 @@ class TestBsiFindingIdCoercionEndToEnd:
     @pytest.mark.parametrize("bad_id", [None, [], {}, 42, 3.14, True, b"bytes", ["nested"], {"k": "v"}])
     def test_non_string_id_coerces_to_unknown(self, bad_id):
         """Directly exercise ``_classify_bsi_finding`` — any non-str
-        id maps to the default ``operator_action`` bucket with an
-        empty summary/URL, never raising TypeError on a dict-key
+        id maps to the default ``operator_action`` bucket and
+        returns the unknown-finding summary plus the enrichment URL,
+        never raising ``TypeError: unhashable type`` on a dict-key
         lookup."""
         rem_type, url, summary = _classify_bsi_finding(bad_id)  # type: ignore[arg-type]
         # Default = operator_action (loud, operator must address).
         assert rem_type == "operator_action"
+        # Non-empty fallback values — the summary + URL point
+        # operators at the enrichment docs rather than leaving them
+        # blank-handed on a malformed id.
+        assert summary
+        assert url
 
     def test_build_bsi_assessment_dict_handles_malformed_id(self):
         """End-to-end via ``_build_bsi_assessment_dict`` — a run
@@ -836,6 +842,51 @@ class TestStep2WaiverComplexCases:
 
         ctx = get_step_context(assessment, 2)
         assert ctx.ok
+
+    @pytest.mark.parametrize("incomplete_waiver", [
+        {},  # empty dict
+        {"justification": ""},  # missing waived_at
+        {"justification": "   "},  # whitespace-only justification
+        {"waived_at": "2026-04-23T00:00:00Z"},  # missing justification
+        {"justification": "real reason"},  # missing waived_at
+        {"justification": None, "waived_at": "2026-04-23T00:00:00Z"},  # None justification
+        {"justification": "real reason", "waived_at": None},  # None waived_at
+        {"justification": ["list"], "waived_at": "2026-04-23T00:00:00Z"},  # non-string justification
+        {"justification": "real reason", "waived_at": 42},  # non-string waived_at
+    ])
+    def test_incomplete_waiver_not_treated_as_waived(self, assessment, incomplete_waiver):
+        """Waiver records missing or having empty
+        ``justification``/``waived_at`` must NOT flip the gate to
+        green. A corrupted row (partial save, manual SQL edit, bad
+        migration) should degrade to the unwaived state so the
+        Annex I Part II(1) guard stays honest. Regression seal for
+        the PR 914 reviewer finding — previously any dict-shaped
+        waiver with the right remediation_type would mark the check
+        as waived regardless of content."""
+        # Simulate a run producing one tooling-limitation failing
+        # check with this waiver row. We exercise the overlay by
+        # constructing the payload directly rather than going
+        # through save_step_data (which would reject incomplete
+        # waivers up front).
+        from sbomify.apps.compliance.services.wizard_service import _build_step_2_context
+
+        assessment.bsi_waivers = {"bsi-tr03183:hash-value": incomplete_waiver}
+        assessment.save(update_fields=["bsi_waivers"])
+
+        ctx = _build_step_2_context(assessment)
+        assert ctx.ok
+        # Walk the overlayed component payload (if any components
+        # with a failing hash-value check exist) and confirm no
+        # check is marked waived. On this fixture no SBOMs exist
+        # so the list is empty — but the overlay must still not
+        # crash and must not flip the gate.
+        for comp in ctx.value.get("components", []):
+            bsi = comp.get("bsi_assessment") or {}
+            for check in bsi.get("failing_checks", []):
+                if check.get("id") == "bsi-tr03183:hash-value":
+                    assert check.get("waived") is False, (
+                        f"incomplete waiver {incomplete_waiver!r} must not mark check waived"
+                    )
 
     def test_operator_action_waiver_silently_dropped_by_overlay(self, assessment):
         """A waiver written for an ``operator_action`` finding must

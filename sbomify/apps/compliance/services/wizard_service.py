@@ -263,17 +263,25 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             finding_id = check.get("id", "")
             waiver = waivers.get(finding_id)
             # Per-finding waiver entries should be dicts carrying
-            # ``justification`` / ``waived_at``. A non-dict slot is
-            # treated as "no waiver" rather than crashing on
-            # ``.get``: a corrupted row should degrade to the
-            # unwaived state, not break the render.
-            if isinstance(waiver, dict) and check.get("remediation_type") == "tooling_limitation":
+            # non-empty ``justification`` / ``waived_at`` values. A
+            # malformed or incomplete row (non-dict, missing fields,
+            # whitespace-only strings) degrades to "no waiver"
+            # rather than crashing on ``.get`` or incorrectly
+            # flipping the Annex I Part II(1) gate to green.
+            justification = ""
+            waived_at = ""
+            if isinstance(waiver, dict):
+                raw_j = waiver.get("justification", "")
+                raw_w = waiver.get("waived_at", "")
+                justification = raw_j.strip() if isinstance(raw_j, str) else ""
+                waived_at = raw_w.strip() if isinstance(raw_w, str) else ""
+            if check.get("remediation_type") == "tooling_limitation" and justification and waived_at:
                 # Only tooling-limitation findings can be waived;
                 # operator_action waivers are dropped to keep the
                 # Annex I Part II(1) guard honest.
                 check["waived"] = True
-                check["justification"] = waiver.get("justification", "")
-                check["waived_at"] = waiver.get("waived_at", "")
+                check["justification"] = justification
+                check["waived_at"] = waived_at
             else:
                 check["waived"] = False
                 unwaived_fail_count += 1
