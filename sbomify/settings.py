@@ -480,16 +480,17 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Logging config
 def _is_benign_shielded_future_error(record: logging.LogRecord) -> bool:
     # CancelledError comes from asgiref when clients disconnect mid-request;
-    # ConnectionClosedError from websockets on keepalive ping timeout.
+    # ConnectionClosed (and its subclasses ConnectionClosedError/ConnectionClosedOK)
+    # from websockets on keepalive ping timeout or normal client close.
     message = record.getMessage()
     return "exception in shielded future" in message and any(
-        exc in message for exc in ("CancelledError", "ConnectionClosedError")
+        exc in message for exc in ("CancelledError", "ConnectionClosed")
     )
 
 
+# Logging config
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -721,9 +722,10 @@ sentry_sdk.init(
     profiles_sample_rate=float(os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "0.1")),
     # CancelledError is expected under ASGI when clients disconnect mid-request.
     # On Python 3.14+ it's a BaseException that propagates through middleware.
-    # ConnectionClosedError is expected when WebSocket clients disconnect ungracefully
-    # (e.g., keepalive ping timeout, browser tab closed).
-    ignore_errors=[asyncio.CancelledError, "websockets.exceptions.ConnectionClosedError"],
+    # ConnectionClosed (and its ConnectionClosedError/ConnectionClosedOK subclasses)
+    # is expected when WebSocket clients disconnect (keepalive ping timeout, browser
+    # tab closed, network change).
+    ignore_errors=[asyncio.CancelledError, "websockets.exceptions.ConnectionClosed"],
 )
 
 
