@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from sbomify.settings import _is_benign_shielded_future_error
+from sbomify.logging_filters import is_benign_shielded_future_error
 
 
 def _make_record(message: str) -> logging.LogRecord:
@@ -33,4 +33,4 @@ def _make_record(message: str) -> logging.LogRecord:
 )
 def test_is_benign_shielded_future_error(message: str, expected_benign: bool) -> None:
     record = _make_record(message)
-    assert _is_benign_shielded_future_error(record) is expected_benign
+    assert is_benign_shielded_future_error(record) is expected_benign

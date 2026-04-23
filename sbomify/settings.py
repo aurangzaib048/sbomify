@@ -27,6 +27,7 @@ from sentry_sdk.integrations.dramatiq import DramatiqIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 
 from sbomify.apps.plugins.utils import get_sbomify_version
+from sbomify.logging_filters import is_benign_shielded_future_error
 
 ENV_FILE = find_dotenv()
 if ENV_FILE:
@@ -480,16 +481,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-def _is_benign_shielded_future_error(record: logging.LogRecord) -> bool:
-    # CancelledError comes from asgiref when clients disconnect mid-request;
-    # ConnectionClosed (and its subclasses ConnectionClosedError/ConnectionClosedOK)
-    # from websockets on keepalive ping timeout or normal client close.
-    message = record.getMessage()
-    return "exception in shielded future" in message and any(
-        exc in message for exc in ("CancelledError", "ConnectionClosed")
-    )
-
-
 # Logging config
 LOGGING = {
     "version": 1,
@@ -501,7 +492,7 @@ LOGGING = {
         # Only known-benign exception types are suppressed to preserve observability.
         "suppress_shielded_future_errors": {
             "()": "django.utils.log.CallbackFilter",
-            "callback": lambda record: not _is_benign_shielded_future_error(record),
+            "callback": lambda record: not is_benign_shielded_future_error(record),
         },
     },
     "handlers": {
