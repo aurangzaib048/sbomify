@@ -45,10 +45,9 @@ The object of the declaration described above is in conformity with Regulation (
     - {{ covered.cra_reference }}{% if covered.clause %} — *{{ covered.clause }}*{% endif %}{% if covered.summary %}: {{ covered.summary }}{% endif %}
 {% endfor %}
 {% if standard.restrictions %}
-
-    **Restrictions (OJ L_202500138):**
+    - **Restrictions (OJ L_202500138):**
 {% for restriction in standard.restrictions %}
-    - {{ restriction }}
+        - {{ restriction }}
 {% endfor %}
 {% endif %}
 {% endfor %}

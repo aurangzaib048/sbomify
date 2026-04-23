@@ -352,16 +352,24 @@ class CRAExportPackage(models.Model):
 
     @property
     def is_signed(self) -> bool:
-        """True when the package has a sigstore/cosign side-car in S3.
+        """True when a normalised ``signature_storage_key`` is recorded.
 
-        Matches the normalisation done by
+        Lightweight reflection of the model state — checks only that
+        ``signature_storage_key`` is a non-empty string after
+        whitespace normalisation. It does NOT verify the key's
+        prefix/suffix, absence of path-traversal segments, or the
+        existence of the corresponding ``.sig`` object in S3; that
+        stricter validation lives in
         :func:`sbomify.apps.compliance.services.export_service.get_signature_download_url`
-        — a whitespace-only storage key is truthy as a plain string
-        but not a real S3 key, so it must not make the package
-        appear signed. The API-level presign check enforces the
-        full prefix/suffix validation; keeping this model property
-        consistent prevents a ``.is_signed=True`` / ``signature_url``
-        absent divergence in the download response.
+        which is the security boundary the API uses before handing
+        out a presigned URL.
+
+        An invalid (non-empty but malformed) key therefore yields
+        ``is_signed=True`` while ``get_signature_download_url``
+        still returns ``None``. The download API handles this
+        asymmetry explicitly — if signature URL generation fails,
+        the ``signature`` block is omitted from the response so
+        clients never see a signed claim without a usable URL.
         """
         return bool((self.signature_storage_key or "").strip())
 

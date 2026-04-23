@@ -1823,6 +1823,44 @@ class TestStep2WaiverComplexCases:
     """Waiver flow — bad inputs + complex interactions with the
     Step 2 overlay that a reviewer flagged as easy-to-break."""
 
+    @pytest.mark.parametrize("corrupted", [None, [], "string", 42, True, False])
+    def test_corrupt_bsi_waivers_shape_does_not_break_render(self, assessment, corrupted):
+        """JSONField has no schema guard, so admin edits / raw SQL /
+        bad migrations could land a non-dict value into
+        ``bsi_waivers``. The Step 2 overlay must degrade to "no
+        waivers applied" rather than raise and 500 the whole
+        render. Regression seal for the PR 914 reviewer finding."""
+        assessment.bsi_waivers = corrupted  # type: ignore[assignment]
+        # Direct assignment + save to bypass the model field's
+        # default-dict coercion.
+        from django.db import connection
+        with connection.cursor() as cur:
+            cur.execute(
+                "UPDATE compliance_cra_assessments SET bsi_waivers = %s::jsonb WHERE id = %s",
+                [__import__("json").dumps(corrupted), assessment.id],
+            )
+        assessment.refresh_from_db()
+
+        ctx = get_step_context(assessment, 2)
+        # Must render without exception — treats corrupted value as {}.
+        assert ctx.ok
+
+    def test_corrupt_per_finding_waiver_entry_treated_as_no_waiver(self, assessment):
+        """Per-finding waiver entries should be dicts. A non-dict
+        entry (list / string / int sneaked in via admin edit) must
+        degrade to "no waiver" rather than crash on ``.get``. The
+        finding renders as unwaived-failing — the safe default that
+        keeps the Annex I Part II(1) gate honest."""
+        assessment.bsi_waivers = {
+            "bsi-tr03183:hash-value": ["not", "a", "dict"],
+            "bsi-tr03183:filename": "also not a dict",
+            "bsi-tr03183:executable-property": 42,
+        }
+        assessment.save(update_fields=["bsi_waivers"])
+
+        ctx = get_step_context(assessment, 2)
+        assert ctx.ok
+
     def test_operator_action_waiver_silently_dropped_by_overlay(self, assessment):
         """A waiver written for an ``operator_action`` finding must
         NOT mark the check as waived — those findings require the

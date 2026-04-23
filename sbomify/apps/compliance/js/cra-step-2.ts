@@ -80,11 +80,20 @@ function craStep2() {
     },
 
     hasFailingChecks(comp: ComponentStatus): boolean {
-      // Use the server-computed ``unwaived_fail_count`` (issue #907
+      // Raw predicate — true when there's any check in the
+      // failing_checks list, regardless of waived state. The
+      // "How to Fix" toggle and fixes panel use THIS so waived-
+      // only components remain expandable and operators can still
+      // review the waived findings + justifications for audit.
+      return !!(comp.bsi_assessment?.failing_checks?.length);
+    },
+
+    hasUnwaivedFailures(comp: ComponentStatus): boolean {
+      // Waiver-aware predicate — drives the pass/fail signal. Uses
+      // the server-computed ``unwaived_fail_count`` (issue #907
       // waiver overlay) so a component whose only failing checks
-      // are waived tooling limitations doesn't render as failing
-      // in the UI. Falls back to the pre-waiver count for older
-      // payloads that don't include the field.
+      // are waived tooling limitations renders as passing. Falls
+      // back to the pre-waiver count for older payloads.
       const bsi = comp.bsi_assessment;
       if (!bsi) return false;
       if (typeof bsi.unwaived_fail_count === 'number') {

@@ -240,7 +240,15 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
         return ServiceResult.failure(result.error or "Failed to get BSI status")
 
     payload: dict[str, Any] = dict(result.value or {})
-    waivers: dict[str, Any] = assessment.bsi_waivers or {}
+    # Defensive: ``bsi_waivers`` is a JSONField with no schema guard,
+    # so a corrupted row (admin edit, bad migration, hand-rolled
+    # SQL) could store a list/string/null where a dict is expected.
+    # Normalise to {} so ``.get`` / ``.items`` calls below don't
+    # raise and break the whole Step 2 render. The save path
+    # (``_save_step_2``) enforces dict shape on ingress; this guard
+    # is the ingress's complement on the read side.
+    raw_waivers = assessment.bsi_waivers
+    waivers: dict[str, Any] = raw_waivers if isinstance(raw_waivers, dict) else {}
 
     components: list[dict[str, Any]] = payload.get("components") or []
     summary: dict[str, Any] = payload.get("summary") or {}
@@ -254,7 +262,12 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
         for check in failing:
             finding_id = check.get("id", "")
             waiver = waivers.get(finding_id)
-            if waiver and check.get("remediation_type") == "tooling_limitation":
+            # Per-finding waiver entries should be dicts carrying
+            # ``justification`` / ``waived_at``. A non-dict slot is
+            # treated as "no waiver" rather than crashing on
+            # ``.get``: a corrupted row should degrade to the
+            # unwaived state, not break the render.
+            if isinstance(waiver, dict) and check.get("remediation_type") == "tooling_limitation":
                 # Only tooling-limitation findings can be waived;
                 # operator_action waivers are dropped to keep the
                 # Annex I Part II(1) guard honest.

@@ -613,17 +613,22 @@ def get_signature_download_url(package: CRAExportPackage) -> ServiceResult[str |
     """Generate a presigned URL for the side-car signature, if present.
 
     Returns ``ServiceResult.success(None)`` when the package wasn't
-    signed at export time (issue #906). The ``signature_storage_key``
-    field on :class:`CRAExportPackage` is the authoritative signal —
-    non-empty means the side-car exists in S3 and the download
-    endpoint can hand out a presigned URL to it.
+    signed at export time (issue #906) OR when the recorded
+    ``signature_storage_key`` fails validation. A package is treated
+    as signable only when ``signature_storage_key`` is non-empty
+    after whitespace normalisation AND
+    :func:`_is_valid_signature_key` accepts it as a
+    ``compliance/exports/*.sig`` object key. A merely non-empty DB
+    value is not enough — invalid or malformed keys (wrong prefix,
+    missing suffix, path-traversal, NUL bytes) are rejected and
+    return ``None`` too, with a warning log so operators can
+    investigate the corrupted row.
 
     The signature file inherits the same short TTL as the bundle
     itself; both belong to the same unauthenticated release window.
 
-    Defense-in-depth: we sanity-check that ``signature_storage_key``
-    sits under ``compliance/exports/`` and ends in ``.sig`` before
-    presigning. Admin-only writes mitigate today, but a DB-level
+    Defense-in-depth: the validation guard is the app-boundary
+    check. Admin-only writes mitigate today, but a DB-level
     corruption or a future policy change that opens the field would
     otherwise let someone point the side-car URL at an arbitrary
     S3 key. Rejection returns ``None`` so the client hides the
