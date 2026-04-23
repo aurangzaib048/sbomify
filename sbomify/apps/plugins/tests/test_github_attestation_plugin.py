@@ -591,6 +591,9 @@ class TestCosignVerification:
         assert "verify-blob-attestation" in call_args
         assert "--bundle" in call_args
         assert "--new-bundle-format" in call_args  # Required for Sigstore bundle v0.3 (used by GitHub)
+        assert "--type" in call_args
+        type_idx = call_args.index("--type")
+        assert call_args[type_idx + 1] == "slsaprovenance1"
         assert "/tmp/bundle.jsonl" in call_args
         assert "/tmp/sbom.json" in call_args
 
