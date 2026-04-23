@@ -93,13 +93,19 @@ function craStep2() {
       // the server-computed ``unwaived_fail_count`` (issue #907
       // waiver overlay) so a component whose only failing checks
       // are waived tooling limitations renders as passing. Falls
-      // back to the pre-waiver count for older payloads.
+      // back to the max of the run's summary fail_count and the
+      // per-finding list length when the overlay hasn't run —
+      // taking the higher value ensures a truncated payload where
+      // ``findings`` was dropped but ``summary`` survived doesn't
+      // silently flip a failing component to green.
       const bsi = comp.bsi_assessment;
       if (!bsi) return false;
       if (typeof bsi.unwaived_fail_count === 'number') {
         return bsi.unwaived_fail_count > 0;
       }
-      return !!(bsi.failing_checks?.length);
+      const summaryCount = typeof bsi.fail_count === 'number' ? bsi.fail_count : 0;
+      const listCount = bsi.failing_checks?.length ?? 0;
+      return Math.max(summaryCount, listCount) > 0;
     },
 
     hasWaivedChecks(comp: ComponentStatus): boolean {

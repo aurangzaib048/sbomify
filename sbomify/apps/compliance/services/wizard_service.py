@@ -285,6 +285,18 @@ def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             else:
                 check["waived"] = False
                 unwaived_fail_count += 1
+        # Cross-check the waiver-adjusted count against the run's
+        # own ``fail_count`` summary. If the run reports failures
+        # that didn't materialise as ``failing_checks`` entries
+        # (e.g. a truncated payload where ``findings`` was dropped
+        # but ``summary`` survived), trust the higher number so an
+        # unwaivable failure can't silently bypass the Annex I
+        # Part II(1) gate. The overlay adjustments below still
+        # apply — any trusted unwaived failure keeps
+        # ``effectively_passing`` false.
+        summary_fail_count = bsi.get("fail_count")
+        if isinstance(summary_fail_count, int) and summary_fail_count > unwaived_fail_count:
+            unwaived_fail_count = summary_fail_count
         bsi["unwaived_fail_count"] = unwaived_fail_count
         # Component now "effectively passing" if every failing check
         # is waived AND the scan itself completed + the format is

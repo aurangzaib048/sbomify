@@ -662,7 +662,7 @@ class TestBsiClassifierDefensive:
 
 
 # ---------------------------------------------------------------------------
-# Extra bad+complex coverage (PR 914 follow-up round)
+# Extra bad+complex coverage
 # ---------------------------------------------------------------------------
 
 
@@ -673,9 +673,9 @@ class TestAppliesWhenExtraAdversarial:
 
     def test_any_of_list_containing_non_dict_sub_rule_fails_closed(self):
         """``any_of: [{"k": 1}, "x", None]`` — the string/None are not
-        dicts and must not match on any facts. Today they fail the
-        ``isinstance(rule, dict)`` guard added in PR 914 and the
-        overall disjunction still honours the valid sibling."""
+        dicts and must not match on any facts. They fail the
+        ``isinstance(rule, dict)`` guard and the overall disjunction
+        still honours the valid sibling."""
         rule = {"any_of": [{"k": "ok"}, "bad", None, 42]}
         assert _evaluate_applies_when(rule, {"k": "ok"}) is True
         assert _evaluate_applies_when(rule, {"k": "nope"}) is False
@@ -743,7 +743,8 @@ class TestAppliesWhenExtraAdversarial:
 
 class TestBsiFindingIdCoercionEndToEnd:
     """The ``_build_bsi_assessment_dict`` path reads ``f.get('id', '')``
-    from run JSON. PR 914 hardened this to coerce non-string to "".
+    from run JSON. The classifier coerces non-string to "" so a
+    broken upstream plugin can't crash the whole scan classification.
     Cover every hostile shape that could be injected via a broken
     plugin or corrupted DB row."""
 
@@ -811,7 +812,7 @@ class TestStep2WaiverComplexCases:
         bad migrations could land a non-dict value into
         ``bsi_waivers``. The Step 2 overlay must degrade to "no
         waivers applied" rather than raise and 500 the whole
-        render. Regression seal for the PR 914 reviewer finding."""
+        render."""
         assessment.bsi_waivers = corrupted  # type: ignore[assignment]
         # Direct assignment + save to bypass the model field's
         # default-dict coercion.
@@ -859,10 +860,11 @@ class TestStep2WaiverComplexCases:
         ``justification``/``waived_at`` must NOT flip the gate to
         green. A corrupted row (partial save, manual SQL edit, bad
         migration) should degrade to the unwaived state so the
-        Annex I Part II(1) guard stays honest. Regression seal for
-        the PR 914 reviewer finding — previously any dict-shaped
-        waiver with the right remediation_type would mark the check
-        as waived regardless of content."""
+        Annex I Part II(1) guard stays honest. Previously any
+        dict-shaped waiver with the right remediation_type would
+        mark the check as waived regardless of content — this test
+        pins the stricter rule that both ``justification`` and
+        ``waived_at`` must be non-empty strings after strip."""
         # Simulate a run producing one tooling-limitation failing
         # check with this waiver row. We exercise the overlay by
         # constructing the payload directly rather than going
@@ -905,6 +907,78 @@ class TestStep2WaiverComplexCases:
         assessment.refresh_from_db()
         assert "bsi-tr03183:sbom-creator" in assessment.bsi_waivers
 
+    def test_summary_fail_count_above_list_length_blocks_gate(self, assessment):
+        """When a BSI run summary reports more failures than the
+        ``failing_checks`` list contains (truncated payload, bad
+        plugin, corrupted row), the Step 2 overlay must take the
+        higher value so phantom failures can't silently flip the
+        gate to green. Exercise the overlay directly because
+        constructing a real run with a mismatched summary is
+        awkward."""
+        from sbomify.apps.compliance.services.wizard_service import _build_step_2_context
+        from unittest.mock import patch
+        from sbomify.apps.core.services.results import ServiceResult
+
+        fake_payload = {
+            "components": [
+                {
+                    "component_id": "c1",
+                    "component_name": "broken",
+                    "has_sbom": True,
+                    "format_compliant": True,
+                    "bsi_assessment": {
+                        "status": "completed",
+                        # Summary claims 3 failures, but only 1 waived
+                        # finding materialised in ``failing_checks``.
+                        "fail_count": 3,
+                        "failing_checks": [
+                            {
+                                "id": "bsi-tr03183:hash-value",
+                                "remediation_type": "tooling_limitation",
+                                "title": "h",
+                                "description": "d",
+                                "remediation": "r",
+                                "guidance_url": "",
+                                "human_summary": "s",
+                            },
+                        ],
+                    },
+                }
+            ],
+            "summary": {
+                "total_components": 1,
+                "components_with_sbom": 1,
+                "components_passing_bsi": 0,
+                "overall_gate": False,
+            },
+        }
+
+        assessment.bsi_waivers = {
+            "bsi-tr03183:hash-value": {
+                "justification": "accepted tooling gap",
+                "waived_at": "2026-04-23T00:00:00Z",
+            }
+        }
+        assessment.save(update_fields=["bsi_waivers"])
+
+        with patch(
+            "sbomify.apps.compliance.services.wizard_service.get_bsi_assessment_status",
+            return_value=ServiceResult.success(fake_payload),
+        ):
+            ctx = _build_step_2_context(assessment)
+
+        assert ctx.ok
+        comp = ctx.value["components"][0]
+        bsi = comp["bsi_assessment"]
+        # All listed failing checks got waived by the overlay...
+        assert bsi["failing_checks"][0]["waived"] is True
+        # ...but the summary's larger fail_count wins: 3 phantom
+        # failures keep the component from being "effectively passing".
+        assert bsi["unwaived_fail_count"] == 3
+        assert comp["effectively_passing"] is False
+        # Product gate stays false — no component passes.
+        assert ctx.value["summary"]["overall_gate"] is False
+
     def test_unknown_finding_id_waiver_silently_dropped(self, assessment, sample_user):
         """Saving a waiver for an id that isn't in the BSI registry
         (typo, deprecated id) must be rejected at the save layer —
@@ -938,8 +1012,7 @@ class TestStep2WaiverComplexCases:
         rejected with 400, not silently coerced to an empty dict.
         The pre-fix code used ``data.get("waivers") or {}`` which
         cleared every existing waiver whenever the payload was a
-        falsy non-dict. Regression seal for the PR 914 reviewer
-        finding."""
+        falsy non-dict."""
         # Seed a real waiver so a silent-clear would be observable.
         save_step_data(
             assessment,

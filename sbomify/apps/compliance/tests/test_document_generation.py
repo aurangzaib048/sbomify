@@ -795,7 +795,7 @@ class TestEvaluateAppliesWhen:
     def test_empty_rule_vacuously_true(self):
         from sbomify.apps.compliance.services.document_generation_service import _evaluate_applies_when
 
-        # ``None`` now fails closed (PR 914) — the fail-closed policy
+        # ``None`` fails closed — the fail-closed policy
         # applies uniformly to non-dict rule shapes. Entries that
         # should always apply carry ``always_applicable: true`` in
         # the reference JSON and short-circuit at the caller before
