@@ -282,7 +282,11 @@ class TestSaveStepData:
         assert result.ok
         a = result.value
 
-        save = save_step_data(a, 1, {"product_category": "class_i"}, sample_user)
+        # Use ``default`` category so the Class I + Module A harmonised
+        # check (CRA Art 32(2)) introduced by the scope-screening work
+        # doesn't fire first — this test targets the placeholder-manufacturer
+        # guard (Annex V item 2) specifically.
+        save = save_step_data(a, 1, {"product_category": "default"}, sample_user)
 
         assert not save.ok
         assert save.status_code == 400

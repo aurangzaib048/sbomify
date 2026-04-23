@@ -260,7 +260,7 @@ class TestRedScopeServerEnforcement:
                 "processes_personal_data": True,
                 "handles_financial_value": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2030-01-01",
+                "support_period_end": "2032-01-01",
             },
             sample_user,
         )
@@ -282,7 +282,7 @@ class TestRedScopeServerEnforcement:
                 "processes_personal_data": True,
                 "handles_financial_value": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2030-01-01",
+                "support_period_end": "2032-01-01",
             },
             sample_user,
         )
@@ -303,7 +303,7 @@ class TestRedScopeServerEnforcement:
                 "is_radio_equipment": True,
                 "processes_personal_data": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2030-01-01",
+                "support_period_end": "2032-01-01",
             },
             sample_user,
         )
@@ -313,7 +313,7 @@ class TestRedScopeServerEnforcement:
         result = save_step_data(
             assessment,
             1,
-            {"is_radio_equipment": False, "target_eu_markets": ["DE"], "support_period_end": "2030-01-01"},
+            {"is_radio_equipment": False, "target_eu_markets": ["DE"], "support_period_end": "2032-01-01"},
             sample_user,
         )
         assert result.ok
@@ -346,7 +346,7 @@ class TestEn18031DoCRerender:
                 "product_category": "default",
                 "is_radio_equipment": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2030-01-01",
+                "support_period_end": "2032-01-01",
             },
             sample_user,
         )
