@@ -89,7 +89,7 @@
                                               class="tw-form-input w-full text-sm"
                                               placeholder="Add notes..."></textarea>
                                     {# Justification field for Part I controls marked not-applicable (CRA Art 13(4)) #}
-                                    <div x-show="!finding.is_mandatory && finding.status === 'not-applicable'"
+                                    <div x-show="showJustificationField(finding)"
                                          x-cloak
                                          class="p-3 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 rounded-lg">
                                         <label class="tw-form-label text-xs">Justification (required per CRA Art 13(4))</label>

@@ -377,6 +377,27 @@ class TestSaveStepData:
         assert not result.ok
         assert result.status_code == 400
 
+    def test_step_1_support_period_justification_length_cap(self, assessment, sample_user):
+        """4000-char cap mirrors the one on ``intended_use`` — a
+        ``TextField`` with no DB-side size limit would otherwise let a
+        client bloat the regulated-evidence row. Without the cap the
+        stored value is returned to every subsequent Step 1 GET and
+        dominates JSON serialisation time."""
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "x" * 4_001,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "4000-character cap" in (result.error or "")
+
     def test_step_1_rejects_non_eu_two_letter_code(self, assessment, sample_user):
         """EU-markets allowlist (P1). ``["XY"]`` passes the
         old length-only check but is not an EU member state; the DoC

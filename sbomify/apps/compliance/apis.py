@@ -222,7 +222,11 @@ def get_sbom_status(request: HttpRequest, assessment_id: str) -> _Response:
 def update_finding(
     request: HttpRequest, assessment_id: str, finding_id: str, payload: FindingUpdateSchema
 ) -> _Response:
-    """Update a single finding's status and notes."""
+    """Update a single finding's status, notes, and justification.
+
+    ``justification`` is required when a Part I control is marked
+    ``not-applicable`` (CRA Art 13(4)).
+    """
     result = _get_assessment_or_error(request, assessment_id)
     if not isinstance(result, CRAAssessment):
         return result

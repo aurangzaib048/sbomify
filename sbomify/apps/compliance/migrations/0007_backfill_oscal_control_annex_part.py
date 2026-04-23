@@ -19,9 +19,17 @@ def backfill_annex_part(apps, schema_editor):
       2. Fall back to ``group_id == "cra-vh"`` heuristic for catalog rows
          whose stored JSON predates the ``annex-part`` prop (legacy 1.0.0
          imports).
+
+    After the controls themselves are reclassified, any pre-existing
+    ``OSCALFinding`` that marked a now-mandatory Part II control as
+    ``not-applicable`` is reset to ``unanswered`` so the operator is
+    forced to re-evaluate it. CRA Art 13(4) does not allow vulnerability-
+    handling controls to be waived; leaving the old N/A status would
+    silently carry forward a non-compliant state across the upgrade.
     """
     OSCALCatalog = apps.get_model("compliance", "OSCALCatalog")
     OSCALControl = apps.get_model("compliance", "OSCALControl")
+    OSCALFinding = apps.get_model("compliance", "OSCALFinding")
 
     for catalog in OSCALCatalog.objects.filter(name="EU CRA Annex I"):
         # Build control_id → annex_part map from the catalog JSON's props.
@@ -42,6 +50,7 @@ def backfill_annex_part(apps, schema_editor):
         # Apply to every control row of this catalog. Use bulk_update to
         # avoid per-row UPDATE overhead on large catalogs.
         to_update = []
+        part_ii_control_pks: list = []
         for ctl in OSCALControl.objects.filter(catalog=catalog):
             # JSON-first, group_id heuristic second (legacy 1.0.0 imports
             # may lack the ``annex-part`` prop in their stored JSON).
@@ -52,8 +61,17 @@ def backfill_annex_part(apps, schema_editor):
             ctl.annex_part = derived
             ctl.is_mandatory = derived == "part-ii"
             to_update.append(ctl)
+            if derived == "part-ii":
+                part_ii_control_pks.append(ctl.pk)
         if to_update:
             OSCALControl.objects.bulk_update(to_update, ["annex_part", "is_mandatory"])
+
+        # Reset stale N/A findings on now-mandatory Part II controls.
+        if part_ii_control_pks:
+            OSCALFinding.objects.filter(
+                control_id__in=part_ii_control_pks,
+                status="not-applicable",
+            ).update(status="unanswered")
 
 
 def reverse_backfill(apps, schema_editor):

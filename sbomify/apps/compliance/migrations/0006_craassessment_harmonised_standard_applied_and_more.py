@@ -148,11 +148,6 @@ class Migration(migrations.Migration):
             ],
             options={
                 "db_table": "compliance_cra_scope_screenings",
-                "constraints": [
-                    models.UniqueConstraint(
-                        fields=("product",), name="unique_scope_screening_per_product"
-                    )
-                ],
             },
         ),
     ]

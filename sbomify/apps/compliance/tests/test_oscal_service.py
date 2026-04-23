@@ -286,6 +286,69 @@ class TestUpdateFinding:
 
 
 @pytest.mark.django_db
+class TestAnnexPartBackfillRemediation:
+    """Regression for the 0007 data migration: legacy findings that
+    were marked ``not-applicable`` against controls later classified as
+    Part II (``is_mandatory=True``) must be reset to ``unanswered`` so
+    the operator re-evaluates them. CRA Art 13(4) disallows marking
+    vulnerability-handling controls as N/A, so silently carrying the
+    legacy state forward across the upgrade would export a non-
+    compliant DoC.
+    """
+
+    def test_backfill_resets_na_findings_on_now_mandatory_controls(
+        self, sample_team_with_owner_member, sample_user, product
+    ):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        migration = importlib.import_module(
+            "sbomify.apps.compliance.migrations.0007_backfill_oscal_control_annex_part"
+        )
+        backfill_annex_part = migration.backfill_annex_part
+
+        catalog = ensure_cra_catalog()
+        team = sample_team_with_owner_member.team
+
+        # Seed a legacy state: Part II control marked as N/A, Part I
+        # control also marked as N/A (the latter must stay untouched).
+        ar = create_assessment_result(catalog, team, product, sample_user)
+        part_ii_ctl = OSCALControl.objects.filter(catalog=catalog, group_id="cra-vh").first()
+        part_i_ctl = OSCALControl.objects.filter(catalog=catalog).exclude(group_id="cra-vh").first()
+        assert part_ii_ctl is not None and part_i_ctl is not None
+        OSCALFinding.objects.filter(
+            assessment_result=ar, control=part_ii_ctl
+        ).update(status="not-applicable")
+        OSCALFinding.objects.filter(
+            assessment_result=ar, control=part_i_ctl
+        ).update(status="not-applicable", justification="Not applicable by design")
+
+        # Simulate the pre-0007 schema state where these fields exist
+        # but haven't been populated yet.
+        OSCALControl.objects.filter(catalog=catalog).update(
+            is_mandatory=False, annex_part="part-i"
+        )
+
+        backfill_annex_part(django_apps, schema_editor=None)
+
+        # Part II control now flagged mandatory and its legacy N/A
+        # finding is reset to ``unanswered`` so the operator re-evaluates.
+        part_ii_ctl.refresh_from_db()
+        assert part_ii_ctl.is_mandatory is True
+        assert part_ii_ctl.annex_part == "part-ii"
+        part_ii_finding = OSCALFinding.objects.get(assessment_result=ar, control=part_ii_ctl)
+        assert part_ii_finding.status == "unanswered"
+
+        # Part I control stays Part I and its N/A finding is preserved.
+        part_i_ctl.refresh_from_db()
+        assert part_i_ctl.is_mandatory is False
+        assert part_i_ctl.annex_part == "part-i"
+        part_i_finding = OSCALFinding.objects.get(assessment_result=ar, control=part_i_ctl)
+        assert part_i_finding.status == "not-applicable"
+
+
+@pytest.mark.django_db
 class TestBuildTrestleAssessmentResults:
     def test_produces_valid_oscal(self, sample_team_with_owner_member, sample_user, product):
         catalog = ensure_cra_catalog()

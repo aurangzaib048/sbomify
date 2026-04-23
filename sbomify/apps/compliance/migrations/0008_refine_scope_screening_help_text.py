@@ -10,10 +10,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RemoveConstraint(
-            model_name="crascopescreening",
-            name="unique_scope_screening_per_product",
-        ),
         migrations.AlterField(
             model_name="crascopescreening",
             name="has_data_connection",

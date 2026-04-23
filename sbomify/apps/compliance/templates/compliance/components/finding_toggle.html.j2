@@ -16,9 +16,9 @@
     <button type="button"
             @click="setFindingStatus(finding, 'not-applicable')"
             :disabled="finding.is_mandatory"
-            :class="finding.status === 'not-applicable' ? 'bg-text text-surface border-text' : finding.is_mandatory ? 'bg-surface text-text-muted/30 border-border cursor-not-allowed' : 'bg-surface text-text-muted border-border hover:bg-surface-hover hover:text-text dark:hover:bg-gray-800/50'"
+            :class="finding.status === 'not-applicable' ? 'bg-text text-surface border-text' : _pendingNA[finding.finding_id] ? 'bg-amber-100 text-amber-900 border-amber-400 dark:bg-amber-900/40 dark:text-amber-100 dark:border-amber-500' : finding.is_mandatory ? 'bg-surface text-text-muted/30 border-border cursor-not-allowed' : 'bg-surface text-text-muted border-border hover:bg-surface-hover hover:text-text dark:hover:bg-gray-800/50'"
             class="-ml-px px-2.5 py-1 text-xs font-medium rounded-r-md border transition-colors focus:outline-none whitespace-nowrap"
-            :title="finding.is_mandatory ? 'Part II controls are always mandatory (CRA Art 13(4))' : 'Mark as not applicable'">
+            :title="finding.is_mandatory ? 'Part II controls are always mandatory (CRA Art 13(4))' : _pendingNA[finding.finding_id] ? 'Awaiting justification — provide one to commit N/A' : 'Mark as not applicable'">
         N/A
     </button>
 </div>

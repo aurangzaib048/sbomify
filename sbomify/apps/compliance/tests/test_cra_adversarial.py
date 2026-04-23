@@ -24,9 +24,22 @@ silently doing the wrong thing on regulated-evidence output.
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from sbomify.apps.compliance.models import CRAAssessment
+
+
+def _support_end_beyond_five_years() -> str:
+    """Return a ``support_period_end`` that always passes the CRA Art 13(8)
+    5-year minimum, regardless of wall-clock drift. Using a fixed literal
+    like ``2032-01-01`` silently fails the test suite once today + 5 years
+    crosses that date. Anchor to January 1 of (current year + 6) so the
+    suite stays green for at least the full year it was generated in and
+    avoids the Feb 29 leap-year trap.
+    """
+    return f"{datetime.date.today().year + 6}-01-01"
 from sbomify.apps.compliance.services.document_generation_service import (
     _assessment_facts,
     _evaluate_applies_when,
@@ -260,7 +273,7 @@ class TestRedScopeServerEnforcement:
                 "processes_personal_data": True,
                 "handles_financial_value": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2032-01-01",
+                "support_period_end": _support_end_beyond_five_years(),
             },
             sample_user,
         )
@@ -282,7 +295,7 @@ class TestRedScopeServerEnforcement:
                 "processes_personal_data": True,
                 "handles_financial_value": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2032-01-01",
+                "support_period_end": _support_end_beyond_five_years(),
             },
             sample_user,
         )
@@ -303,7 +316,7 @@ class TestRedScopeServerEnforcement:
                 "is_radio_equipment": True,
                 "processes_personal_data": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2032-01-01",
+                "support_period_end": _support_end_beyond_five_years(),
             },
             sample_user,
         )
@@ -313,7 +326,7 @@ class TestRedScopeServerEnforcement:
         result = save_step_data(
             assessment,
             1,
-            {"is_radio_equipment": False, "target_eu_markets": ["DE"], "support_period_end": "2032-01-01"},
+            {"is_radio_equipment": False, "target_eu_markets": ["DE"], "support_period_end": _support_end_beyond_five_years()},
             sample_user,
         )
         assert result.ok
@@ -346,7 +359,7 @@ class TestEn18031DoCRerender:
                 "product_category": "default",
                 "is_radio_equipment": True,
                 "target_eu_markets": ["DE"],
-                "support_period_end": "2032-01-01",
+                "support_period_end": _support_end_beyond_five_years(),
             },
             sample_user,
         )

@@ -207,8 +207,19 @@ class CRAScopeScreeningView(LoginRequiredMixin, View):
 
         try:
             data = json.loads(request.body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # ``UnicodeDecodeError`` is raised when ``request.body`` is
+            # not valid UTF-8 — still a 400-class client error, not a
+            # 500. Combining both keeps the view from crashing on any
+            # malformed POST body.
             return HttpResponse("Invalid JSON", status=400)
+
+        # Shape guard: ``json.loads`` can legally return a list, string,
+        # number, bool, or None. Every field-access below assumes a
+        # dict, so reject anything else with 400 before ``data.get(...)``
+        # raises ``AttributeError`` and surfaces as a 500.
+        if not isinstance(data, dict):
+            return HttpResponse("Request body must be a JSON object", status=400)
 
         # Length caps on free-text fields (CWE-400). ``screening_notes``
         # is a ``TextField`` and ``exempted_legislation_name`` is a

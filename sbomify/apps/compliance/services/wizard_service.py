@@ -731,6 +731,11 @@ def _save_step_1(
     # the gate via the stored non-empty value.
     if "support_period_short_justification" in data:
         raw = data["support_period_short_justification"]
+        if isinstance(raw, str) and len(raw) > _MAX_STEP_1_TEXT_CHARS:
+            return ServiceResult.failure(
+                f"support_period_short_justification exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
+                status_code=400,
+            )
         assessment.support_period_short_justification = raw if isinstance(raw, str) else ""
 
     # Handle conformity procedure selection (CRA Art 32(1-5))
