@@ -479,7 +479,17 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
 # Logging config
+def _is_benign_shielded_future_error(record: logging.LogRecord) -> bool:
+    # CancelledError comes from asgiref when clients disconnect mid-request;
+    # ConnectionClosedError from websockets on keepalive ping timeout.
+    message = record.getMessage()
+    return "exception in shielded future" in message and any(
+        exc in message for exc in ("CancelledError", "ConnectionClosedError")
+    )
+
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -487,18 +497,10 @@ LOGGING = {
         "default": {"format": "%(asctime)s:%(name)s:%(levelname)s:%(message)s"},
     },
     "filters": {
-        # Suppress known-benign "… exception in shielded future" messages from the
-        # asyncio logger. CancelledError comes from asgiref when clients disconnect
-        # mid-request; ConnectionClosedError from websockets on keepalive ping timeout.
-        # Only these two exception types are suppressed to preserve observability.
+        # Only known-benign exception types are suppressed to preserve observability.
         "suppress_shielded_future_errors": {
             "()": "django.utils.log.CallbackFilter",
-            "callback": lambda record: (
-                not (
-                    "exception in shielded future" in record.getMessage()
-                    and any(exc in record.getMessage() for exc in ("CancelledError", "ConnectionClosedError"))
-                )
-            ),
+            "callback": lambda record: not _is_benign_shielded_future_error(record),
         },
     },
     "handlers": {
