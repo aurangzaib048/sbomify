@@ -44,6 +44,13 @@ dependencies = [
     "compliance-trestle>=4.0.1,<5",
     "posthog>=3.20.0,<8",
     "tzdata>=2025.2",
+    # Used by the pre-existing ``sbomify.apps.plugins.builtins.verification``
+    # plugin to verify user-uploaded SBOM cosign attestations (a different
+    # feature from CRA export signing, which was dropped from this PR).
+    # The plugin has a ``try/except ImportError`` fallback, but installing
+    # the library lets it actually perform signature verification instead
+    # of always reporting "library not available".
+    "sigstore>=4.2.0",
 ]
 
 [project.urls]
