@@ -35,32 +35,141 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "document_templates"
 
 
+def _assessment_facts(assessment: CRAAssessment) -> dict[str, Any]:
+    """Extract the facts used by ``applies_when`` rule evaluation.
+
+    Centralised so the same fact set is built once per selection pass
+    and the rule vocabulary is discoverable in one place. The keys
+    here MUST match the predicate keys used in
+    ``cra-harmonised-standards.json`` ``applies_when`` rules —
+    ``product_category``, ``processes_personal_data``, etc.
+
+    Note ``product_category`` is overloaded: ``CRAAssessment.product_category``
+    is the CRA risk tier (Default / Class I / II / Critical), but the
+    harmonised-standards rules key on product *type* ("radio_equipment",
+    "operating_system"). We surface ``"radio_equipment"`` when the
+    RED flag is set and fall back to the raw CRA tier otherwise.
+    """
+    return {
+        "product_category": "radio_equipment" if assessment.is_radio_equipment else assessment.product_category,
+        "processes_personal_data": bool(assessment.processes_personal_data),
+        "handles_financial_value": bool(assessment.handles_financial_value),
+        # Operator explicit opt-in is not a separate field today —
+        # it's implied by ``is_radio_equipment``. Reserved for a
+        # future "claim presumption of conformity without RED
+        # classification" path (out of scope for #905).
+        "operator_opt_in": False,
+    }
+
+
+_COMBINATORS = frozenset({"any_of", "all_of"})
+
+
+def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -> bool:
+    """Evaluate a single ``applies_when`` rule against assessment facts.
+
+    Supported shapes (mutually exclusive at each level):
+
+    - ``{"any_of": [rule, rule, ...]}`` — OR over sub-rules.
+    - ``{"all_of": [rule, rule, ...]}`` — AND over sub-rules.
+    - ``{"<key>": <expected>, ...}`` — equality predicate; ALL pairs
+      must match (implicit AND across siblings).
+    - ``{}`` — vacuously true.
+
+    Any non-dict rule shape — including ``None``, ``[]``, scalars,
+    non-list combinator payloads — fails closed and returns
+    ``False``. Entries that should always apply must carry
+    ``always_applicable: true`` in the reference JSON; the caller
+    short-circuits on that flag before invoking this evaluator, so
+    ``applies_when: null`` here is a typo rather than
+    "always applies".
+
+    Combinators and equality predicates **cannot be mixed at the
+    same level**. ``{"any_of": [...], "product_category": "x"}``
+    would silently drop the ``product_category`` check under a
+    "combinator wins" resolution; we fail closed instead and force
+    the rule author to nest the equality inside an ``all_of``. The
+    JSON is code-controlled, but this is a real footgun for future
+    rule writers and reviewers.
+
+    A missing key in the facts dict fails the predicate — unknown
+    predicates fail closed so a typo in the JSON doesn't silently
+    open up an unintended match.
+    """
+    # Fail closed on any non-dict rule shape. A valid-but-malformed
+    # reference JSON (``applies_when: []``, ``applies_when: "x"``,
+    # ``applies_when: null``) would otherwise either short-circuit
+    # to True or crash on ``.keys()``; both are unsafe for a CRA
+    # DoC. Entries that should "always apply" set
+    # ``always_applicable: true`` in the JSON and short-circuit at
+    # the caller (see ``_select_applied_standards``) before this
+    # evaluator runs — so ``None`` here is "no predicate was
+    # authored" which we treat as fail-closed at the recursive
+    # level. An empty dict ``{}`` remains True (vacuous) to match
+    # the standard rule-tree semantics.
+    if not isinstance(rule, dict):
+        return False
+    if not rule:
+        return True
+    combinator_keys = _COMBINATORS & rule.keys()
+    if combinator_keys and len(rule) > 1:
+        # Mixed shape — reject. Fails closed, matching the
+        # "unknown predicate fails closed" policy.
+        return False
+    if "any_of" in rule:
+        sub_rules = rule["any_of"]
+        if not isinstance(sub_rules, list):
+            # Non-list combinator payload — fail closed rather than
+            # raising ``TypeError: 'str' object is not iterable`` or
+            # worse, silently iterating the characters of a string.
+            return False
+        return any(_evaluate_applies_when(sub, facts) for sub in sub_rules)
+    if "all_of" in rule:
+        sub_rules = rule["all_of"]
+        if not isinstance(sub_rules, list):
+            return False
+        return all(_evaluate_applies_when(sub, facts) for sub in sub_rules)
+    for key, expected in rule.items():
+        if facts.get(key) != expected:
+            return False
+    return True
+
+
 def _select_applied_standards(assessment: CRAAssessment) -> list[dict[str, Any]]:
     """Select the standards applicable to this assessment.
 
-    Always includes the CRA regulation itself and BSI TR-03183-2 (SBOM
-    format reference). The reference JSON also carries ``applies_when``
-    rule trees for harmonised RED standards (EN 18031-1/-2/-3) and for
-    the draft ETSI EN 304 626 operating-systems standard, but those
-    rules are NOT evaluated yet — see
-    https://github.com/sbomify/sbomify/issues/905 for the wizard
-    opt-in work that will wire them in. Today this predicate only
-    honours ``always_applicable`` so the selection stays conservative:
-    a DoC will never claim presumption of conformity against EN 18031
-    without explicit operator intent.
+    Always includes entries flagged ``always_applicable`` (CRA itself,
+    BSI TR-03183-2). Additional entries with an ``applies_when`` rule
+    tree (EN 18031-1/-2/-3) are included when the rule evaluates true
+    against the assessment's facts. Draft standards (id contains
+    ``draft``) are excluded regardless of the rule — presumption of
+    conformity attaches to OJ-published standards only. ETSI EN
+    304 626 stays hidden until promoted (issue tracked separately).
+
+    Each returned entry carries ``harmonised`` so the DoC template
+    can render "presumption of conformity" language next to true
+    harmonised standards, and any ``restrictions`` text so the
+    operator sees the OJ L_202500138 caveats (e.g. the default-
+    password disqualifier on EN 18031-1 §6.2.5) inline with the claim.
     """
     data = _load_harmonised_standards()
+    facts = _assessment_facts(assessment)
     applied: list[dict[str, Any]] = []
     for std in data.get("standards", []):
-        if std.get("always_applicable"):
-            applied.append(
-                {
-                    "citation": std.get("citation", ""),
-                    "url": std.get("url", ""),
-                    "harmonised": bool(std.get("harmonised", False)),
-                    "cra_requirements_covered": std.get("cra_requirements_covered", []),
-                }
-            )
+        include = bool(std.get("always_applicable")) or _evaluate_applies_when(std.get("applies_when"), facts)
+        if not include:
+            continue
+        if "draft" in std.get("id", ""):
+            continue
+        applied.append(
+            {
+                "citation": std.get("citation", ""),
+                "url": std.get("url", ""),
+                "harmonised": bool(std.get("harmonised", False)),
+                "cra_requirements_covered": std.get("cra_requirements_covered", []),
+                "restrictions": std.get("restrictions", []),
+            }
+        )
     return applied
 
 

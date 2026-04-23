@@ -46,6 +46,14 @@ function craStep1() {
     manufacturerIsPlaceholder: false as boolean,
     category: 'default',
     isOpenSourceSteward: false,
+    // EN 18031 applicability flags (issue #905). Orthogonal to the
+    // CRA risk-tier ``category`` — a Class I product may or may not
+    // be radio equipment. Ticking ``isRadioEquipment`` triggers
+    // EN 18031-1 in the DoC; pairing it with the scope flags below
+    // pulls in EN 18031-2 / -3.
+    isRadioEquipment: false,
+    processesPersonalData: false,
+    handlesFinancialValue: false,
     euMarkets: [] as string[],
     supportPeriodEnd: '',
     intendedUse: '',
@@ -63,6 +71,9 @@ function craStep1() {
         this.manufacturerIsPlaceholder = Boolean(d.manufacturer_is_placeholder);
         this.category = (d.product_category as string) || 'default';
         this.isOpenSourceSteward = !!(d.is_open_source_steward);
+        this.isRadioEquipment = !!(d.is_radio_equipment);
+        this.processesPersonalData = !!(d.processes_personal_data);
+        this.handlesFinancialValue = !!(d.handles_financial_value);
         this.euMarkets = (d.target_eu_markets as string[]) || [];
         this.supportPeriodEnd = (d.support_period_end as string) || '';
         this.intendedUse = (d.intended_use as string) || '';
@@ -70,6 +81,25 @@ function craStep1() {
           (d.conformity_assessment_procedure as string) || '';
       }
       this.assessmentId = getAssessmentId();
+      // EN 18031-2/-3 only apply to radio equipment (issue #905).
+      // When the operator un-ticks ``isRadioEquipment`` the two
+      // dependent scope flags must follow — the template disables
+      // them but the bound values survive, which persists an
+      // inconsistent state and renders as "disabled-but-checked"
+      // on the next page load. The backend's _save_step_1 already
+      // clears these defensively; this mirror prevents the stale
+      // tick from reaching the save call in the first place.
+      // Uses Alpine's $watch, typed here via `this` cast because
+      // registerAlpineComponent doesn't propagate Alpine's magics.
+      (this as unknown as { $watch: (prop: string, cb: (val: unknown) => void) => void }).$watch(
+        'isRadioEquipment',
+        (val: unknown) => {
+          if (!val) {
+            this.processesPersonalData = false;
+            this.handlesFinancialValue = false;
+          }
+        },
+      );
     },
 
     get canContinue(): boolean {
@@ -120,6 +150,9 @@ function craStep1() {
       await saveStepAndNavigate(this.assessmentId, 1, {
         product_category: this.category,
         is_open_source_steward: this.isOpenSourceSteward,
+        is_radio_equipment: this.isRadioEquipment,
+        processes_personal_data: this.processesPersonalData,
+        handles_financial_value: this.handlesFinancialValue,
         target_eu_markets: this.euMarkets,
         support_period_end: this.supportPeriodEnd,
         intended_use: this.intendedUse,

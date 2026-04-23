@@ -455,7 +455,6 @@ class TestDownloadExport:
         assert response["Cache-Control"] == "no-store"
         assert response["Pragma"] == "no-cache"
 
-
 class TestStaleness:
     def test_returns_staleness_info(self, authenticated_api_client, assessment):
         client, token = authenticated_api_client

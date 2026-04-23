@@ -279,6 +279,65 @@ class TestSaveStepData:
         assert result.ok
         assert 2 in result.value.completed_steps
 
+    def test_step_2_accepts_tooling_limitation_waiver(self, assessment, sample_user):
+        """Issue #907: operator can waive a tooling-limitation
+        finding by supplying a justification. The waiver is stamped
+        with timestamp + user id for audit."""
+        data = {
+            "waivers": {
+                "bsi-tr03183:hash-value": {
+                    "justification": "Accepted — syft does not emit SHA-512 for apt packages.",
+                }
+            }
+        }
+        result = save_step_data(assessment, 2, data, sample_user)
+
+        assert result.ok
+        waivers = result.value.bsi_waivers
+        assert "bsi-tr03183:hash-value" in waivers
+        assert waivers["bsi-tr03183:hash-value"]["justification"].startswith("Accepted")
+        assert waivers["bsi-tr03183:hash-value"]["waived_at"]
+        assert waivers["bsi-tr03183:hash-value"]["waived_by"] == sample_user.id
+
+    def test_step_2_rejects_operator_action_waiver(self, assessment, sample_user):
+        """Waiver is only valid for tooling_limitation findings.
+        Attempting to waive an operator_action finding (e.g. missing
+        SBOM creator) returns 400 — the gap would represent a genuine
+        Annex I Part II(1) deficiency that must be fixed."""
+        data = {
+            "waivers": {
+                "bsi-tr03183:sbom-creator": {"justification": "we don't feel like it"}
+            }
+        }
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+        assert "cannot be waived" in (result.error or "")
+
+    def test_step_2_rejects_unknown_finding_id(self, assessment, sample_user):
+        """Typos in the waiver payload must not silently poison the
+        ``bsi_waivers`` map. Only ids in the classifier whitelist
+        are accepted."""
+        data = {"waivers": {"bsi-tr03183:does-not-exist": {"justification": "x"}}}
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_2_rejects_empty_justification(self, assessment, sample_user):
+        """Auditable waivers need a reason text. Empty / whitespace-
+        only justification rejects so Annex VII documentation can
+        explain why a tooling gap was accepted."""
+        data = {"waivers": {"bsi-tr03183:hash-value": {"justification": "   "}}}
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+        assert "justification" in (result.error or "").lower()
+
+    def test_step_2_rejects_non_object_waivers_payload(self, assessment, sample_user):
+        result = save_step_data(assessment, 2, {"waivers": "not-a-dict"}, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+
     def test_step_3_updates_findings(self, assessment, sample_user):
         finding = OSCALFinding.objects.filter(assessment_result=assessment.oscal_assessment_result).first()
 

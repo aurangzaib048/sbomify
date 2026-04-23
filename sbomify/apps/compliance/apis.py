@@ -391,6 +391,10 @@ def create_export(request: HttpRequest, assessment_id: str) -> _Response:
 def download_export(request: HttpRequest, response: HttpResponse, assessment_id: str, package_id: str) -> _Response:
     """Get a short-lived presigned download URL for an export package.
 
+    Response shape (200):
+
+    - ``download_url``: presigned URL for the ZIP.
+
     The response carries ``Cache-Control: no-store`` and
     ``Pragma: no-cache`` so intermediate caches (Caddy, corporate
     proxies, browser) don't retain the presigned URL past its server

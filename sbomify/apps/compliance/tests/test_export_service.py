@@ -651,6 +651,15 @@ class TestIntegrityReadmeFormatVersion:
         assert "`metadata/manifest.sha256`" in readme
         assert "`metadata/INTEGRITY.md`" in readme
 
+    def test_readme_references_downstream_signing(self):
+        """README carries the "About signatures" section pointing
+        operators at ``cosign sign-blob`` / ``gpg --detach-sign`` as
+        the downstream-signing path. Bundle signing itself is not
+        implemented in-tree."""
+        readme = _integrity_readme("deadbeef" * 8)
+        assert "About signatures" in readme
+        assert "cosign sign-blob" in readme
+
 
 @pytest.mark.django_db
 class TestGetDownloadUrl:

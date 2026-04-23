@@ -142,6 +142,60 @@
                     </div>
                 </div>
             </div>
+            {# Harmonised Standards Applicability (EN 18031 opt-in — issue #905) #}
+            <div class="tw-card">
+                <div class="px-6 py-4 border-b border-border">
+                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                        <i class="fas fa-broadcast-tower text-primary"></i>
+                        Harmonised Standards Applicability
+                    </h2>
+                    <p class="text-sm text-text-muted mt-1">
+                        Optional. Tick the boxes that apply to claim presumption of conformity under the
+                        EN 18031 harmonised standards on the Declaration of Conformity.
+                    </p>
+                </div>
+                <div class="p-6 space-y-3">
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer">
+                        <input type="checkbox"
+                               x-model="isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Radio equipment under the RED</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-1 (RED Article 3(3)(d)) — access control, authentication, secure update, cryptography.</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer"
+                           :class="!isRadioEquipment ? 'opacity-50 cursor-not-allowed' : ''">
+                        <input type="checkbox"
+                               x-model="processesPersonalData"
+                               :disabled="!isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Processes personal data</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-2 (RED Article 3(3)(e)) — data minimisation, GDPR alignment. Requires RED.</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer"
+                           :class="!isRadioEquipment ? 'opacity-50 cursor-not-allowed' : ''">
+                        <input type="checkbox"
+                               x-model="handlesFinancialValue"
+                               :disabled="!isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Handles monetary value or virtual currency</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-3 (RED Article 3(3)(f)) — protection from fraud. Requires RED.</span>
+                        </span>
+                    </label>
+                    <div x-show="isRadioEquipment" x-cloak class="tw-alert tw-alert-info">
+                        <i class="fas fa-circle-info tw-alert-icon"></i>
+                        <div class="tw-alert-content">
+                            <p class="opacity-80 m-0">
+                                The DoC will carry the OJ L_202500138 restriction notes — review them before export. Products that allow the user not to set any password cannot claim presumption of conformity for EN 18031-1, EN 18031-2, and EN 18031-3 in respect of clauses 6.2.5.1 and 6.2.5.2.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
             {# EU Market Selection #}
             <div class="tw-card">
                 <div class="px-6 py-4 border-b border-border">

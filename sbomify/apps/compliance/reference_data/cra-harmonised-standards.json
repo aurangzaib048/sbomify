@@ -1,7 +1,7 @@
 {
   "format_version": "1.0",
   "description": "Reference map of standards that contribute evidence for CRA (Regulation (EU) 2024/2847) compliance. The CRA's own harmonised standards are not yet published; the EN 18031 series (published in OJ L_202500138, 28 Jan 2025) currently carries the presumption of conformity for the Radio Equipment Directive and ENISA explicitly maps its requirements onto CRA Annex I Part I (2)(a)-(m). BSI TR-03183-2 is the de-facto reference for the CRA Annex I Part II(1) SBOM format requirement. CEN/CENELEC is drafting CRA-specific harmonised standards (ETSI EN 304 626 etc.) which will be added here as they are published.",
-  "applies_when_status": "reserved — see https://github.com/sbomify/sbomify/issues/905. The `applies_when` rule trees on non-`always_applicable` standards document the selection logic that will be wired into `document_generation_service._select_applied_standards` once the CRA wizard gains a product-classification flag. Today the predicate only honours `always_applicable`; consumers MUST NOT rely on `applies_when` being evaluated.",
+  "applies_when_status": "evaluated — `document_generation_service._evaluate_applies_when` walks the rule tree against facts extracted from the assessment (see `_assessment_facts`). Supported combinators: `any_of`, `all_of`, and equality predicates over one or more keys at the same level (implicit AND across keys), with arbitrary nesting. Unknown predicate keys fail closed (never match), so a typo in this file cannot silently open up an unintended claim. Mixed-shape rules (a combinator plus sibling equality keys) are rejected so authors must nest predicates explicitly. Draft standards (id contains `draft`) are additionally filtered out regardless of rule evaluation — they never reach the DoC until OJ-listed and the `draft` token is dropped from their id.",
   "last_reviewed": "2026-04-21",
   "sources": [
     {
@@ -90,6 +90,9 @@
       },
       "cra_requirements_covered": [
         {"cra_reference": "Annex I, Part I, §2(l)", "clause": "EN 18031-2 (whole)", "summary": "Processing of personal data limited to what is necessary for the intended use (data minimisation)."}
+      ],
+      "restrictions": [
+        "Clauses 6.2.5.1 and 6.2.5.2 (default passwords): manufacturers that allow the user not to set any password cannot claim presumption of conformity for the corresponding RED / CRA authentication requirement. See OJ L_202500138 Annex — the restriction applies to EN 18031-1, -2, and -3 equally."
       ]
     },
     {
@@ -106,6 +109,9 @@
       },
       "cra_requirements_covered": [
         {"cra_reference": "Annex I, Part I, §2(m)", "clause": "EN 18031-3 (whole)", "summary": "Protection from fraud for products handling monetary value or virtual currency."}
+      ],
+      "restrictions": [
+        "Clauses 6.2.5.1 and 6.2.5.2 (default passwords): manufacturers that allow the user not to set any password cannot claim presumption of conformity for the corresponding RED / CRA authentication requirement. See OJ L_202500138 Annex — the restriction applies to EN 18031-1, -2, and -3 equally."
       ]
     },
     {

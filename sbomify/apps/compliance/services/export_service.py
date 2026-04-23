@@ -338,9 +338,14 @@ def build_export_package(
 
         # 8. Self-hash of the manifest so a consumer can verify the
         # manifest hasn't been altered before trusting its per-file
-        # hashes. We don't ship a cryptographic signature (operators
-        # that need one apply cosign / PGP over the whole ZIP downstream),
-        # but a self-hash is the minimum useful integrity signal.
+        # hashes. This export does not sign the bundle itself here;
+        # as documented in ``metadata/INTEGRITY.md``, operators who
+        # need stronger whole-package provenance guarantees should
+        # sign the final ZIP downstream (cosign sign-blob, gpg
+        # --detach-sign) and distribute the detached signature
+        # alongside the bundle. The self-hash therefore bounds the
+        # manifest's integrity, while any whole-package provenance
+        # guarantee comes from downstream signing.
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         # The checksum file declares the manifest path as
         # ``metadata/manifest.json`` (relative to the bundle root, not

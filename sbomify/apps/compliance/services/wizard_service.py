@@ -47,6 +47,12 @@ _CATEGORY_PROCEDURE_MAP: dict[str, str] = {
 
 WIZARD_STEPS = (1, 2, 3, 4, 5)
 
+# Cap on the waiver justification text (issue #907). The field lives
+# in a JSONField which has no length constraint; an unbounded value
+# would bloat the row and could DoS JSON serialisation. 2 KB is
+# generous for a one-paragraph audit explanation.
+_MAX_WAIVER_JUSTIFICATION_CHARS = 2_000
+
 
 def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
     """Populate security contact and CSIRT email from existing contact profiles."""
@@ -208,16 +214,110 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "product_category": assessment.product_category,
             "is_open_source_steward": assessment.is_open_source_steward,
             "conformity_assessment_procedure": assessment.conformity_assessment_procedure,
+            # EN 18031 applicability flags (issue #905). Orthogonal to
+            # ``product_category``; surface separately so the wizard
+            # renders both a CRA risk-tier selector and a RED-scope
+            # checklist.
+            "is_radio_equipment": assessment.is_radio_equipment,
+            "processes_personal_data": assessment.processes_personal_data,
+            "handles_financial_value": assessment.handles_financial_value,
         }
     )
 
 
 def _build_step_2_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
-    """Step 2: SBOM Compliance (BSI TR-03183-2)."""
+    """Step 2: SBOM Compliance (BSI TR-03183-2).
+
+    Overlays the BSI findings with any tooling-limitation waivers
+    persisted on the assessment (issue #907). A waived finding is
+    flagged on the payload (``waived: true`` plus ``justification``)
+    so the template can render it as "accepted" instead of "failing".
+    The overall gate also recomputes — a product whose only failing
+    checks are all waived passes Step 2.
+    """
     result = get_bsi_assessment_status(assessment.product)
     if not result.ok:
         return ServiceResult.failure(result.error or "Failed to get BSI status")
-    return ServiceResult.success(result.value)
+
+    payload: dict[str, Any] = dict(result.value or {})
+    # Defensive: ``bsi_waivers`` is a JSONField with no schema guard,
+    # so a corrupted row (admin edit, bad migration, hand-rolled
+    # SQL) could store a list/string/null where a dict is expected.
+    # Normalise to {} so ``.get`` / ``.items`` calls below don't
+    # raise and break the whole Step 2 render. The save path
+    # (``_save_step_2``) enforces dict shape on ingress; this guard
+    # is the ingress's complement on the read side.
+    raw_waivers = assessment.bsi_waivers
+    waivers: dict[str, Any] = raw_waivers if isinstance(raw_waivers, dict) else {}
+
+    components: list[dict[str, Any]] = payload.get("components") or []
+    summary: dict[str, Any] = payload.get("summary") or {}
+    any_passing_gate = False
+    for component in components:
+        bsi = component.get("bsi_assessment")
+        if not bsi:
+            continue
+        failing = bsi.get("failing_checks", [])
+        unwaived_fail_count = 0
+        for check in failing:
+            finding_id = check.get("id", "")
+            waiver = waivers.get(finding_id)
+            # Per-finding waiver entries should be dicts carrying
+            # non-empty ``justification`` / ``waived_at`` values. A
+            # malformed or incomplete row (non-dict, missing fields,
+            # whitespace-only strings) degrades to "no waiver"
+            # rather than crashing on ``.get`` or incorrectly
+            # flipping the Annex I Part II(1) gate to green.
+            justification = ""
+            waived_at = ""
+            if isinstance(waiver, dict):
+                raw_j = waiver.get("justification", "")
+                raw_w = waiver.get("waived_at", "")
+                justification = raw_j.strip() if isinstance(raw_j, str) else ""
+                waived_at = raw_w.strip() if isinstance(raw_w, str) else ""
+            if check.get("remediation_type") == "tooling_limitation" and justification and waived_at:
+                # Only tooling-limitation findings can be waived;
+                # operator_action waivers are dropped to keep the
+                # Annex I Part II(1) guard honest.
+                check["waived"] = True
+                check["justification"] = justification
+                check["waived_at"] = waived_at
+            else:
+                check["waived"] = False
+                unwaived_fail_count += 1
+        # Cross-check the waiver-adjusted count against the run's
+        # own ``fail_count`` summary. If the run reports failures
+        # that didn't materialise as ``failing_checks`` entries
+        # (e.g. a truncated payload where ``findings`` was dropped
+        # but ``summary`` survived), trust the higher number so an
+        # unwaivable failure can't silently bypass the Annex I
+        # Part II(1) gate. The overlay adjustments below still
+        # apply — any trusted unwaived failure keeps
+        # ``effectively_passing`` false.
+        summary_fail_count = bsi.get("fail_count")
+        if isinstance(summary_fail_count, int) and summary_fail_count > unwaived_fail_count:
+            unwaived_fail_count = summary_fail_count
+        bsi["unwaived_fail_count"] = unwaived_fail_count
+        # Component now "effectively passing" if every failing check
+        # is waived AND the scan itself completed + the format is
+        # compliant (those are separate gates upstream).
+        if unwaived_fail_count == 0 and component.get("format_compliant") and bsi.get("status") == "completed":
+            component["effectively_passing"] = True
+            any_passing_gate = True
+        else:
+            component["effectively_passing"] = False
+
+    # Recompute the gate with waivers applied. Match the existential
+    # semantics of ``check_sbom_gate()`` / ``get_bsi_assessment_status``
+    # — the product-level gate passes when at least one component
+    # effectively passes. Requiring every component to be unwaived-
+    # clean would be stricter than the underlying SBOM gate and
+    # block wizard progression for products that have one good
+    # component and one unresolved-but-unwaivable tail.
+    summary["overall_gate"] = any_passing_gate
+    summary["has_waivers"] = bool(waivers)
+    payload["summary"] = summary
+    return ServiceResult.success(payload)
 
 
 def _build_step_3_context(assessment: CRAAssessment) -> ServiceResult[dict[str, Any]]:
@@ -411,7 +511,12 @@ def _compute_compliance_summary(assessment: CRAAssessment) -> dict[str, Any]:
 # ---- Step 1 fields that can be saved ----
 _STEP_1_TEXT_FIELDS = ("intended_use",)
 _STEP_1_CHAR_FIELDS = ("product_category",)
-_STEP_1_BOOL_FIELDS = ("is_open_source_steward",)
+_STEP_1_BOOL_FIELDS = (
+    "is_open_source_steward",
+    "is_radio_equipment",
+    "processes_personal_data",
+    "handles_financial_value",
+)
 _STEP_1_DATE_FIELDS = ("support_period_end",)
 _STEP_1_JSON_FIELDS = ("target_eu_markets",)
 
@@ -517,6 +622,19 @@ def _save_step_1(
         assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
     )
 
+    # EN 18031-2 and -3 are RED harmonised standards — they are not
+    # standalone privacy / fraud standards. A product that doesn't fall
+    # under the RED can't claim presumption of conformity against them,
+    # so ``processes_personal_data`` and ``handles_financial_value``
+    # are meaningless when ``is_radio_equipment=False``. The client
+    # disables those checkboxes in that state; mirror the constraint
+    # on the server so a non-browser client (SDK / curl) can't persist
+    # a nonsensical "privacy scope without RED scope" combination that
+    # would show up on the Step 1 page but produce no DoC effect.
+    if not assessment.is_radio_equipment:
+        assessment.processes_personal_data = False
+        assessment.handles_financial_value = False
+
     # Server-side mirror of the wizard's canContinue gate. The client
     # already refuses to call this endpoint when the manufacturer is a
     # placeholder, but the SDK / curl / a misbehaving client could hit
@@ -542,6 +660,9 @@ def _save_step_1(
             "intended_use",
             "target_eu_markets",
             "support_period_end",
+            "is_radio_equipment",
+            "processes_personal_data",
+            "handles_financial_value",
             "status",
             "current_step",
             "completed_steps",
@@ -556,9 +677,90 @@ def _save_step_2(
     data: dict[str, Any],
     user: User,
 ) -> ServiceResult[CRAAssessment]:
-    """Save Step 2: SBOM Compliance (read-only step, just mark complete)."""
+    """Save Step 2: SBOM Compliance.
+
+    Accepts an optional ``waivers`` payload: a dict mapping BSI
+    finding id to ``{"justification": str}``. Every entry is stamped
+    with ``waived_at`` (ISO-8601) and ``waived_by`` (user id) before
+    persisting — the wizard / DoC renderers show these as
+    attribution. Empty justification rejects the waiver; an
+    auditable waiver needs a reason text so Annex VII technical
+    documentation can show why a tooling gap was accepted.
+
+    Only known BSI finding ids (``bsi-tr03183:*``) are accepted to
+    stop typos from silently poisoning the ``bsi_waivers`` map.
+    Submitted finding ids that fail the whitelist return 400 —
+    waiver management is belt-and-braces, not best-effort.
+    """
+    import datetime
+
+    from sbomify.apps.compliance.services.sbom_compliance_service import (
+        is_known_bsi_finding,
+        is_waivable_bsi_finding,
+    )
+
+    update_fields = ["status", "current_step", "completed_steps", "updated_at"]
+
+    if "waivers" in data:
+        # Don't collapse every falsy value into ``{}``. ``[]`` / ``0``
+        # / ``""`` / ``False`` would otherwise silently clear every
+        # existing waiver instead of reporting a 400. Only the two
+        # cases below are "no waivers provided": the key is absent
+        # (handled by the outer ``if "waivers" in data``) or the
+        # value is explicitly None. Every other non-dict type must
+        # return 400 so the API contract stays strict.
+        raw = data.get("waivers")
+        if raw is None:
+            raw = {}
+        elif not isinstance(raw, dict):
+            return ServiceResult.failure("waivers must be an object", status_code=400)
+
+        waivers: dict[str, dict[str, Any]] = {}
+        now_iso = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        for finding_id, entry in raw.items():
+            if not is_known_bsi_finding(finding_id):
+                return ServiceResult.failure(f"Unknown BSI finding id: {finding_id!r}", status_code=400)
+            if not is_waivable_bsi_finding(finding_id):
+                return ServiceResult.failure(
+                    f"{finding_id!r} is an operator-action finding and cannot be waived",
+                    status_code=400,
+                )
+            justification = ""
+            if isinstance(entry, dict):
+                # Require justification to be a string literal. Nested
+                # dicts / lists coerce via str() to their repr, which
+                # is truthy and would paper over malformed payloads.
+                raw_justification = entry.get("justification")
+                if isinstance(raw_justification, str):
+                    justification = raw_justification.strip()
+            if not justification:
+                return ServiceResult.failure(
+                    f"Waiver for {finding_id!r} requires a justification",
+                    status_code=400,
+                )
+            # Defense-in-depth: the JSONField has no size cap, so an
+            # unbounded justification would bloat the row and could
+            # DoS the JSON round-trip. 2 KB is plenty for an audit
+            # sentence; anything larger is almost certainly a bug or
+            # attack. Enforce the limit here so oversized payloads
+            # are rejected consistently — waiver authoring currently
+            # happens via the API (Django admin or scripted setup),
+            # so the server must not rely on a client-side cap.
+            if len(justification) > _MAX_WAIVER_JUSTIFICATION_CHARS:
+                return ServiceResult.failure(
+                    f"Waiver justification for {finding_id!r} exceeds {_MAX_WAIVER_JUSTIFICATION_CHARS}-char limit",
+                    status_code=400,
+                )
+            waivers[finding_id] = {
+                "justification": justification,
+                "waived_at": now_iso,
+                "waived_by": user.id if user else None,
+            }
+        assessment.bsi_waivers = waivers
+        update_fields.append("bsi_waivers")
+
     _mark_step_complete(assessment, 2)
-    assessment.save(update_fields=["status", "current_step", "completed_steps", "updated_at"])
+    assessment.save(update_fields=update_fields)
     return ServiceResult.success(assessment)
 
 

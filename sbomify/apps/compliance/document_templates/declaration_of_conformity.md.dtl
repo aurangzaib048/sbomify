@@ -44,6 +44,12 @@ The object of the declaration described above is in conformity with Regulation (
 {% for covered in standard.cra_requirements_covered %}
     - {{ covered.cra_reference }}{% if covered.clause %} — *{{ covered.clause }}*{% endif %}{% if covered.summary %}: {{ covered.summary }}{% endif %}
 {% endfor %}
+{% if standard.restrictions %}
+    - **Restrictions (OJ L_202500138):**
+{% for restriction in standard.restrictions %}
+        - {{ restriction }}
+{% endfor %}
+{% endif %}
 {% endfor %}
 
 ## 7. Conformity Assessment
