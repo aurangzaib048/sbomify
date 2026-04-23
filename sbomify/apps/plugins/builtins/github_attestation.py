@@ -102,6 +102,11 @@ class GitHubAttestationPlugin(AssessmentPlugin):
     DEFAULT_CERTIFICATE_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
     DEFAULT_TIMEOUT = 60  # seconds
 
+    # cosign v3 strictly validates --type against the attestation's predicate type when
+    # --new-bundle-format is active (default in v3). actions/attest-build-provenance emits
+    # https://slsa.dev/provenance/v1, which cosign aliases to "slsaprovenance1".
+    ATTESTATION_PREDICATE_TYPE = "slsaprovenance1"
+
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize the plugin with configuration.
 
@@ -702,6 +707,8 @@ class GitHubAttestationPlugin(AssessmentPlugin):
             "--bundle",
             str(bundle_path),
             "--new-bundle-format",
+            "--type",
+            self.ATTESTATION_PREDICATE_TYPE,
             "--certificate-identity-regexp",
             certificate_identity_regexp,
             "--certificate-oidc-issuer",
