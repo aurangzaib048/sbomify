@@ -29,17 +29,6 @@ import datetime
 import pytest
 
 from sbomify.apps.compliance.models import CRAAssessment
-
-
-def _support_end_beyond_five_years() -> str:
-    """Return a ``support_period_end`` that always passes the CRA Art 13(8)
-    5-year minimum, regardless of wall-clock drift. Using a fixed literal
-    like ``2032-01-01`` silently fails the test suite once today + 5 years
-    crosses that date. Anchor to January 1 of (current year + 6) so the
-    suite stays green for at least the full year it was generated in and
-    avoids the Feb 29 leap-year trap.
-    """
-    return f"{datetime.date.today().year + 6}-01-01"
 from sbomify.apps.compliance.services.document_generation_service import (
     _assessment_facts,
     _evaluate_applies_when,
@@ -62,6 +51,17 @@ from sbomify.apps.teams.models import ContactEntity, ContactProfile
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _support_end_beyond_five_years() -> str:
+    """Return a ``support_period_end`` that always passes the CRA Art 13(8)
+    5-year minimum, regardless of wall-clock drift. Using a fixed literal
+    like ``2032-01-01`` silently fails the test suite once today + 5 years
+    crosses that date. Anchor to January 1 of (current year + 6) so the
+    suite stays green for at least the full year it was generated in and
+    avoids the Feb 29 leap-year trap.
+    """
+    return f"{datetime.date.today().year + 6}-01-01"
 
 
 @pytest.fixture

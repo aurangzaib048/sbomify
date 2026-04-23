@@ -356,6 +356,17 @@ class TestCRAScopeScreeningView:
         response = web_client.post(url)
         assert response.status_code == 400
 
+    def test_start_assessment_redirects_to_scope_screening_when_missing(self, web_client, product):
+        """The scope-screening gate (FAQ Section 1) must force the user
+        through scope determination before an assessment can be created.
+        Without this redirect, a direct POST to ``/start/`` could bypass
+        the pre-wizard applicability check and land the team on an
+        assessment whose CRA applicability was never evaluated."""
+        url = reverse("compliance:cra_start_assessment", kwargs={"product_id": product.id})
+        response = web_client.post(url)
+        assert response.status_code == 302
+        assert "/cra/scope/" in (response.get("Location") or "")
+
 
 class TestBillingGateViews:
     """Test that billing gate blocks access when BILLING is enabled."""

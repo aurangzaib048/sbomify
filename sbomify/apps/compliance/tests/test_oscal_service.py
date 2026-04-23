@@ -349,6 +349,68 @@ class TestAnnexPartBackfillRemediation:
 
 
 @pytest.mark.django_db
+class TestLegacyEuccRemapMigration:
+    """Regression for the 0009 data migration. Pre-existing CRA
+    assessments persisted before PR #861 could carry
+    ``product_category='critical'`` + ``conformity_assessment_procedure=
+    'eucc'``, which the new default mapping no longer permits (CRA
+    Art 8(1) — EUCC is not yet mandated). The migration snaps those
+    rows to ``module_b_c`` so the next DoC export does not render the
+    deprecated procedure; other combinations must be left untouched.
+    """
+
+    def test_remap_updates_critical_eucc_and_preserves_others(
+        self, sample_team_with_owner_member, sample_user, product
+    ):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        from sbomify.apps.compliance.models import CRAAssessment
+        from sbomify.apps.compliance.services.wizard_service import (
+            get_or_create_assessment,
+        )
+
+        team = sample_team_with_owner_member.team
+
+        def _assessment(product_) -> CRAAssessment:
+            r = get_or_create_assessment(product_.id, sample_user, team)
+            assert r.ok and r.value is not None
+            return r.value
+
+        legacy = _assessment(product)
+        legacy.product_category = CRAAssessment.ProductCategory.CRITICAL
+        legacy.conformity_assessment_procedure = "eucc"
+        legacy.save(update_fields=["product_category", "conformity_assessment_procedure"])
+
+        non_critical_eucc = _assessment(Product.objects.create(name="Other", team=team))
+        non_critical_eucc.product_category = CRAAssessment.ProductCategory.DEFAULT
+        non_critical_eucc.conformity_assessment_procedure = "eucc"
+        non_critical_eucc.save(update_fields=["product_category", "conformity_assessment_procedure"])
+
+        critical_bc = _assessment(Product.objects.create(name="Third", team=team))
+        critical_bc.product_category = CRAAssessment.ProductCategory.CRITICAL
+        critical_bc.conformity_assessment_procedure = "module_b_c"
+        critical_bc.save(update_fields=["product_category", "conformity_assessment_procedure"])
+
+        migration = importlib.import_module(
+            "sbomify.apps.compliance.migrations.0009_remap_legacy_critical_eucc"
+        )
+        migration.remap_critical_eucc(django_apps, schema_editor=None)
+
+        legacy.refresh_from_db()
+        non_critical_eucc.refresh_from_db()
+        critical_bc.refresh_from_db()
+
+        assert legacy.conformity_assessment_procedure == "module_b_c"
+        # Non-critical EUCC is a different policy question — the
+        # migration intentionally leaves it alone.
+        assert non_critical_eucc.conformity_assessment_procedure == "eucc"
+        # Already-permitted critical procedure is untouched.
+        assert critical_bc.conformity_assessment_procedure == "module_b_c"
+
+
+@pytest.mark.django_db
 class TestBuildTrestleAssessmentResults:
     def test_produces_valid_oscal(self, sample_team_with_owner_member, sample_user, product):
         catalog = ensure_cra_catalog()

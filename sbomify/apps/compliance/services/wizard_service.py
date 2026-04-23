@@ -646,22 +646,35 @@ def _save_step_1(
     user: User,
 ) -> ServiceResult[CRAAssessment]:
     """Save Step 1: Product Profile & Classification."""
-    # Validate product_category if provided
+    # Validate product_category if provided. Require a string — a
+    # non-hashable type (``list`` / ``dict``) would otherwise crash the
+    # ``x not in set`` check with ``TypeError: unhashable type`` and
+    # surface as a 500 instead of a controlled 400.
     if "product_category" in data:
+        category_raw = data["product_category"]
+        if not isinstance(category_raw, str):
+            return ServiceResult.failure("product_category must be a string", status_code=400)
         valid_categories = {c[0] for c in CRAAssessment.ProductCategory.choices}
-        if data["product_category"] not in valid_categories:
+        if category_raw not in valid_categories:
             return ServiceResult.failure(
                 f"Invalid product_category. Must be one of: {sorted(valid_categories)}", status_code=400
             )
 
-    # Apply simple text/char fields. Enforce a length cap on free-text
-    # fields to prevent row-bloat / serializer DoS via unbounded payloads;
-    # the DB columns are ``TextField`` / ``CharField(255)`` but
-    # ``intended_use`` is ``TextField`` with no size limit.
+    # Apply simple text/char fields. Reject non-string inputs with a 400
+    # before the cap is evaluated — ``setattr`` + ``assessment.save()``
+    # would later coerce a ``list`` / ``dict`` to its ``repr`` (which
+    # bypasses the length cap's ``isinstance`` branch and can still
+    # bloat the row / stall JSON serialisation on later reads) or
+    # raise a DB-adapter error that surfaces as a 500.
     for field in (*_STEP_1_TEXT_FIELDS, *_STEP_1_CHAR_FIELDS):
         if field in data:
             raw = data[field]
-            if isinstance(raw, str) and len(raw) > _MAX_STEP_1_TEXT_CHARS:
+            if raw is None:
+                setattr(assessment, field, "")
+                continue
+            if not isinstance(raw, str):
+                return ServiceResult.failure(f"{field} must be a string", status_code=400)
+            if len(raw) > _MAX_STEP_1_TEXT_CHARS:
                 return ServiceResult.failure(
                     f"{field} exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
                     status_code=400,

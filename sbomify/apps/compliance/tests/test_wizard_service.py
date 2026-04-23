@@ -480,6 +480,36 @@ class TestSaveStepData:
         assert result.status_code == 400
         assert "intended_use" in (result.error or "")
 
+    def test_step_1_rejects_non_string_text_field(self, assessment, sample_user):
+        """A non-string ``intended_use`` (``list`` / ``dict``) bypasses
+        the ``isinstance(raw, str)`` branch of the length cap. Without
+        an explicit type check the value would reach ``setattr`` and
+        later blow up inside ``assessment.save()`` as a 500 or — worse —
+        get coerced to a ``repr`` that defeats the row-bloat guard."""
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "intended_use": ["bypass"] * 500},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "intended_use" in (result.error or "")
+
+    def test_step_1_rejects_non_string_product_category(self, assessment, sample_user):
+        """``product_category`` goes through a ``x not in set`` check. A
+        ``list`` / ``dict`` payload would raise ``TypeError: unhashable
+        type`` and become a 500. Require a string up front."""
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": ["class_i"]},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "product_category" in (result.error or "")
+
     def test_step_2_marks_complete(self, assessment, sample_user):
         result = save_step_data(assessment, 2, {}, sample_user)
         assert result.ok

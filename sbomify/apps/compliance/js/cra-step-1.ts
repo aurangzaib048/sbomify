@@ -94,9 +94,21 @@ function craStep1() {
       }
       this.assessmentId = getAssessmentId();
 
-      // Normalize loaded procedure: if saved value is not in the allowed set, fix it
+      // Normalize loaded procedure. Three cases:
+      //   1. Empty — new assessments or step-data without a saved
+      //      procedure. Default to the first allowed option for the
+      //      category so the UI never renders an empty radio group
+      //      and ``canContinue`` doesn't let the user submit an empty
+      //      ``conformity_assessment_procedure`` (the backend would
+      //      400 that and the user would see no hint why).
+      //   2. Saved but not in the allowed set — e.g. a legacy
+      //      ``eucc`` value on a Critical assessment made before the
+      //      category→procedure mapping changed. Snap to the first
+      //      allowed option to match how the backend default path
+      //      behaves.
+      //   3. Saved and allowed — leave it alone.
       const initAllowed = this.conformityProcedureOptions[this.category] || ['module_a'];
-      if (this.conformityAssessmentProcedure && !initAllowed.includes(this.conformityAssessmentProcedure)) {
+      if (!this.conformityAssessmentProcedure || !initAllowed.includes(this.conformityAssessmentProcedure)) {
         this.conformityAssessmentProcedure = initAllowed[0];
       }
 
@@ -145,6 +157,12 @@ function craStep1() {
       // Issue #908.
       if (this.manufacturerIsPlaceholder) return false;
       if (!this.category || this.euMarkets.length === 0 || !this.supportPeriodEnd) return false;
+      // Refuse to submit without a procedure. The ``init`` and category
+      // watcher default to the first allowed option, so an empty value
+      // only appears if the options map is missing for the chosen
+      // category — the backend would 400 and the user would have no
+      // clear signal why.
+      if (!this.conformityAssessmentProcedure) return false;
       // If support period < 5 years, justification is required (CRA Art 13(8))
       if (this.supportPeriodShort && !this.supportPeriodShortJustification.trim()) return false;
       // Class I + Module A requires harmonised standard (CRA Art 32(2))
