@@ -74,7 +74,14 @@ def _evaluate_applies_when(rule: dict[str, Any] | None, facts: dict[str, Any]) -
     - ``{"all_of": [rule, rule, ...]}`` — AND over sub-rules.
     - ``{"<key>": <expected>, ...}`` — equality predicate; ALL pairs
       must match (implicit AND across siblings).
-    - ``None`` or ``{}`` — vacuously true.
+    - ``{}`` — vacuously true.
+    - ``None`` or any other non-dict value — invalid rule shape,
+      fails closed and returns ``False``. Entries that should
+      always apply must carry ``always_applicable: true`` in the
+      reference JSON; the caller short-circuits on that flag
+      before invoking this evaluator, so ``applies_when: null``
+      here is treated as a typo / fail-closed rather than
+      "always applies".
 
     Combinators and equality predicates **cannot be mixed at the
     same level**. ``{"any_of": [...], "product_category": "x"}``

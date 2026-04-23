@@ -669,8 +669,17 @@ def _save_step_2(
     update_fields = ["status", "current_step", "completed_steps", "updated_at"]
 
     if "waivers" in data:
-        raw = data.get("waivers") or {}
-        if not isinstance(raw, dict):
+        # Don't collapse every falsy value into ``{}``. ``[]`` / ``0``
+        # / ``""`` / ``False`` would otherwise silently clear every
+        # existing waiver instead of reporting a 400. Only the two
+        # cases below are "no waivers provided": the key is absent
+        # (handled by the outer ``if "waivers" in data``) or the
+        # value is explicitly None. Every other non-dict type must
+        # return 400 so the API contract stays strict.
+        raw = data.get("waivers")
+        if raw is None:
+            raw = {}
+        elif not isinstance(raw, dict):
             return ServiceResult.failure("waivers must be an object", status_code=400)
 
         waivers: dict[str, dict[str, Any]] = {}

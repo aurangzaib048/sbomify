@@ -996,6 +996,49 @@ class TestSignatureDownloadUrlAdversarial:
 
 
 # ---------------------------------------------------------------------------
+# _is_valid_signature_key — unit tests for the extracted helper
+# ---------------------------------------------------------------------------
+
+
+class TestIsValidSignatureKey:
+    """Unit tests for the key-validation helper extracted from
+    ``get_signature_download_url``. Keeps the security guard
+    exercised in isolation — every change to the helper must break
+    these explicitly rather than hide behind a downstream test."""
+
+    @pytest.mark.parametrize("good", [
+        "compliance/exports/abc123/hash.zip.sig",
+        "compliance/exports/a/b/c/d.zip.sig",
+        "compliance/exports/x.zip.sig",  # minimal valid
+    ])
+    def test_accepts_well_formed_keys(self, good):
+        from sbomify.apps.compliance.services.export_service import _is_valid_signature_key
+
+        assert _is_valid_signature_key(good) is True
+
+    @pytest.mark.parametrize("bad", [
+        "compliance/exports/../other/x.sig",  # traversal
+        "compliance/exports/foo/../bar.sig",  # mid-path traversal
+        "../compliance/exports/x.sig",  # leading traversal
+        "other-prefix/compliance/exports/x.sig",  # wrong prefix
+        "/compliance/exports/x.sig",  # leading slash shifts prefix
+        "compliance/exports/x.zip",  # wrong suffix
+        "compliance/exports/x.sig.zip",  # nearly but not
+        "compliance/exports/x",  # no suffix
+        "compliance/exports/x.sig\x00",  # NUL byte
+        "compliance/exports/\x00abc.sig",  # NUL in segment
+        "",
+        "   ",  # caller strips before calling us, but guard anyway
+        "sig",  # trivially short
+        "compliance/exports/",  # prefix-only
+    ])
+    def test_rejects_malformed_keys(self, bad):
+        from sbomify.apps.compliance.services.export_service import _is_valid_signature_key
+
+        assert _is_valid_signature_key(bad) is False
+
+
+# ---------------------------------------------------------------------------
 # INTEGRITY.md readme section — provider allowlist
 # ---------------------------------------------------------------------------
 
@@ -1823,6 +1866,53 @@ class TestStep2WaiverComplexCases:
         )
         assert not result.ok
         assert "waivable" in (result.error or "").lower() or "operator" in (result.error or "").lower()
+
+    @pytest.mark.parametrize("bad_type", [[], [1, 2], "", "str", 0, 42, False, True, 3.14])
+    def test_non_dict_waivers_value_rejected_with_400(self, assessment, sample_user, bad_type):
+        """``{"waivers": [...]}``, ``{"waivers": ""}``, etc. must be
+        rejected with 400, not silently coerced to an empty dict.
+        The pre-fix code used ``data.get("waivers") or {}`` which
+        cleared every existing waiver whenever the payload was a
+        falsy non-dict. Regression seal for the PR 914 reviewer
+        finding."""
+        # Seed a real waiver so a silent-clear would be observable.
+        save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": "seed"}}},
+            sample_user,
+        )
+        assessment.refresh_from_db()
+        assert assessment.bsi_waivers
+
+        result = save_step_data(assessment, 2, {"waivers": bad_type}, sample_user)
+
+        assert not result.ok
+        assert result.status_code == 400
+        assert "object" in (result.error or "").lower() or "waivers" in (result.error or "").lower()
+        # Pre-existing waivers must survive a rejected payload.
+        assessment.refresh_from_db()
+        assert "bsi-tr03183:hash-value" in assessment.bsi_waivers
+
+    def test_null_waivers_value_treated_as_empty(self, assessment, sample_user):
+        """Explicit ``{"waivers": null}`` is the one case we keep
+        treating as "no waivers provided" — same semantic as omitting
+        the key entirely. Prevents a hard break for clients that
+        serialise an empty map as null."""
+        save_step_data(
+            assessment,
+            2,
+            {"waivers": {"bsi-tr03183:hash-value": {"justification": "seed"}}},
+            sample_user,
+        )
+        assessment.refresh_from_db()
+        assert assessment.bsi_waivers
+
+        # null → treated as "empty" → clears existing waivers.
+        result = save_step_data(assessment, 2, {"waivers": None}, sample_user)
+        assert result.ok
+        assessment.refresh_from_db()
+        assert assessment.bsi_waivers == {}
 
     def test_empty_waivers_dict_clears_all(self, assessment, sample_user):
         """POST ``{"waivers": {}}`` must clear every existing waiver
