@@ -178,6 +178,120 @@ class TestGetBsiAssessmentStatus:
         assert data["summary"]["overall_gate"] is False
 
 
+class TestClassifyBsiFinding:
+    """Issue #907: classification map tells the wizard whether a
+    BSI failing check is a known tooling limitation (waiver-eligible)
+    or an operator-action gap (must be fixed). Unknown finding ids
+    fall back to operator_action to keep the Annex I Part II(1)
+    guard strict when the BSI plugin gains a new check."""
+
+    @pytest.mark.parametrize(
+        "finding_id",
+        [
+            "bsi-tr03183:hash-value",
+            "bsi-tr03183:executable-property",
+            "bsi-tr03183:archive-property",
+            "bsi-tr03183:structured-property",
+            "bsi-tr03183:filename",
+            "bsi-tr03183:source-code-uri",
+            "bsi-tr03183:uri-deployable-form",
+        ],
+    )
+    def test_scanner_output_gaps_are_tooling_limitations(self, finding_id):
+        from sbomify.apps.compliance.services.sbom_compliance_service import _classify_bsi_finding
+
+        remediation_type, guidance_url, human_summary = _classify_bsi_finding(finding_id)
+        assert remediation_type == "tooling_limitation"
+        assert guidance_url.startswith("https://")
+        # Issue #907: tooling-limitation summaries must name a scanner
+        # or workflow the operator recognises so they know what to
+        # change. Generic "unclassified" text is NOT acceptable here.
+        assert human_summary and "Unclassified" not in human_summary
+
+    @pytest.mark.parametrize(
+        "finding_id",
+        [
+            "bsi-tr03183:sbom-creator",
+            "bsi-tr03183:component-creator",
+            "bsi-tr03183:distribution-licences",
+            "bsi-tr03183:unique-identifiers",
+            "bsi-tr03183:no-vulnerabilities",
+            "bsi-tr03183:attestation-check",
+        ],
+    )
+    def test_authoring_gaps_are_operator_actions(self, finding_id):
+        from sbomify.apps.compliance.services.sbom_compliance_service import _classify_bsi_finding
+
+        remediation_type, _, human_summary = _classify_bsi_finding(finding_id)
+        assert remediation_type == "operator_action"
+        assert human_summary and "Unclassified" not in human_summary
+
+    def test_unknown_finding_fails_closed_as_operator_action(self):
+        """Conservative default: any finding id the classifier
+        doesn't recognise is treated as operator_action so a new
+        BSI check landing in the plugin doesn't silently unlock
+        waiver eligibility."""
+        from sbomify.apps.compliance.services.sbom_compliance_service import _classify_bsi_finding
+
+        remediation_type, _, human_summary = _classify_bsi_finding("bsi-tr03183:this-does-not-exist")
+        assert remediation_type == "operator_action"
+        # Unknown ids get the fallback sentence — operators see "treat
+        # as operator_action" which is the safer default.
+        assert "Unclassified" in human_summary
+
+    def test_attestation_check_gets_overridden_guidance_url(self):
+        """Overrides point operator-action fixes at dedicated docs
+        rather than the generic sbomify-action enrichment page."""
+        from sbomify.apps.compliance.services.sbom_compliance_service import _classify_bsi_finding
+
+        _, url_default, _ = _classify_bsi_finding("bsi-tr03183:sbom-creator")
+        _, url_format, _ = _classify_bsi_finding("bsi-tr03183:sbom-format")
+        _, url_attest, _ = _classify_bsi_finding("bsi-tr03183:attestation-check")
+        assert "enrichment" in url_default
+        assert "sbom-format" in url_format
+        assert "attestations" in url_attest
+
+
+@pytest.mark.django_db
+class TestFailingCheckEnrichment:
+    """The failing-checks list in ``bsi_assessment`` must carry
+    ``remediation_type`` and ``guidance_url`` so the Step 2 wizard
+    template can render the classification badge + docs link without
+    duplicating the classifier on the front end."""
+
+    def test_failing_check_carries_remediation_type_and_url(self, sample_team_with_owner_member):
+        team = sample_team_with_owner_member.team
+        product, component = _create_product_with_component(team)
+        sbom = _create_sbom(component, fmt="cyclonedx", fmt_version="1.6")
+        # Override the helper's empty-findings default with a concrete
+        # failing check so the enrichment path runs.
+        run = _create_assessment_run(sbom, pass_count=0, fail_count=1)
+        run.result = {
+            "summary": {"pass_count": 0, "fail_count": 1, "warning_count": 0},
+            "findings": [
+                {
+                    "id": "bsi-tr03183:hash-value",
+                    "status": "fail",
+                    "title": "Hash Value (SHA-512)",
+                    "description": "SHA-512 missing for apt-packaged components.",
+                    "remediation": "Re-run with sbomify-action --enrich.",
+                }
+            ],
+        }
+        run.save(update_fields=["result"])
+
+        result = get_bsi_assessment_status(product)
+
+        assert result.ok
+        check = result.value["components"][0]["bsi_assessment"]["failing_checks"][0]
+        assert check["remediation_type"] == "tooling_limitation"
+        assert check["guidance_url"].startswith("https://")
+        # Issue #907 plain-English one-liner reaches the enriched
+        # finding so the Step 2 template can render it inline.
+        assert check["human_summary"]
+        assert "syft" in check["human_summary"].lower()
+
+
 @pytest.mark.django_db
 class TestFormatCompliance:
     """Tests for SBOM format version compliance checking."""

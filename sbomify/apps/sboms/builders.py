@@ -359,11 +359,13 @@ class ReleaseCycloneDXBuilder(BaseCycloneDXBuilder):
 
             # Extract component metadata
             component_dict = sbom_data.get("metadata", {}).get("component")
-            if not component_dict:
-                log.warning(f"SBOM {sbom_path.name} missing component metadata")
-                continue
-
-            name, component_type, version = extract_component_info(component_dict)
+            if component_dict:
+                name, component_type, version = extract_component_info(component_dict)
+            else:
+                # metadata.component is optional in CycloneDX; fall back to stored component name
+                name = sbom_instance.component.name
+                component_type = "library"
+                version = ""
 
             # Create CycloneDX component
             try:
@@ -763,11 +765,13 @@ class ProjectCycloneDXBuilder(BaseCycloneDXBuilder):
 
             # Extract component metadata
             component_dict = sbom_data.get("metadata", {}).get("component")
-            if not component_dict:
-                log.warning(f"SBOM {sbom_path.name} missing component metadata")
-                continue
-
-            name, component_type, version = extract_component_info(component_dict)
+            if component_dict:
+                name, component_type, version = extract_component_info(component_dict)
+            else:
+                # metadata.component is optional in CycloneDX; fall back to stored component name
+                name = component_obj.name
+                component_type = "library"
+                version = ""
 
             # Create CycloneDX component
             try:

@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("compliance", "0003_add_support_contact_id"),
+        ("compliance", "0005_add_bsi_waivers"),
         ("core", "0025_unique_sbom_per_component_release"),
         ("teams", "0034_alter_team_security_txt_config"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

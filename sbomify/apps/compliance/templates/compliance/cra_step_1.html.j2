@@ -33,6 +33,64 @@
                     </div>
                 </div>
             </div>
+            {# Manufacturer — Annex V item 2 guard #}
+            <div class="tw-card">
+                <div class="px-6 py-4 border-b border-border flex items-center justify-between">
+                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                        <i class="fas fa-industry text-primary"></i>
+                        Manufacturer
+                        <span x-show="manufacturerIsPlaceholder"
+                              class="tw-badge-danger text-xs ml-2"
+                              data-testid="mfr-placeholder-badge">Not configured</span>
+                    </h2>
+                    <a href="{% url 'teams:contact_profiles_list' team_key=team.key %}"
+                       class="text-sm text-primary hover:underline"
+                       data-testid="mfr-settings-link">
+                        <i class="fas fa-up-right-from-square mr-1"></i>
+                        Edit in team settings
+                    </a>
+                </div>
+                <div class="p-6 space-y-4">
+                    {# Placeholder banner — Annex V item 2; uses the shared tw-alert-danger component. #}
+                    <div x-show="manufacturerIsPlaceholder"
+                         data-testid="mfr-placeholder-banner"
+                         role="alert"
+                         class="tw-alert tw-alert-danger">
+                        <i class="fas fa-triangle-exclamation tw-alert-icon"></i>
+                        <div class="tw-alert-content">
+                            <p class="tw-alert-title">Annex V item 2 requires a legal manufacturer name</p>
+                            <p class="opacity-80">
+                                The current value looks like a placeholder — the DoC will render
+                                <code class="text-xs">[Manufacturer Name — not configured]</code>
+                                and the bundle manifest will carry
+                                <code class="text-xs">is_placeholder: true</code>.
+                                Configure a real manufacturer entity in team settings before exporting.
+                            </p>
+                        </div>
+                    </div>
+                    <div x-show="manufacturer" class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div>
+                            <span class="tw-form-label">Legal Name</span>
+                            <p class="text-text font-medium mt-1"
+                               data-testid="mfr-name"
+                               x-text="manufacturer?.name || '—'"></p>
+                        </div>
+                        <div>
+                            <span class="tw-form-label">Email</span>
+                            <p class="text-text-muted text-sm mt-1"
+                               x-text="manufacturer?.email || '—'"></p>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <span class="tw-form-label">Address</span>
+                            <p class="text-text-muted text-sm mt-1"
+                               x-text="manufacturer?.address || '—'"></p>
+                        </div>
+                    </div>
+                    <div x-show="!manufacturer" class="text-sm text-text-muted italic">
+                        No manufacturer entity configured for this workspace yet.
+                    </div>
+                </div>
+            </div>
             {# CRA Classification #}
             <div class="tw-card">
                 <div class="px-6 py-4 border-b border-border">
@@ -119,6 +177,60 @@
                                     </span>
                                 </div>
                             </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {# Harmonised Standards Applicability (EN 18031 opt-in — issue #905) #}
+            <div class="tw-card">
+                <div class="px-6 py-4 border-b border-border">
+                    <h2 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                        <i class="fas fa-broadcast-tower text-primary"></i>
+                        Harmonised Standards Applicability
+                    </h2>
+                    <p class="text-sm text-text-muted mt-1">
+                        Optional. Tick the boxes that apply to claim presumption of conformity under the
+                        EN 18031 harmonised standards on the Declaration of Conformity.
+                    </p>
+                </div>
+                <div class="p-6 space-y-3">
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer">
+                        <input type="checkbox"
+                               x-model="isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Radio equipment under the RED</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-1 (RED Article 3(3)(d)) — access control, authentication, secure update, cryptography.</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer"
+                           :class="!isRadioEquipment ? 'opacity-50 cursor-not-allowed' : ''">
+                        <input type="checkbox"
+                               x-model="processesPersonalData"
+                               :disabled="!isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Processes personal data</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-2 (RED Article 3(3)(e)) — data minimisation, GDPR alignment. Requires RED.</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-3 px-4 py-3 bg-surface-hover rounded-lg cursor-pointer"
+                           :class="!isRadioEquipment ? 'opacity-50 cursor-not-allowed' : ''">
+                        <input type="checkbox"
+                               x-model="handlesFinancialValue"
+                               :disabled="!isRadioEquipment"
+                               class="mt-0.5 w-5 h-5 shrink-0 rounded border-border text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed">
+                        <span class="flex-1">
+                            <span class="text-text font-medium block">Handles monetary value or virtual currency</span>
+                            <span class="text-xs text-text-muted">Triggers EN 18031-3 (RED Article 3(3)(f)) — protection from fraud. Requires RED.</span>
+                        </span>
+                    </label>
+                    <div x-show="isRadioEquipment" x-cloak class="tw-alert tw-alert-info">
+                        <i class="fas fa-circle-info tw-alert-icon"></i>
+                        <div class="tw-alert-content">
+                            <p class="opacity-80 m-0">
+                                The DoC will carry the OJ L_202500138 restriction notes — review them before export. Products that allow the user not to set any password cannot claim presumption of conformity for EN 18031-1, EN 18031-2, and EN 18031-3 in respect of clauses 6.2.5.1 and 6.2.5.2.
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -235,6 +347,8 @@
             <button type="button"
                     @click="save()"
                     :disabled="!canContinue || isSaving"
+                    :title="manufacturerIsPlaceholder ? 'Configure a real manufacturer entity in team settings before continuing (Annex V item 2).' : ''"
+                    data-testid="step-1-save-continue"
                     class="tw-btn-primary">
                 <span x-show="!isSaving">Save &amp; Continue <i class="fas fa-arrow-right ml-2"></i></span>
                 <span x-show="isSaving" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Saving...</span>

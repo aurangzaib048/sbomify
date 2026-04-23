@@ -25,7 +25,7 @@ def backfill_annex_part(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("compliance", "0004_craassessment_harmonised_standard_applied_and_more"),
+        ("compliance", "0006_craassessment_harmonised_standard_applied_and_more"),
     ]
 
     operations = [

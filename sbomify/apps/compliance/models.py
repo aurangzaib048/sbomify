@@ -223,6 +223,27 @@ class CRAAssessment(models.Model):
     conformity_assessment_procedure = models.CharField(
         max_length=20, choices=ConformityProcedure.choices, default=ConformityProcedure.MODULE_A
     )
+    # RED / EN 18031 applicability. Orthogonal to ``product_category``
+    # (which is the CRA risk-tier classification Default/Class I/II/Critical).
+    # A product can be Class I AND radio equipment; these flags decide
+    # whether the EN 18031 harmonised-standard entries show up on the
+    # DoC as presumption-of-conformity evidence. See issue #905 and
+    # ``cra-harmonised-standards.json`` for the applies_when rule tree.
+    is_radio_equipment = models.BooleanField(
+        default=False,
+        help_text="Product falls under the EU Radio Equipment Directive — triggers EN 18031-1 applicability.",
+    )
+    processes_personal_data = models.BooleanField(
+        default=False,
+        help_text="Product processes personal data under GDPR — triggers EN 18031-2 (privacy) when combined with RED.",
+    )
+    handles_financial_value = models.BooleanField(
+        default=False,
+        help_text=(
+            "Product handles monetary value or virtual currency — "
+            "triggers EN 18031-3 (fraud protection) when combined with RED."
+        ),
+    )
 
     # Step 3b — Vulnerability disclosure
     vdp_url = models.URLField(blank=True, default="")
@@ -248,6 +269,13 @@ class CRAAssessment(models.Model):
     support_phone = models.CharField(max_length=50, blank=True, default="")
     support_hours = models.CharField(max_length=100, blank=True, default="")
     data_deletion_instructions = models.TextField(blank=True, default="")
+
+    # Step 2 — BSI tooling-limitation waivers (issue #907).
+    # Maps finding id → {justification: str, waived_at: ISO8601, waived_by: user_id}.
+    # Only ``remediation_type=tooling_limitation`` findings may be
+    # waived; operator-action findings must be fixed rather than
+    # waived because they represent genuine Annex I Part II(1) gaps.
+    bsi_waivers = models.JSONField(default=dict, blank=True)
 
     # Wizard state
     status = models.CharField(max_length=20, choices=WizardStatus.choices, default=WizardStatus.DRAFT)

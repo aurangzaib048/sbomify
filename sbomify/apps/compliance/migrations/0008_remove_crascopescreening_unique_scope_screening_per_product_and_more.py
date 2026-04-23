@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("compliance", "0005_backfill_oscal_control_annex_part"),
+        ("compliance", "0007_backfill_oscal_control_annex_part"),
     ]
 
     operations = [

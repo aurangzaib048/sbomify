@@ -16,12 +16,18 @@ from sbomify.apps.compliance.models import (
     CRAExportPackage,
     CRAGeneratedDocument,
 )
+from sbomify.apps.compliance.services._manufacturer_policy import (
+    is_placeholder_manufacturer as _is_placeholder_manufacturer,
+)
+from sbomify.apps.compliance.services._reference_data import (
+    read_harmonised_standards_bytes,
+)
 from sbomify.apps.compliance.services.oscal_service import serialize_assessment_results
 from sbomify.apps.core.models import Component
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.core.services.results import ServiceResult
 from sbomify.apps.sboms.models import SBOM
-from sbomify.apps.teams.models import ContactEntity
+from sbomify.apps.teams.services.contacts import get_manufacturer
 
 if TYPE_CHECKING:
     from sbomify.apps.compliance.models import CRAAssessment
@@ -57,6 +63,104 @@ _DOC_CRA_REF: dict[str, str] = {
 
 # SBOM format → file extension for ZIP packaging
 _FORMAT_EXT_MAP: dict[str, str] = {"cyclonedx": "cdx.json", "spdx": "spdx.json"}
+
+# Single source of truth for the bundle's manifest schema version.
+# Bump here; the integrity README and the manifest body both read from
+# this constant so they can't drift. 1.0 was the original CRA export
+# scaffolding; 1.1 added manufacturer.is_placeholder and the integrity
+# block; bump to 1.2+ on the next schema change.
+_MANIFEST_FORMAT_VERSION = "1.1"
+
+
+def _integrity_readme(manifest_sha256: str) -> str:
+    """Human-readable bundle verification guide embedded in the export.
+
+    The commands below are tested end-to-end against the real bundle
+    layout — running them from the extracted package root (the folder
+    named ``cra-package-<product-slug>/`` inside the ZIP) produces
+    ``manifest.json: OK`` and ``<path>: OK`` for every file listed in
+    the manifest's ``files`` array.
+    """
+    return (
+        "# Bundle Integrity\n\n"
+        f"Manifest `format_version` **{_MANIFEST_FORMAT_VERSION}** — changes vs 1.0 (shipped in\n"
+        "the initial CRA export scaffolding):\n\n"
+        "- `manufacturer.is_placeholder: bool` — flags when the team\n"
+        "  profile still carries a stub name. Downstream consumers can\n"
+        "  reject bundles where this is `true` to keep invalid DoCs\n"
+        "  from being signed (Annex V item 2).\n"
+        "- `integrity` block — self-describes the hash algorithm and\n"
+        "  the companion files (`metadata/manifest.sha256`,\n"
+        "  `metadata/INTEGRITY.md`). Old consumers that read\n"
+        "  `format_version: 1.0` should ignore unknown keys.\n\n"
+        "This CRA export bundle ships with two integrity primitives:\n\n"
+        "- `metadata/manifest.json` — per-file SHA-256 hashes for every "
+        "artefact listed in its `files` array. `metadata/manifest.json`, "
+        "`metadata/manifest.sha256`, and this `metadata/INTEGRITY.md` are "
+        "NOT listed (they are the integrity primitives themselves — "
+        "listing them would be circular).\n"
+        "- `metadata/manifest.sha256` — SHA-256 of `metadata/manifest.json` "
+        "itself, so the manifest cannot be tampered with without "
+        "detection.\n\n"
+        "## 1. Verifying the manifest\n\n"
+        "Run from the extracted bundle root (the `cra-package-<slug>/` "
+        "directory inside the ZIP):\n\n"
+        "```sh\n"
+        "sha256sum -c metadata/manifest.sha256\n"
+        "```\n\n"
+        "Expected output: `metadata/manifest.json: OK`.\n\n"
+        f"Expected digest (from `metadata/manifest.sha256`): `{manifest_sha256}`\n\n"
+        "## 2. Verifying every individual artefact\n\n"
+        "Again from the extracted bundle root:\n\n"
+        "```sh\n"
+        'jq -r \'.files[] | "\\(.sha256)  \\(.path | sub("^cra-package-[^/]*/"; ""))"\' \\\n'
+        "  metadata/manifest.json | sha256sum -c -\n"
+        "```\n\n"
+        "Each file in the manifest prints `<path>: OK`. A non-zero exit "
+        "code or any `FAILED` entry means the bundle has been modified "
+        "since export. The `jq` `sub` expression strips the "
+        "`cra-package-<slug>/` prefix so `sha256sum` resolves paths "
+        "against the current working directory (the bundle root).\n\n"
+        "## 3. About signatures\n\n"
+        "sbomify does not sign the bundle itself. Operators who need a "
+        "stronger integrity / provenance guarantee for regulatory filings "
+        "should sign the whole ZIP downstream with `cosign sign-blob` "
+        "or `gpg --detach-sign` and distribute the detached signature "
+        "alongside the bundle. The self-hash above bounds the manifest's "
+        "integrity; a downstream signature bounds the whole package.\n"
+    )
+
+
+def _article_14_reporting_readme() -> str:
+    """Article 14 deadlines + ENISA Single Reporting Platform pointers."""
+    return (
+        "# CRA Article 14 — Reporting Obligations\n\n"
+        "Article 14 of Regulation (EU) 2024/2847 requires manufacturers to "
+        "notify the competent CSIRT and ENISA when they become aware of an "
+        "actively exploited vulnerability or a severe incident. **The "
+        "reporting obligations apply from 2026-09-11**; until then, "
+        "submissions are voluntary.\n\n"
+        "## Deadlines\n\n"
+        "| Deadline | Requirement | Template |\n"
+        "| --- | --- | --- |\n"
+        "| ≤24 h | Early warning: what, affected Member States, malicious?"
+        " | `early-warning-template.md` |\n"
+        "| ≤72 h | Vulnerability / incident notification with corrective"
+        " measures taken | `vulnerability-notification-template.md` |\n"
+        "| ≤14 d | Final report (vulnerability — after corrective measure"
+        " applied) | `final-report-template.md` |\n"
+        "| ≤1 mo | Final report (severe incident)"
+        " | `final-report-template.md` |\n\n"
+        "## Submission channel\n\n"
+        "Article 16 designates ENISA to operate the Single Reporting Platform "
+        "(SRP). The SRP consumes the notifications above and routes them to "
+        "the competent CSIRTs automatically. Submission interface:\n\n"
+        "- EC portal: https://digital-strategy.ec.europa.eu/en/policies/cra-reporting\n\n"
+        "sbomify does not yet auto-submit on the operator's behalf — templates "
+        "are provided for manual filing. An automated pipeline will land once "
+        "the SRP technical interface is publicly documented (tracked against "
+        "the 2026-09-11 obligation date).\n"
+    )
 
 
 def _get_generated_doc_content(doc: CRAGeneratedDocument, s3_client: S3Client | None = None) -> bytes | None:
@@ -111,7 +215,13 @@ def build_export_package(
             └── manifest.json
     """
     product = assessment.product
-    prefix = f"cra-package-{slugify(product.name)}"
+    # Mirror the presigned-URL filename convention: fall back to the
+    # product id when slugify(name) returns empty (e.g. a name made
+    # entirely of punctuation). Without this fallback, the bundle root
+    # would be ``cra-package-/`` and every INTEGRITY.md command that
+    # references ``cra-package-<slug>/`` would leave the slug segment
+    # blank and confuse auditors.
+    prefix = f"cra-package-{slugify(product.name) or product.id}"
     import tempfile
 
     manifest_files: list[dict[str, str]] = []
@@ -166,30 +276,93 @@ def build_export_package(
                 sbom_path = f"{prefix}/sboms/{slugify(component.name)}-{component.id}.{ext}"
                 _write_to_zip(zf, sbom_path, sbom_content, manifest_files, "Annex VII, §2")
 
-        # 5. Manifest — built after all other files are written so manifest_files
-        #    is complete. The manifest itself is NOT included in its own files list.
-        manufacturer = ContactEntity.objects.filter(profile__team=assessment.team, is_manufacturer=True).first()
+        # 5. Harmonised-standards reference copy — so the bundle is
+        # self-contained and auditors / notified bodies don't have to
+        # chase the source JSON inside the sbomify codebase. The helper
+        # returns ``None`` (already logged) on missing / unreadable
+        # file; we simply skip the embedded copy in that case — the
+        # rest of the export continues.
+        standards_bytes = read_harmonised_standards_bytes()
+        if standards_bytes is not None:
+            _write_to_zip(
+                zf,
+                f"{prefix}/metadata/harmonised-standards.json",
+                standards_bytes,
+                manifest_files,
+                "CRA standards reference",
+            )
+
+        # 6. Article 14 reporting README — documents the 2026-09-11
+        # reporting deadline, the ENISA Single Reporting Platform, and
+        # which template to use for each deadline.
+        _write_to_zip(
+            zf,
+            f"{prefix}/article-14/README_REPORTING.md",
+            _article_14_reporting_readme().encode("utf-8"),
+            manifest_files,
+            "Article 14 / Article 16",
+        )
+
+        # 7. Manifest — built after all other files are written so manifest_files
+        # is complete. The manifest itself is NOT included in its own files list.
+        manufacturer = get_manufacturer(assessment.team)
+        manufacturer_name = manufacturer.name if manufacturer else ""
+        manufacturer_name_is_placeholder = _is_placeholder_manufacturer(manufacturer_name)
 
         manifest = {
-            "format_version": "1.0",
+            "format_version": _MANIFEST_FORMAT_VERSION,
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "product": {
                 "id": product.id,
                 "name": product.name,
             },
             "manufacturer": {
-                "name": manufacturer.name if manufacturer else "",
+                "name": manufacturer_name,
                 "address": manufacturer.address if manufacturer else "",
+                "is_placeholder": manufacturer_name_is_placeholder,
             },
             "assessment_id": assessment.id,
             "cra_regulation": "EU 2024/2847",
             "product_category": assessment.product_category,
             "conformity_procedure": assessment.conformity_assessment_procedure,
+            "integrity": {
+                "hash_algorithm": "sha256",
+                "manifest_hash_file": "metadata/manifest.sha256",
+                "verification_doc": "metadata/INTEGRITY.md",
+            },
             "files": manifest_files,
         }
         manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
         manifest_path = f"{prefix}/metadata/manifest.json"
         zf.writestr(manifest_path, manifest_bytes)
+
+        # 8. Self-hash of the manifest so a consumer can verify the
+        # manifest hasn't been altered before trusting its per-file
+        # hashes. This export does not sign the bundle itself here;
+        # as documented in ``metadata/INTEGRITY.md``, operators who
+        # need stronger whole-package provenance guarantees should
+        # sign the final ZIP downstream (cosign sign-blob, gpg
+        # --detach-sign) and distribute the detached signature
+        # alongside the bundle. The self-hash therefore bounds the
+        # manifest's integrity, while any whole-package provenance
+        # guarantee comes from downstream signing.
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        # The checksum file declares the manifest path as
+        # ``metadata/manifest.json`` (relative to the bundle root, not
+        # the checksum file's own directory) because ``sha256sum -c``
+        # resolves each entry against the working directory. INTEGRITY.md
+        # tells operators to run the verification from the bundle root,
+        # so the path here must match that working directory.
+        zf.writestr(
+            f"{prefix}/metadata/manifest.sha256",
+            f"{manifest_sha256}  metadata/manifest.json\n".encode("utf-8"),
+        )
+
+        # 9. INTEGRITY.md — human-readable verification guide.
+        zf.writestr(
+            f"{prefix}/metadata/INTEGRITY.md",
+            _integrity_readme(manifest_sha256).encode("utf-8"),
+        )
 
     # Read entire ZIP into memory for hashing and upload. This is acceptable because
     # CRA export packages are typically <1MB (documents + SBOMs). The SpooledTemporaryFile
@@ -237,8 +410,25 @@ def _write_to_zip(
     )
 
 
+# CRA export bundle URLs expire in 15 minutes rather than the boto3
+# default of 1 h. These URLs point at regulated evidence (Annex VII
+# technical documentation); keeping the unauthenticated window tight
+# reduces the blast radius of a leaked URL in a referer header,
+# copy-pasted ticket, or mis-routed chat message. 900 s is still
+# long enough for a human to click "Download" on the wizard.
+_PRESIGNED_URL_EXPIRY_SECONDS = 900
+
+
 def get_download_url(package: CRAExportPackage) -> ServiceResult[str]:
-    """Generate a presigned S3 URL for ZIP download (1 hour expiry)."""
+    """Generate a presigned S3 URL for the CRA bundle ZIP.
+
+    Returns a short-lived URL (see ``_PRESIGNED_URL_EXPIRY_SECONDS``)
+    with a forced ``Content-Disposition: attachment`` header so the
+    browser downloads the bundle instead of rendering the ZIP inline
+    (which some viewers attempt for JSON-looking responses). The
+    filename is set to a deterministic slug derived from the product
+    name + short hash so auditors can tell bundles apart on disk.
+    """
     try:
         import boto3
 
@@ -249,13 +439,17 @@ def get_download_url(package: CRAExportPackage) -> ServiceResult[str]:
             aws_access_key_id=django_settings.AWS_DOCUMENTS_ACCESS_KEY_ID,
             aws_secret_access_key=django_settings.AWS_DOCUMENTS_SECRET_ACCESS_KEY,
         )
+        product_slug = slugify(package.assessment.product.name) or package.assessment.product.id
+        filename = f"cra-package-{product_slug}-{package.content_hash[:12]}.zip"
         url: str = s3_client.generate_presigned_url(
             "get_object",
             Params={
                 "Bucket": django_settings.AWS_DOCUMENTS_STORAGE_BUCKET_NAME,
                 "Key": package.storage_key,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentType": "application/zip",
             },
-            ExpiresIn=3600,
+            ExpiresIn=_PRESIGNED_URL_EXPIRY_SECONDS,
         )
         return ServiceResult.success(url)
     except Exception:

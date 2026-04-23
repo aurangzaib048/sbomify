@@ -22,6 +22,230 @@ _MIN_FORMAT_VERSIONS: dict[str, str] = {
     "spdx": "3.0.1",
 }
 
+# CRA-compliance-level classification of BSI findings (issue #907).
+# Every normal-check finding id emitted by the BSI plugin (see
+# ``plugins.builtins.bsi.FINDING_IDS``) gets a remediation_type.
+# The special ``bsi-tr03183:error`` finding emitted on plugin
+# execution failures is NOT classified here — it isn't a check
+# result but an operational error and falls through to the
+# ``operator_action`` default in ``_classify_bsi_finding`` so the
+# operator is told to address it rather than wave it through.
+#
+# - ``tooling_limitation`` — the field is missing because an upstream
+#   scanner (syft, trivy, anchore) does not emit it for apt/yum-
+#   packaged components. The operator can fix this by re-running
+#   ``sbomify-action`` with ``--enrich`` or by scanning the source
+#   manifest (pyproject.toml, package.json, go.mod) instead of the
+#   container image. A waiver is acceptable when the limitation is
+#   documented and accepted.
+#
+# - ``operator_action`` — the field is expected to be configured
+#   by the operator (contact email, licence text, attestation
+#   signature) or represents a fundamental SBOM structural gap that
+#   must be fixed before CRA submission. No waiver is appropriate;
+#   the operator has to author the missing content.
+#
+# The wizard Step 2 UI renders the remediation_type inline so
+# operators understand what action to take without digging through
+# the full BSI remediation text.
+_BSI_REMEDIATION_TYPE: dict[str, str] = {
+    # Tooling-limitation checks — scanners don't emit these for
+    # apt/yum-packaged components.
+    "bsi-tr03183:hash-value": "tooling_limitation",
+    "bsi-tr03183:executable-property": "tooling_limitation",
+    "bsi-tr03183:archive-property": "tooling_limitation",
+    "bsi-tr03183:structured-property": "tooling_limitation",
+    "bsi-tr03183:filename": "tooling_limitation",
+    "bsi-tr03183:source-code-uri": "tooling_limitation",
+    "bsi-tr03183:uri-deployable-form": "tooling_limitation",
+    # Operator-action checks — the operator authors, configures, or
+    # structurally fixes these.
+    "bsi-tr03183:sbom-format": "operator_action",
+    "bsi-tr03183:sbom-creator": "operator_action",
+    "bsi-tr03183:timestamp": "operator_action",
+    "bsi-tr03183:component-creator": "operator_action",
+    "bsi-tr03183:component-name": "operator_action",
+    "bsi-tr03183:component-version": "operator_action",
+    "bsi-tr03183:dependencies": "operator_action",
+    "bsi-tr03183:distribution-licences": "operator_action",
+    "bsi-tr03183:original-licences": "operator_action",
+    "bsi-tr03183:sbom-uri": "operator_action",
+    "bsi-tr03183:unique-identifiers": "operator_action",
+    "bsi-tr03183:no-vulnerabilities": "operator_action",
+    "bsi-tr03183:attestation-check": "operator_action",
+}
+
+# Single source of truth for the sbomify-action enrichment docs so
+# every guidance link points at the same page. Overridable per-
+# finding via ``_BSI_GUIDANCE_URL_OVERRIDES`` below.
+_SBOMIFY_ACTION_ENRICHMENT_URL = "https://sbomify.com/docs/sbomify-action/enrichment"
+
+# Per-finding doc links when the default URL isn't the right target
+# (e.g. CycloneDX / SPDX schema reference for format issues).
+_BSI_GUIDANCE_URL_OVERRIDES: dict[str, str] = {
+    "bsi-tr03183:sbom-format": "https://sbomify.com/docs/sbom-format",
+    "bsi-tr03183:attestation-check": "https://sbomify.com/docs/attestations",
+}
+
+# Plain-English "why is this failing and what do I do about it" sentence
+# per finding, rendered inline on Step 2 alongside the badge (issue
+# #907 — this is the operator-facing context that the bare remediation
+# prose from the BSI plugin doesn't provide). Text is kept terse so it
+# fits one line in the wizard card.
+_BSI_HUMAN_SUMMARY: dict[str, str] = {
+    # Tooling-limitation: scanner-output gaps.
+    "bsi-tr03183:hash-value": (
+        "SBOM scanners like syft / trivy don't emit per-component SHA-512 for "
+        "apt / yum packages. Re-run sbomify-action with --enrich or scan your "
+        "source manifest (pyproject.toml, package.json) instead of a container image."
+    ),
+    "bsi-tr03183:executable-property": (
+        "The isExecutable property is rarely emitted by container scanners. "
+        "Run sbomify-action --enrich to annotate components, or author the "
+        "SBOM from source where this can be set explicitly."
+    ),
+    "bsi-tr03183:archive-property": (
+        "The isArchive property is rarely emitted by container scanners. "
+        "Run sbomify-action --enrich to annotate components."
+    ),
+    "bsi-tr03183:structured-property": (
+        "The isStructured property is a BSI-specific extension that most "
+        "scanners don't emit. Use sbomify-action --enrich to annotate."
+    ),
+    "bsi-tr03183:filename": (
+        "Scanner output often omits the component filename inside the image. "
+        "Re-run with sbomify-action --enrich or use a source-manifest scan."
+    ),
+    "bsi-tr03183:source-code-uri": (
+        "Source repository URL per component is rarely emitted by container "
+        "scanners. Enrich via sbomify-action or author from the source manifest."
+    ),
+    "bsi-tr03183:uri-deployable-form": (
+        "Deployable-form URL per component is rarely available in container "
+        "scans. Enrich via sbomify-action or document at the product level."
+    ),
+    # Operator-action: authoring / configuration gaps.
+    "bsi-tr03183:sbom-format": (
+        "The SBOM format or version doesn't meet BSI TR-03183-2 §4. "
+        "Upgrade your SBOM generator to emit CycloneDX >= 1.6 or SPDX >= 3.0.1."
+    ),
+    "bsi-tr03183:sbom-creator": (
+        "The SBOM lacks a creator identity. Configure your SBOM generator "
+        "(or sbomify team settings) with the contact email or URL of the "
+        "entity producing the SBOM."
+    ),
+    "bsi-tr03183:timestamp": (
+        "The SBOM is missing an ISO-8601 creation timestamp. Modern "
+        "CycloneDX / SPDX generators add this automatically — upgrade yours."
+    ),
+    "bsi-tr03183:component-creator": (
+        "Per-component creator identities are missing. This typically "
+        "requires manual authoring or an enrichment plugin — sbomify-action "
+        "--enrich is the recommended path."
+    ),
+    "bsi-tr03183:component-name": (
+        "One or more components have no name. Fix in your SBOM source — "
+        "this is a structural SBOM requirement, not a tooling limitation."
+    ),
+    "bsi-tr03183:component-version": ("One or more components have no version. Fix in your SBOM source."),
+    "bsi-tr03183:dependencies": (
+        "Dependency relationships are incomplete. Ensure your SBOM "
+        "generator includes the dependency graph (CycloneDX 'dependencies' "
+        "or SPDX 'relationships')."
+    ),
+    "bsi-tr03183:distribution-licences": (
+        "Distribution licences are missing on some components. Licence "
+        "data often requires a dedicated licence-scanning tool upstream "
+        "of SBOM generation."
+    ),
+    "bsi-tr03183:original-licences": (
+        "Original licences are missing on some components. Same remediation "
+        "as distribution licences — use a licence scanner upstream."
+    ),
+    "bsi-tr03183:sbom-uri": (
+        "The SBOM carries no canonical URI. Configure your generator to "
+        "emit the bom.metadata.component.externalReferences URL."
+    ),
+    "bsi-tr03183:unique-identifiers": (
+        "Components are missing unique identifiers (PURL / CPE). Ensure "
+        "your generator emits at least a purl for every component."
+    ),
+    "bsi-tr03183:no-vulnerabilities": (
+        "The SBOM embeds vulnerability data inline — BSI TR-03183-2 "
+        "prohibits this; vulnerabilities belong in a separate VEX / VDR "
+        "document referenced by the SBOM."
+    ),
+    "bsi-tr03183:attestation-check": (
+        "No cryptographic attestation is attached to the SBOM. Enable "
+        "sigstore / cosign attestation via a signing plugin or "
+        "sbomify-action signing."
+    ),
+}
+
+
+_UNKNOWN_FINDING_SUMMARY = (
+    "Unclassified BSI finding. Treat as operator_action until the "
+    "classifier is updated — fix the underlying SBOM gap or file an issue."
+)
+
+
+def _classify_bsi_finding(finding_id: object) -> tuple[str, str, str]:
+    """Return ``(remediation_type, guidance_url, human_summary)`` for a BSI finding id.
+
+    Accepts ``object`` rather than ``str`` because the run payload is
+    JSON round-tripped and a broken upstream plugin (or corrupted DB
+    row) can land here with a list/dict/int in place of the string
+    id. ``dict.get()`` with an unhashable key raises
+    ``TypeError``, which would break BSI classification for every
+    finding in the scan. Coerce to the fail-closed default instead.
+
+    Unknown or non-string finding ids fall back to ``operator_action``
+    + the enrichment URL + a generic summary — the conservative
+    default keeps the wizard gate strict when the BSI plugin gains a
+    new check that this classifier hasn't been updated for yet, or
+    when upstream emits a malformed id that the ``_build_bsi_assessment_dict``
+    coercion didn't catch.
+
+    The ``human_summary`` is a one-line operator-facing sentence
+    (issue #907) explaining in plain English why this check fails
+    and what to do — e.g. "syft doesn't emit SHA-512 for apt packages;
+    re-run with sbomify-action --enrich". Renders inline on Step 2
+    alongside the badge so operators don't have to piece together
+    the remediation from the BSI plugin's schema-oriented text.
+    """
+    if not isinstance(finding_id, str):
+        return "operator_action", _SBOMIFY_ACTION_ENRICHMENT_URL, _UNKNOWN_FINDING_SUMMARY
+    remediation_type = _BSI_REMEDIATION_TYPE.get(finding_id, "operator_action")
+    guidance_url = _BSI_GUIDANCE_URL_OVERRIDES.get(finding_id, _SBOMIFY_ACTION_ENRICHMENT_URL)
+    human_summary = _BSI_HUMAN_SUMMARY.get(finding_id, _UNKNOWN_FINDING_SUMMARY)
+    return remediation_type, guidance_url, human_summary
+
+
+def is_known_bsi_finding(finding_id: str) -> bool:
+    """True iff ``finding_id`` is in the classifier whitelist.
+
+    Public waiver-save validation: the wizard rejects waiver payloads
+    that reference finding ids we don't classify. Keeps typos from
+    silently poisoning the ``bsi_waivers`` map.
+    """
+    return isinstance(finding_id, str) and finding_id in _BSI_REMEDIATION_TYPE
+
+
+def is_waivable_bsi_finding(finding_id: object) -> bool:
+    """True iff ``finding_id`` is a tooling-limitation (waiver-eligible).
+
+    Public predicate for waiver-save validation. Keeps the
+    ``_BSI_REMEDIATION_TYPE`` dict private to this module — consumers
+    ask the question "can this be waived?" without seeing the
+    classifier's internals. Typed ``object`` because the waiver save
+    path deserialises user JSON: non-string payloads (list / dict /
+    None) must fail closed rather than crash ``dict.get`` with
+    ``TypeError: unhashable type``.
+    """
+    if not isinstance(finding_id, str):
+        return False
+    return _BSI_REMEDIATION_TYPE.get(finding_id) == "tooling_limitation"
+
 
 def _is_format_compliant(sbom_format: str | None, format_version: str | None) -> bool:
     """Check whether the SBOM format version meets BSI TR-03183-2 requirements.
@@ -47,16 +271,32 @@ def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
     summary = result.get("summary", {})
     raw_findings = result.get("findings", [])
 
-    # Extract failing findings with fix guidance
+    # Extract failing findings with fix guidance + CRA-compliance
+    # classification (issue #907). ``remediation_type`` tells the
+    # wizard whether this is an operator action or a known tooling
+    # limitation; ``guidance_url`` points at the sbomify-action docs
+    # covering the remediation path.
     failing_checks: list[dict[str, str]] = []
     for f in raw_findings:
         if f.get("status") == "fail":
+            # Coerce non-string ids to "" so a malformed/corrupted
+            # run payload (list, dict, int stored in the JSON blob)
+            # can't raise ``TypeError: unhashable type`` when
+            # ``_classify_bsi_finding`` uses the value as a dict
+            # key. Fail-closed: unknown id maps to the default
+            # ``operator_action`` classification.
+            raw_id = f.get("id", "")
+            finding_id = raw_id if isinstance(raw_id, str) else ""
+            remediation_type, guidance_url, human_summary = _classify_bsi_finding(finding_id)
             failing_checks.append(
                 {
-                    "id": f.get("id", ""),
+                    "id": finding_id,
                     "title": f.get("title", ""),
                     "description": f.get("description", ""),
                     "remediation": f.get("remediation", ""),
+                    "remediation_type": remediation_type,
+                    "guidance_url": guidance_url,
+                    "human_summary": human_summary,
                 }
             )
 

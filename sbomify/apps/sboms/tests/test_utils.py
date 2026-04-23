@@ -331,14 +331,14 @@ def test_project_sbom_file_generation_with_components(sample_project, tmp_path):
     component1 = Component.objects.create(
         name="component1",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,  # SECURITY: Make component public
     )
 
     component2 = Component.objects.create(
         name="component2",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,  # SECURITY: Make component public
     )
 
@@ -425,6 +425,75 @@ def test_project_sbom_file_generation_with_components(sample_project, tmp_path):
 
 
 @pytest.mark.django_db
+def test_project_sbom_builder_without_metadata_component(sample_project, tmp_path):  # noqa: F811
+    """Test that ProjectSBOMBuilder handles CycloneDX SBOMs without metadata.component."""
+
+    from sbomify.apps.sboms.models import SBOM, Component, ProjectComponent
+
+    sample_project.is_public = True
+    sample_project.save()
+
+    component = Component.objects.create(
+        name="no-meta-component",
+        team=sample_project.team,
+        component_type="bom",
+        visibility=Component.Visibility.PUBLIC,
+    )
+
+    SBOM.objects.create(
+        name="no-meta-component",
+        component=component,
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="no_meta.cdx.json",
+    )
+
+    ProjectComponent.objects.create(project=sample_project, component=component)
+
+    with patch("sbomify.apps.core.object_store.S3Client") as mock_s3:
+        mock_s3_instance = mock_s3.return_value
+
+        def mock_get_sbom_data(filename):
+            if filename == "no_meta.cdx.json":
+                return json.dumps(
+                    {
+                        "bomFormat": "CycloneDX",
+                        "specVersion": "1.6",
+                        "version": 1,
+                        "metadata": {
+                            "timestamp": "2026-04-19T00:00:00+00:00",
+                            "tools": {
+                                "components": [{"type": "application", "name": "cyclonedx-py", "version": "7.3.0"}]
+                            },
+                        },
+                        "components": [
+                            {
+                                "type": "library",
+                                "name": "some-lib",
+                                "version": "1.0.0",
+                                "bom-ref": "some-lib@1.0.0",
+                            },
+                        ],
+                    }
+                ).encode()
+            raise Exception(f"Unexpected filename: {filename}")
+
+        mock_s3_instance.get_sbom_data.side_effect = mock_get_sbom_data
+
+        from sbomify.apps.sboms.utils import get_project_sbom_package
+
+        sbom_path = get_project_sbom_package(sample_project, tmp_path)
+
+        assert sbom_path.exists()
+        project_sbom_data = json.loads(sbom_path.read_text())
+
+        assert project_sbom_data["bomFormat"] == "CycloneDX"
+        components = project_sbom_data.get("components", [])
+        assert len(components) == 1
+        assert components[0]["name"] == "no-meta-component"
+
+
+@pytest.mark.django_db
 def test_simple_external_reference_creation():
     """Test creating ExternalReference objects to isolate serialization issues."""
 
@@ -481,7 +550,7 @@ def test_project_sbom_builder_serialization(sample_project, tmp_path):  # noqa: 
     component = Component.objects.create(
         name="test-component",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,
     )
 
@@ -559,14 +628,14 @@ def test_mixed_cyclonedx_versions_serialization(sample_project, tmp_path):  # no
     component1 = Component.objects.create(
         name="component1",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,
     )
 
     component2 = Component.objects.create(
         name="component2",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,
     )
 
@@ -698,10 +767,10 @@ def test_product_sbom_file_generation(tmp_path):
 
     # Create PUBLIC components
     component1 = Component.objects.create(
-        name="component1", team=team, component_type="sbom", visibility=Component.Visibility.PUBLIC
+        name="component1", team=team, component_type="bom", visibility=Component.Visibility.PUBLIC
     )
     component2 = Component.objects.create(
-        name="component2", team=team, component_type="sbom", visibility=Component.Visibility.PUBLIC
+        name="component2", team=team, component_type="bom", visibility=Component.Visibility.PUBLIC
     )
 
     # Create SBOMs
@@ -793,7 +862,7 @@ def test_sbom_vendor_and_remote_file_references(tmp_path):
 
     # Create component
     component = Component.objects.create(
-        name="test-component", team=team, component_type="sbom", visibility=Component.Visibility.PUBLIC
+        name="test-component", team=team, component_type="bom", visibility=Component.Visibility.PUBLIC
     )
 
     # Create SBOM with specific filename
@@ -935,7 +1004,7 @@ def test_network_failure_during_s3_operations(sample_project, tmp_path):  # noqa
     component = Component.objects.create(
         name="test-component",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,  # SECURITY: Make component public
     )
 
@@ -984,7 +1053,7 @@ def test_malformed_sbom_file_handling(sample_project, tmp_path):  # noqa: F811
     component = Component.objects.create(
         name="test-component",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,  # SECURITY: Make component public
     )
 
@@ -1033,7 +1102,7 @@ def test_invalid_sbom_format_handling(sample_project, tmp_path):  # noqa: F811
     component = Component.objects.create(
         name="test-component",
         team=sample_project.team,
-        component_type="sbom",
+        component_type="bom",
         visibility=Component.Visibility.PUBLIC,  # SECURITY: Make component public
     )
 
@@ -1328,7 +1397,7 @@ def test_sbom_serialization_uses_schema_alias(tmp_path):
     ProductProject.objects.create(product=product, project=project)
 
     component = Component.objects.create(
-        name="schema-test-component", team=team, component_type="sbom", visibility=Component.Visibility.PUBLIC
+        name="schema-test-component", team=team, component_type="bom", visibility=Component.Visibility.PUBLIC
     )
     SBOM.objects.create(
         name="schema-test-sbom",
