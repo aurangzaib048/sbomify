@@ -51,8 +51,29 @@ def product_with_contacts(sample_team_with_owner_member, product):
 
 
 @pytest.fixture
-def assessment(sample_team_with_owner_member, sample_user, product):
-    """Create a CRAAssessment for testing."""
+def _valid_manufacturer(sample_team_with_owner_member):
+    """Configure a real (non-placeholder) manufacturer for the team.
+
+    Required for Step 1 save-path tests because ``_save_step_1``
+    refuses to mark the step complete when the team's manufacturer
+    name passes ``is_placeholder_manufacturer`` — the server-side
+    mirror of the client-side gate (issue #908). Tests that
+    specifically exercise the placeholder refusal should NOT request
+    this fixture.
+    """
+    team = sample_team_with_owner_member.team
+    profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+    ContactEntity.objects.create(
+        profile=profile,
+        name="Acme Labs GmbH",
+        email="legal@acmelabs.example",
+        is_manufacturer=True,
+    )
+
+
+@pytest.fixture
+def assessment(sample_team_with_owner_member, sample_user, product, _valid_manufacturer):
+    """Create a CRAAssessment for testing with a valid manufacturer configured."""
     team = sample_team_with_owner_member.team
     result = get_or_create_assessment(product.id, sample_user, team)
     assert result.ok
@@ -229,10 +250,93 @@ class TestSaveStepData:
         assert not result.ok
         assert result.status_code == 400
 
+    def test_step_1_rejects_placeholder_manufacturer(self, sample_team_with_owner_member, sample_user, product):
+        """Server-side mirror of the ``canContinue`` gate. Even if a
+        non-browser client skips the wizard's client-side check, the
+        save endpoint refuses to mark step 1 complete when the team's
+        manufacturer is a placeholder (Annex V item 2)."""
+        team = sample_team_with_owner_member.team
+        # Configure a placeholder manufacturer — "ABC" is in PLACEHOLDER_MANUFACTURER_VALUES
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="ABC",
+            email="abc@example.test",
+            is_manufacturer=True,
+        )
+        result = get_or_create_assessment(product.id, sample_user, team)
+        assert result.ok
+        a = result.value
+
+        save = save_step_data(a, 1, {"product_category": "class_i"}, sample_user)
+
+        assert not save.ok
+        assert save.status_code == 400
+        assert "Annex V" in (save.error or "")
+
     def test_step_2_marks_complete(self, assessment, sample_user):
         result = save_step_data(assessment, 2, {}, sample_user)
         assert result.ok
         assert 2 in result.value.completed_steps
+
+    def test_step_2_accepts_tooling_limitation_waiver(self, assessment, sample_user):
+        """Issue #907: operator can waive a tooling-limitation
+        finding by supplying a justification. The waiver is stamped
+        with timestamp + user id for audit."""
+        data = {
+            "waivers": {
+                "bsi-tr03183:hash-value": {
+                    "justification": "Accepted — syft does not emit SHA-512 for apt packages.",
+                }
+            }
+        }
+        result = save_step_data(assessment, 2, data, sample_user)
+
+        assert result.ok
+        waivers = result.value.bsi_waivers
+        assert "bsi-tr03183:hash-value" in waivers
+        assert waivers["bsi-tr03183:hash-value"]["justification"].startswith("Accepted")
+        assert waivers["bsi-tr03183:hash-value"]["waived_at"]
+        assert waivers["bsi-tr03183:hash-value"]["waived_by"] == sample_user.id
+
+    def test_step_2_rejects_operator_action_waiver(self, assessment, sample_user):
+        """Waiver is only valid for tooling_limitation findings.
+        Attempting to waive an operator_action finding (e.g. missing
+        SBOM creator) returns 400 — the gap would represent a genuine
+        Annex I Part II(1) deficiency that must be fixed."""
+        data = {
+            "waivers": {
+                "bsi-tr03183:sbom-creator": {"justification": "we don't feel like it"}
+            }
+        }
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+        assert "cannot be waived" in (result.error or "")
+
+    def test_step_2_rejects_unknown_finding_id(self, assessment, sample_user):
+        """Typos in the waiver payload must not silently poison the
+        ``bsi_waivers`` map. Only ids in the classifier whitelist
+        are accepted."""
+        data = {"waivers": {"bsi-tr03183:does-not-exist": {"justification": "x"}}}
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_2_rejects_empty_justification(self, assessment, sample_user):
+        """Auditable waivers need a reason text. Empty / whitespace-
+        only justification rejects so Annex VII documentation can
+        explain why a tooling gap was accepted."""
+        data = {"waivers": {"bsi-tr03183:hash-value": {"justification": "   "}}}
+        result = save_step_data(assessment, 2, data, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+        assert "justification" in (result.error or "").lower()
+
+    def test_step_2_rejects_non_object_waivers_payload(self, assessment, sample_user):
+        result = save_step_data(assessment, 2, {"waivers": "not-a-dict"}, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
 
     def test_step_3_updates_findings(self, assessment, sample_user):
         finding = OSCALFinding.objects.filter(assessment_result=assessment.oscal_assessment_result).first()

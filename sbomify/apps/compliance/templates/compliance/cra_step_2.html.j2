@@ -102,10 +102,11 @@
                                             </td>
                                             <td>
                                                 <div class="flex items-center gap-2">
-                                                    <template x-if="comp.bsi_status === 'completed' && !hasFailingChecks(comp)">
+                                                    {# Issue #907: pass/fail badge uses unwaived-aware predicate so a component whose only failing checks are waived tooling limitations shows Pass. Panel-expand gating uses the raw predicate below so operators can still audit waived findings. #}
+                                                    <template x-if="comp.bsi_status === 'completed' && !hasUnwaivedFailures(comp)">
                                                         <span class="tw-badge-success">Pass</span>
                                                     </template>
-                                                    <template x-if="comp.bsi_status === 'completed' && hasFailingChecks(comp)">
+                                                    <template x-if="comp.bsi_status === 'completed' && hasUnwaivedFailures(comp)">
                                                         <span class="tw-badge-danger">Fail</span>
                                                     </template>
                                                     <template x-if="comp.bsi_status === 'pending'">
@@ -114,13 +115,15 @@
                                                     <template x-if="!comp.bsi_status">
                                                         <span class="tw-badge-secondary">N/A</span>
                                                     </template>
+                                                    {# Expand the fixes panel whenever there's ANY failing check — waived or not — so operators can review the justifications and audit the waivers, even when the pass/fail badge shows green. #}
                                                     <template x-if="hasFailingChecks(comp)">
                                                         <button type="button"
                                                                 @click="toggleFixes(comp.component_id)"
                                                                 class="text-xs text-primary hover:underline cursor-pointer"
                                                                 :aria-expanded="isFixesExpanded(comp.component_id)"
                                                                 :aria-controls="'fixes-' + comp.component_id">
-                                                            <span x-show="!isFixesExpanded(comp.component_id)">How to Fix</span>
+                                                            <span x-show="!isFixesExpanded(comp.component_id)"
+                                                                  x-text="hasUnwaivedFailures(comp) ? 'How to Fix' : 'Review Waivers'"></span>
                                                             <span x-show="isFixesExpanded(comp.component_id)">Hide</span>
                                                         </button>
                                                     </template>
@@ -151,13 +154,35 @@
                                     <div class="space-y-3">
                                         <template x-for="check in comp.bsi_assessment?.failing_checks || []"
                                                   :key="check.id">
-                                            <div class="rounded-lg border border-border/50 overflow-hidden">
+                                            <div class="rounded-lg border border-border/50 overflow-hidden"
+                                                 :class="check.waived ? 'opacity-70' : ''">
                                                 <div class="px-4 py-3 flex items-start gap-3">
-                                                    <div class="w-6 h-6 rounded-full bg-danger/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                                                        <i class="fas fa-xmark text-danger text-xs"></i>
+                                                    <div class="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                                                         :class="check.waived ? 'bg-amber-500/10' : 'bg-danger/10'">
+                                                        <i class="fas text-xs"
+                                                           :class="check.waived ? 'fa-file-signature text-amber-600' : 'fa-xmark text-danger'"></i>
                                                     </div>
                                                     <div class="flex-1 min-w-0">
-                                                        <p class="text-sm font-medium text-text m-0" x-text="check.title"></p>
+                                                        <p class="text-sm font-medium text-text m-0 flex items-center gap-2">
+                                                            <span x-text="check.title"></span>
+                                                            {# issue #907: remediation_type badge — operators understand what to do at a glance rather than reading the remediation prose. Kept as single-line {# #} so it parses in both Django and Jinja2 engines. #}
+                                                            <template x-if="check.remediation_type === 'tooling_limitation'">
+                                                                <span class="tw-badge-warning text-[10px] font-normal px-1.5 py-0.5"
+                                                                      data-testid="step-2-tooling-limitation-badge">
+                                                                    Tooling limitation
+                                                                </span>
+                                                            </template>
+                                                            <template x-if="check.remediation_type === 'operator_action'">
+                                                                <span class="tw-badge-info text-[10px] font-normal px-1.5 py-0.5"
+                                                                      data-testid="step-2-operator-action-badge">
+                                                                    Operator action
+                                                                </span>
+                                                            </template>
+                                                            <template x-if="check.waived">
+                                                                <span class="tw-badge-success text-[10px] font-normal px-1.5 py-0.5"
+                                                                      data-testid="step-2-waived-badge">Waived</span>
+                                                            </template>
+                                                        </p>
                                                         <p class="text-xs text-text-muted mt-1 m-0" x-data="{ expanded: false }">
                                                             <template x-if="check.description && check.description.length > 120">
                                                                 <span>
@@ -176,12 +201,38 @@
                                                                 <span x-text="check.description"></span>
                                                             </template>
                                                         </p>
+                                                        <template x-if="check.waived && check.justification">
+                                                            <p class="text-xs text-amber-700 dark:text-amber-400 mt-2 m-0"
+                                                               data-testid="step-2-waiver-justification">
+                                                                <i class="fas fa-quote-left text-[8px] mr-1"></i>
+                                                                <span x-text="check.justification"></span>
+                                                            </p>
+                                                        </template>
                                                     </div>
                                                 </div>
+                                                {# Issue #907: human_summary is the plain-English one-liner explaining WHY this fails in practice (e.g. syft doesn't emit X for apt packages). Rendered first so operators see it before digging into the BSI-plugin's schema-oriented remediation. Kept single-line. #}
+                                                <template x-if="check.human_summary">
+                                                    <div class="px-4 py-2.5 bg-info/5 border-t border-border/30 flex items-start gap-2"
+                                                         data-testid="step-2-human-summary">
+                                                        <i class="fas fa-circle-info text-info text-xs mt-0.5 flex-shrink-0"></i>
+                                                        <p class="text-xs text-text m-0 flex-1" x-text="check.human_summary"></p>
+                                                    </div>
+                                                </template>
                                                 <template x-if="check.remediation">
                                                     <div class="px-4 py-2.5 bg-primary/5 border-t border-border/30 flex items-start gap-2">
                                                         <i class="fas fa-lightbulb text-primary text-xs mt-0.5 flex-shrink-0"></i>
-                                                        <p class="text-xs text-text m-0" x-text="check.remediation"></p>
+                                                        <div class="flex-1 min-w-0">
+                                                            <p class="text-xs text-text m-0" x-text="check.remediation"></p>
+                                                            <template x-if="check.guidance_url">
+                                                                <a :href="check.guidance_url"
+                                                                   target="_blank"
+                                                                   rel="noopener noreferrer"
+                                                                   class="text-xs text-primary hover:underline inline-flex items-center gap-1 mt-1">
+                                                                    <i class="fas fa-book text-[10px]"></i>
+                                                                    <span x-text="check.remediation_type === 'tooling_limitation' ? 'See sbomify-action enrichment guide' : 'See docs'"></span>
+                                                                </a>
+                                                            </template>
+                                                        </div>
                                                     </div>
                                                 </template>
                                             </div>

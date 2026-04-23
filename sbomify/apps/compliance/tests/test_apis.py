@@ -23,7 +23,23 @@ def product(sample_team_with_owner_member):
 
 
 @pytest.fixture
-def assessment(sample_team_with_owner_member, sample_user, product):
+def _valid_manufacturer(sample_team_with_owner_member):
+    """Configure a non-placeholder manufacturer so Step 1 save-path
+    tests don't trip the Annex V item 2 server-side guard (#908)."""
+    team = sample_team_with_owner_member.team
+    # Don't collide with ``assessment_with_contacts`` which creates its
+    # own ``Default`` profile; use a distinct name that still passes
+    # the placeholder check.
+    profile, _ = ContactProfile.objects.get_or_create(team=team, name="Default", defaults={"is_default": True})
+    ContactEntity.objects.get_or_create(
+        profile=profile,
+        name="Acme Labs GmbH",
+        defaults={"email": "legal@acmelabs.example", "is_manufacturer": True},
+    )
+
+
+@pytest.fixture
+def assessment(sample_team_with_owner_member, sample_user, product, _valid_manufacturer):
     team = sample_team_with_owner_member.team
     result = get_or_create_assessment(product.id, sample_user, team)
     assert result.ok
@@ -383,6 +399,61 @@ class TestDownloadExport:
 
         assert response.status_code == 404
 
+    def test_404_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+        """Cache-Control must apply on the error path too — a shared
+        cache (Caddy, corporate proxy) must not retain a 404 keyed on
+        an assessment+package-id pair. Regression for #909."""
+        client, token = authenticated_api_client
+
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}/export/nonexistent/download",
+            **get_api_headers(token),
+        )
+
+        assert response.status_code == 404
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
+
+    def test_403_response_carries_no_store_headers(self, authenticated_api_client, assessment):
+        """The 403 path is the primary threat model the Cache-Control
+        change addresses — a shared cache keyed on (Authorization,
+        path) must not retain "this assessment exists, just not for
+        you". Covers both the team-role 403 and the billing-gate 403
+        by patching ``check_cra_access``."""
+        client, token = authenticated_api_client
+
+        with patch("sbomify.apps.compliance.apis.check_cra_access", return_value=False):
+            response = client.get(
+                f"/api/v1/compliance/cra/{assessment.id}/export/anything/download",
+                **get_api_headers(token),
+            )
+
+        assert response.status_code == 403
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
+
+    def test_200_response_carries_no_store_headers(self, authenticated_api_client, assessment, mock_s3_client):
+        """Happy path: a successful download response must not be
+        cacheable — the presigned URL inside would otherwise be served
+        from an intermediate cache past its server-side expiry."""
+        from sbomify.apps.compliance.models import CRAExportPackage
+
+        package = CRAExportPackage.objects.create(
+            assessment=assessment,
+            storage_key=f"compliance/exports/{assessment.id}/test.zip",
+            content_hash="0" * 64,
+            manifest={"format_version": "1.0"},
+        )
+        client, token = authenticated_api_client
+
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}/export/{package.id}/download",
+            **get_api_headers(token),
+        )
+
+        assert response.status_code == 200
+        assert response["Cache-Control"] == "no-store"
+        assert response["Pragma"] == "no-cache"
 
 class TestStaleness:
     def test_returns_staleness_info(self, authenticated_api_client, assessment):

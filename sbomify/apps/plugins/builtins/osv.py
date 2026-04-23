@@ -292,7 +292,7 @@ class OSVPlugin(AssessmentPlugin):
             scanner_path,
             "scan",
             "source",
-            "--sbom",
+            "--lockfile",
             str(absolute_path),
             "--format",
             "json",

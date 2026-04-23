@@ -302,6 +302,173 @@ def test_sbom_upload_api_cyclonedx_invalid_json(
 
 
 @pytest.mark.django_db
+def test_sbom_upload_api_cyclonedx_without_metadata_component(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """CycloneDX SBOMs without metadata.component should succeed, falling back to component name."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+
+    SBOM.objects.all().delete()
+
+    sbom_data = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "metadata": {
+            "timestamp": "2026-04-19T00:00:00+00:00",
+            "tools": {"components": [{"type": "application", "name": "cyclonedx-py", "version": "7.3.0"}]},
+        },
+        "components": [
+            {"type": "library", "name": "some-lib", "version": "1.0.0", "bom-ref": "some-lib@1.0.0"},
+        ],
+    }
+
+    client = Client()
+    url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id})
+    response = client.post(
+        url,
+        data=json.dumps(sbom_data),
+        content_type="application/json",
+        **get_api_headers(sample_access_token),
+    )
+
+    assert response.status_code == 201
+    sbom = SBOM.objects.get(id=response.json()["id"])
+    assert sbom.format == "cyclonedx"
+    assert sbom.format_version == "1.6"
+    assert sbom.name == sample_component.name
+    assert sbom.version == ""
+
+
+@pytest.mark.django_db
+def test_sbom_upload_api_spdx3_without_spdxdocument_name(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """SPDX 3.0.1 SBOMs without SpdxDocument.name should succeed, falling back
+    to the sbomify Component name. SpdxDocument.name is OPTIONAL in SPDX 3.0.1
+    per Core.SpdxDocument (min-cardinality 0) — the previous behaviour silently
+    stored an empty-string SBOM name. Symmetric to the CDX metadata.component
+    fallback so both format-3 specs behave the same way on optional fields.
+    """
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+
+    SBOM.objects.all().delete()
+
+    sbom_data = {
+        "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+        "@graph": [
+            {
+                "type": "CreationInfo",
+                "@id": "_:creationInfo",
+                "specVersion": "3.0.1",
+                "created": "2026-04-19T00:00:00Z",
+                "createdBy": ["SPDXRef-Creator"],
+            },
+            {
+                "type": "Organization",
+                "spdxId": "SPDXRef-Creator",
+                "name": "Test Creator",
+            },
+            # SpdxDocument deliberately without `name` — spec-legal per 3.0.1.
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "rootElement": ["SPDXRef-Package-Primary"],
+            },
+            {
+                "type": "software_Package",
+                "spdxId": "SPDXRef-Package-Primary",
+                "name": "primary-pkg",
+                "software_packageVersion": "1.0.0",
+                "externalIdentifiers": [
+                    {"externalIdentifierType": "packageURL", "identifier": "pkg:pypi/primary-pkg@1.0.0"},
+                ],
+            },
+        ],
+    }
+
+    client = Client()
+    url = reverse("api-1:sbom_upload_spdx", kwargs={"component_id": sample_component.id})
+    response = client.post(
+        url,
+        data=json.dumps(sbom_data),
+        content_type="application/json",
+        **get_api_headers(sample_access_token),
+    )
+
+    assert response.status_code == 201, response.content
+    sbom = SBOM.objects.get(id=response.json()["id"])
+    assert sbom.format == "spdx"
+    assert sbom.format_version == "3.0.1"
+    # Fallback kicked in because SpdxDocument had no `name`.
+    assert sbom.name == sample_component.name
+
+
+@pytest.mark.django_db
+def test_sbom_upload_api_spdx3_with_spdxdocument_name_is_preserved(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """Backward-compat guard: SPDX 3.0.1 SBOMs that DO carry a SpdxDocument.name
+    must still use it; the fallback only fires when the name is absent."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+
+    SBOM.objects.all().delete()
+
+    explicit_doc_name = "explicit-doc-name"
+    sbom_data = {
+        "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+        "@graph": [
+            {
+                "type": "CreationInfo",
+                "@id": "_:creationInfo",
+                "specVersion": "3.0.1",
+                "created": "2026-04-19T00:00:00Z",
+                "createdBy": ["SPDXRef-Creator"],
+            },
+            {"type": "Organization", "spdxId": "SPDXRef-Creator", "name": "Test Creator"},
+            {
+                "type": "SpdxDocument",
+                "spdxId": "SPDXRef-Document",
+                "name": explicit_doc_name,
+                "rootElement": ["SPDXRef-Package-Primary"],
+            },
+            {
+                "type": "software_Package",
+                "spdxId": "SPDXRef-Package-Primary",
+                "name": "primary-pkg",
+                "software_packageVersion": "1.0.0",
+                "externalIdentifiers": [
+                    {"externalIdentifierType": "packageURL", "identifier": "pkg:pypi/primary-pkg@1.0.0"},
+                ],
+            },
+        ],
+    }
+
+    client = Client()
+    url = reverse("api-1:sbom_upload_spdx", kwargs={"component_id": sample_component.id})
+    response = client.post(
+        url,
+        data=json.dumps(sbom_data),
+        content_type="application/json",
+        **get_api_headers(sample_access_token),
+    )
+
+    assert response.status_code == 201, response.content
+    sbom = SBOM.objects.get(id=response.json()["id"])
+    assert sbom.name == explicit_doc_name
+    assert sbom.name != sample_component.name
+
+
+@pytest.mark.django_db
 def test_cyclonedx_1_6_manufacturer_field(
     sample_access_token: AccessToken,  # noqa: F811
     sample_component: Component,  # noqa: F811
@@ -2709,6 +2876,51 @@ def test_sbom_upload_file_cyclonedx(
 
 
 @pytest.mark.django_db
+def test_sbom_upload_file_cyclonedx_without_metadata_component(
+    sample_user,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """File upload of CycloneDX without metadata.component should succeed."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+    SBOM.objects.all().delete()
+
+    sbom_data = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {
+                "timestamp": "2026-04-19T00:00:00+00:00",
+                "tools": {"components": [{"type": "application", "name": "cyclonedx-py", "version": "7.3.0"}]},
+            },
+            "components": [
+                {"type": "library", "name": "some-lib", "version": "1.0.0", "bom-ref": "some-lib@1.0.0"},
+            ],
+        }
+    ).encode()
+
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    sbom_file = SimpleUploadedFile("sbom.json", sbom_data, content_type="application/json")
+
+    client = Client()
+    client.force_login(sample_user)
+
+    url = reverse("api-1:sbom_upload_file", kwargs={"component_id": sample_component.id})
+    response = client.post(url, data={"sbom_file": sbom_file}, format="multipart")
+
+    assert response.status_code == 201
+    sbom = SBOM.objects.get(id=response.json()["id"])
+    assert sbom.format == "cyclonedx"
+    assert sbom.source == "manual_upload"
+    assert sbom.name == sample_component.name
+    assert sbom.version == ""
+    assert SBOM.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_sbom_upload_file_spdx(
     sample_user,  # noqa: F811
     sample_component: Component,  # noqa: F811
@@ -3374,9 +3586,7 @@ def test_download_sbom_not_found_by_uuid(
     client: Client,
 ):
     """Test downloading SBOM with valid UUID format that doesn't exist."""
-    response = client.get(
-        reverse("api-1:download_sbom", kwargs={"sbom_id": "00000000-0000-0000-0000-000000000000"})
-    )
+    response = client.get(reverse("api-1:download_sbom", kwargs={"sbom_id": "00000000-0000-0000-0000-000000000000"}))
 
     assert response.status_code == 404
     data = response.json()

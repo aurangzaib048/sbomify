@@ -107,7 +107,7 @@
                             <template x-for="contact in (stepData.contacts || [])" :key="contact.id">
                                 <option :value="String(contact.id)"
                                         :selected="String(contact.id) === String(supportContactId)"
-                                        x-text="contact.name + ' (' + contact.email + ') — ' + contact.entity__profile__name">
+                                        x-text="contact.name + ' (' + contact.email + ') — ' + contact.profile_name">
                                 </option>
                             </template>
                         </select>
