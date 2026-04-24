@@ -164,18 +164,33 @@
                         {# Harmonised standard confirmation for Class I + Module A (CRA Art 32(2)) #}
                         <div x-show="category === 'class_i' && conformityAssessmentProcedure === 'module_a'"
                              x-cloak
-                             class="mt-2 p-3 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 rounded-lg">
-                            <label class="flex items-start gap-3 cursor-pointer">
+                             class="mt-2 overflow-hidden rounded-lg border-l-4 border-amber-500 dark:border-amber-400 bg-surface dark:bg-gray-900 shadow-sm ring-1 ring-amber-200 dark:ring-amber-800/60">
+                            <div class="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/70">
+                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/60 shrink-0">
+                                    <i class="fas fa-shield-halved text-sm text-amber-700 dark:text-amber-300"></i>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="font-semibold text-sm text-text">Harmonised standard required</span>
+                                        <a href="https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
+                                           target="_blank"
+                                           rel="noopener noreferrer"
+                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:underline">
+                                            CRA Art 32(2)
+                                            <i class="fas fa-up-right-from-square text-[9px] opacity-70"></i>
+                                        </a>
+                                    </div>
+                                    <p class="text-xs text-text-muted mt-1 m-0 leading-snug">
+                                        Class I products may only use Module A (self-assessment) when a harmonised
+                                        standard covering all relevant requirements has been applied.
+                                    </p>
+                                </div>
+                            </div>
+                            <label class="flex items-start gap-3 px-4 py-3 cursor-pointer">
                                 <input type="checkbox"
                                        x-model="harmonisedStandardApplied"
                                        class="w-5 h-5 shrink-0 mt-0.5 rounded border-border text-primary focus:ring-primary">
-                                <div>
-                                    <span class="text-text font-medium text-sm">Harmonised standard has been applied</span>
-                                    <span class="block text-xs text-text-muted mt-0.5">
-                                        Class I products may only use Module A (self-assessment) when a harmonised standard
-                                        covering all relevant requirements has been applied (CRA Art 32(2)).
-                                    </span>
-                                </div>
+                                <span class="text-sm text-text">I confirm a harmonised standard has been applied to this product.</span>
                             </label>
                         </div>
                     </div>
@@ -296,21 +311,51 @@
                         {# Warning when support period < 5 years (CRA Art 13(8), FAQ 4.5.2) #}
                         <div x-show="supportPeriodShort"
                              x-cloak
-                             class="p-3 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 rounded-lg space-y-2">
-                            <p class="text-sm text-amber-800 dark:text-amber-200 font-medium">
-                                <i class="fas fa-exclamation-triangle mr-1"></i>
-                                Support period is less than 5 years
-                            </p>
-                            <p class="text-xs text-text-muted">
-                                CRA Art 13(8) requires at least 5 years unless the product's expected use time is shorter
-                                (e.g., pandemic contact tracing apps, time-limited subscription software).
-                            </p>
-                            <label class="tw-form-label" for="support-short-justification">Justification (required)</label>
-                            <textarea id="support-short-justification"
-                                      x-model="supportPeriodShortJustification"
-                                      rows="3"
-                                      class="tw-form-input w-full"
-                                      placeholder="Explain why the expected product lifetime is less than 5 years..."></textarea>
+                             class="overflow-hidden rounded-lg border-l-4 border-amber-500 dark:border-amber-400 bg-surface dark:bg-gray-900 shadow-sm ring-1 ring-amber-200 dark:ring-amber-800/60">
+                            <div class="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/70">
+                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/60 shrink-0">
+                                    <i class="fas fa-clock-rotate-left text-sm text-amber-700 dark:text-amber-300"></i>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="font-semibold text-sm text-text">Support period below 5-year minimum</span>
+                                        <a href="https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
+                                           target="_blank"
+                                           rel="noopener noreferrer"
+                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:underline">
+                                            CRA Art 13(8)
+                                            <i class="fas fa-up-right-from-square text-[9px] opacity-70"></i>
+                                        </a>
+                                    </div>
+                                    <p class="text-xs text-text-muted mt-1 m-0 leading-snug">
+                                        CRA Art 13(8) requires at least 5 years unless the product's expected use time
+                                        is shorter (e.g., pandemic contact tracing apps, time-limited subscription software).
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="px-4 py-3">
+                                <label class="tw-form-label" for="support-short-justification">Justification (required)</label>
+                                <textarea id="support-short-justification"
+                                          x-model="supportPeriodShortJustification"
+                                          rows="3"
+                                          class="tw-form-input w-full text-sm focus:border-amber-500 focus:ring-amber-500"
+                                          placeholder="Explain why the expected product lifetime is less than 5 years..."></textarea>
+                                <div class="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                                    <span x-show="!supportPeriodShortJustification?.trim()"
+                                          class="flex items-center gap-1 text-amber-700 dark:text-amber-300 font-medium">
+                                        <i class="fas fa-exclamation-circle"></i>
+                                        A non-empty justification is required.
+                                    </span>
+                                    <span x-show="supportPeriodShortJustification?.trim()"
+                                          x-cloak
+                                          class="flex items-center gap-1 text-green-600 dark:text-green-400 font-medium">
+                                        <i class="fas fa-circle-check"></i>
+                                        Looks good
+                                    </span>
+                                    <span class="text-text-muted tabular-nums"
+                                          x-text="`${(supportPeriodShortJustification || '').length} chars`"></span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
