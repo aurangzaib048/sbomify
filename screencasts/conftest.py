@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import Any, Generator
 from urllib.parse import urlparse
@@ -63,8 +64,41 @@ def disable_billing(settings) -> None:
     settings.BILLING = False
 
 
+_SCREENSHOT_MIN_PACE_MS = 800
+_SCREENSHOT_INTERVAL_SEC = 3.0
+
+_screenshot_state: dict[str, Any] = {
+    "dir": None,
+    "last_time": 0.0,
+    "counter": 0,
+}
+
+
+def _maybe_capture_screenshot(page: Page) -> None:
+    out_dir = _screenshot_state["dir"]
+    if out_dir is None:
+        return
+    now = time.monotonic()
+    if now - _screenshot_state["last_time"] < _SCREENSHOT_INTERVAL_SEC:
+        return
+    _screenshot_state["counter"] += 1
+    path = out_dir / f"frame_{_screenshot_state['counter']:03d}.png"
+    try:
+        page.screenshot(path=str(path), full_page=False)
+    except Exception:
+        return
+    _screenshot_state["last_time"] = now
+
+
 def pace(page: Page, ms: int = 600) -> None:
-    """Pause for a natural beat between actions."""
+    """Pause for a natural beat between actions.
+
+    Long pauses (>= 800ms) double as screenshot capture points when at
+    least 3s have passed since the last frame. The capture happens inside
+    the wait so the video does not see any extra stall.
+    """
+    if ms >= _SCREENSHOT_MIN_PACE_MS:
+        _maybe_capture_screenshot(page)
     page.wait_for_timeout(ms)
 
 
@@ -561,7 +595,16 @@ def recording_page(
     # visible while the first real navigation loads.
     page.set_content(SPLASH_HTML, wait_until="commit")
 
-    yield page
+    screenshot_dir = OUTPUT_DIR / "screenshots" / request.node.name
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    _screenshot_state["dir"] = screenshot_dir
+    _screenshot_state["last_time"] = 0.0
+    _screenshot_state["counter"] = 0
+
+    try:
+        yield page
+    finally:
+        _screenshot_state["dir"] = None
 
     # Grab the video handle, close the page (finalizes recording),
     # then save to a meaningful filename.
