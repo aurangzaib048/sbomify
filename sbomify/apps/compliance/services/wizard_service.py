@@ -1044,7 +1044,14 @@ def _save_step_3(
             finding_id = fd.get("finding_id")
             if not finding_id:
                 continue
-            finding = OSCALFinding.objects.select_related("control").get(
+            # Eager-load ``assessment_result__cra_assessment`` because
+            # ``update_finding`` now reads the CRAAssessment PK for the
+            # audit log — without this join a Step 3 payload with N
+            # finding updates would fire 2×N extra queries.
+            finding = OSCALFinding.objects.select_related(
+                "control",
+                "assessment_result__cra_assessment",
+            ).get(
                 pk=finding_id,
                 assessment_result=assessment.oscal_assessment_result,
             )

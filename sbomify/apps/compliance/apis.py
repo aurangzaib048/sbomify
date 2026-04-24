@@ -237,7 +237,16 @@ def update_finding(
         return result
 
     try:
-        finding = OSCALFinding.objects.select_related("control", "assessment_result__catalog").get(
+        # Eager-load ``assessment_result__cra_assessment`` so the audit
+        # log inside ``update_finding`` doesn't take two extra queries
+        # per PUT (one for ``assessment_result``, one for the reverse
+        # ``cra_assessment``). Step 3 interactions are latency-sensitive
+        # — each finding click hits this endpoint.
+        finding = OSCALFinding.objects.select_related(
+            "control",
+            "assessment_result__catalog",
+            "assessment_result__cra_assessment",
+        ).get(
             pk=finding_id,
             assessment_result=result.oscal_assessment_result,
         )

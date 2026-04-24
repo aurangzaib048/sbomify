@@ -165,6 +165,44 @@ class TestEnsureCraCatalog:
         assert catalog1.pk == catalog2.pk
         assert OSCALCatalog.objects.filter(name="EU CRA Annex I", version="1.1.0").count() == 1
 
+    def test_import_rejects_unknown_annex_part(self):
+        """A catalog JSON typo like ``part-iii`` used to slip through
+        the ``bulk_create`` path because ``choices`` is not enforced on
+        the write path. ``import_catalog_to_db`` now validates the
+        value explicitly and fails the import; the DB constraint (0012)
+        is the backstop for anyone who reaches past the service layer.
+
+        Duck-types the trestle catalog with ``types.SimpleNamespace``
+        to avoid wiring up a full trestle ``Catalog`` (which requires
+        metadata fields whose import surface differs across trestle
+        versions). ``import_catalog_to_db`` only reads ``groups`` +
+        each group's ``id``/``title``/``controls`` + each control's
+        ``id``/``title``/``parts``/``props``, so the simplified shape
+        is enough to exercise the ``annex-part`` validator.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        bad_control = SimpleNamespace(
+            id="cra-bad-1",
+            title="Bad control",
+            parts=[SimpleNamespace(name="statement", prose="description")],
+            props=[SimpleNamespace(name="annex-part", value="part-iii")],
+        )
+        bad_group = SimpleNamespace(
+            id="cra-sd", title="Security by Design", controls=[bad_control]
+        )
+        bad_catalog = SimpleNamespace(
+            groups=[bad_group],
+            oscal_serialize_json=lambda: '{"groups": []}',
+        )
+
+        # Patch trestle-JSON round-trip so the OSCALCatalog row save
+        # doesn't try to parse the stubbed payload.
+        with patch("json.loads", return_value={"groups": []}):
+            with pytest.raises(ValueError, match=r"(?i)annex-part"):
+                import_catalog_to_db(bad_catalog, "Broken CRA", "99.0")
+
     def test_is_mandatory_biconditional_invariant(self):
         """Every control row must satisfy ``is_mandatory == (annex_part
         == "part-ii")``. The rule is encoded across four code paths
@@ -399,12 +437,13 @@ class TestUpdateFinding:
 
         assert records, "expected at least one audit record"
         event = records[-1]
-        assert event.message.startswith("cra.finding.update")
+        rendered = event.getMessage()
+        assert rendered.startswith("cra.finding.update")
         # The structured payload must be embedded in the message text
         # so production log formatters that only render %(message)s
         # still capture the audit context.
-        assert '"user_id"' in event.message
-        assert '"delta"' in event.message
+        assert '"user_id"' in rendered
+        assert '"delta"' in rendered
         assert getattr(event, "user_id", None) == sample_user.id
         assert "status" in getattr(event, "delta", {})
 

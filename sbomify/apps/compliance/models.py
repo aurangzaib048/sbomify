@@ -48,10 +48,17 @@ class OSCALControl(models.Model):
             # the Alpine badge). Enforce it at the DB layer so a future
             # edit that slips the equivalence through any one of those
             # paths is rejected outright. CRA Art 13(4) / FAQ 4.1.3.
+            #
+            # The constraint explicitly enumerates both legal
+            # combinations — a looser ``~Q(annex_part="part-ii")``
+            # version would accept typos like ``"part-iii"`` as long as
+            # ``is_mandatory=False``, silently downgrading a
+            # vulnerability-handling control whose import flipped the
+            # value. The enumerated form fails closed.
             models.CheckConstraint(
                 check=(
                     (models.Q(annex_part="part-ii") & models.Q(is_mandatory=True))
-                    | (~models.Q(annex_part="part-ii") & models.Q(is_mandatory=False))
+                    | (models.Q(annex_part="part-i") & models.Q(is_mandatory=False))
                 ),
                 name="oscal_control_is_mandatory_iff_part_ii",
             ),

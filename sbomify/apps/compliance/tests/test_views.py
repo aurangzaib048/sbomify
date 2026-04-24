@@ -336,7 +336,7 @@ class TestCRAScopeScreeningView:
 
         assert records, "expected scope-screening audit record"
         event = records[-1]
-        assert event.message.startswith("cra.scope_screening.write")
+        assert event.getMessage().startswith("cra.scope_screening.write")
         assert getattr(event, "product_id", None) == product.id
         delta = getattr(event, "delta", {})
         assert "has_data_connection" in delta or "screening_notes" in delta

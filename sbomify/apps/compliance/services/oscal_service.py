@@ -82,12 +82,23 @@ def import_catalog_to_db(trestle_catalog: Catalog, name: str, version: str) -> O
                     if part.name == "statement" and part.prose:
                         description = part.prose
                         break
-                # Extract annex-part prop to determine Part I/II and mandatory status
+                # Extract annex-part prop to determine Part I/II and mandatory status.
+                # Fail closed on unknown values — a typo like ``"part-iii"``
+                # in the catalog JSON would otherwise bypass ``choices``
+                # validation (``bulk_create`` does not run ``full_clean``)
+                # and land as Part I with ``is_mandatory=False``,
+                # silently downgrading a vulnerability-handling control.
                 annex_part = "part-i"
                 for prop in control.props or []:
                     if prop.name == "annex-part":
                         annex_part = prop.value
                         break
+                if annex_part not in {"part-i", "part-ii"}:
+                    raise ValueError(
+                        f"Control {control.id!r} in catalog {db_catalog.name!r} has an "
+                        f"unrecognised ``annex-part`` prop: {annex_part!r}. "
+                        f"Only 'part-i' and 'part-ii' are valid (CRA Annex I)."
+                    )
                 # Part II (vulnerability handling) is always mandatory (CRA Art 13(4), FAQ 4.1.3)
                 is_mandatory = annex_part == "part-ii"
 

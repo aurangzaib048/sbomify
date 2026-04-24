@@ -46,6 +46,30 @@ def check_cra_access(team: Team | None = None, *, billing_plan_key: str | None =
     return raw_key.strip().lower() in BillingPlan.CRA_ELIGIBLE_PLAN_KEYS
 
 
+def _is_team_member(request: HttpRequest, team_id: int) -> bool:
+    """Whether the authenticated user has any role on *team_id*.
+
+    Kept separate from role-allowlist checks so callers can distinguish
+    "this user is a stranger to this team" (return 404 — don't leak
+    existence) from "this user is a member but lacks the role" (return
+    403 — the right UX when the caller can legitimately see the team).
+    """
+    if not request.user.is_authenticated:
+        return False
+
+    from sbomify.apps.teams.models import Member
+
+    # Session cache first (avoids the DB round-trip on the hot path).
+    # The session's ``user_teams`` map is keyed by team key; fall back
+    # to a DB check only if it isn't populated.
+    user_teams = request.session.get("user_teams") or {}
+    for payload in user_teams.values():
+        if payload.get("id") == team_id or payload.get("team_id") == team_id:
+            return True
+
+    return Member.objects.filter(user=request.user, team_id=team_id).exists()
+
+
 def require_assessment_access(
     request: HttpRequest,
     assessment_id: str,
@@ -58,10 +82,14 @@ def require_assessment_access(
     Both the web view and the Ninja API call this so any change to the
     role list, billing gate, or lookup semantics lands in one place.
 
-    Returns 404 (via AccessCheckFailure) rather than 403 when the
-    assessment belongs to a different team — closing a timing side-
-    channel that lets an attacker enumerate assessment IDs across
-    tenants.
+    Access decisions:
+      - Assessment missing OR user not a member of its team → 404
+        (closes the timing side-channel that would otherwise let a
+        cross-tenant attacker enumerate assessment IDs).
+      - User is a member but role is not in ``allowed_roles`` → 403
+        (the caller can legitimately know the assessment exists; the
+        failure reason is the role check).
+      - Team lacks the billing plan → 403.
     """
     from sbomify.apps.compliance.models import CRAAssessment
     from sbomify.apps.core.utils import verify_item_access
@@ -79,10 +107,11 @@ def require_assessment_access(
     except CRAAssessment.DoesNotExist:
         return AccessCheckFailure(status_code=404, message="Not found")
 
-    if not verify_item_access(request, assessment, list(allowed_roles)):
-        # Collapse 403 into 404 so product-existence isn't leaked
-        # through response-code differential.
+    if not _is_team_member(request, assessment.team_id):
         return AccessCheckFailure(status_code=404, message="Not found")
+
+    if not verify_item_access(request, assessment, list(allowed_roles)):
+        return AccessCheckFailure(status_code=403, message="Forbidden")
 
     if not check_cra_access(assessment.team):
         return AccessCheckFailure(status_code=403, message="CRA access requires a Business plan")
@@ -99,8 +128,8 @@ def require_product_cra_access(
     """Centralised access check for Product-bound CRA endpoints.
 
     Same shape and intent as ``require_assessment_access``, returning
-    the product on success. Used by scope-screening + start-assessment
-    views, both of which previously inlined the same three-step check.
+    the product on success. 404 for unknown product or non-member user;
+    403 for insufficient role or missing billing plan.
     """
     from sbomify.apps.core.models import Product
     from sbomify.apps.core.utils import verify_item_access
@@ -110,8 +139,11 @@ def require_product_cra_access(
     except Product.DoesNotExist:
         return AccessCheckFailure(status_code=404, message="Not found")
 
-    if not verify_item_access(request, product, list(allowed_roles)):
+    if not _is_team_member(request, product.team_id):
         return AccessCheckFailure(status_code=404, message="Not found")
+
+    if not verify_item_access(request, product, list(allowed_roles)):
+        return AccessCheckFailure(status_code=403, message="Forbidden")
 
     if not check_cra_access(product.team):
         return AccessCheckFailure(status_code=403, message="CRA access requires a Business plan")

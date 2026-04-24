@@ -180,6 +180,43 @@ class TestGetAssessment:
             "otherwise the API leaks which assessment IDs exist across tenants"
         )
 
+    def test_same_team_insufficient_role_returns_403_not_404(
+        self, sample_team_with_owner_member, sample_user, product, _valid_manufacturer
+    ):
+        """Role denials for users who ARE members of the team should
+        surface as 403, not 404. The 404-for-cross-team collapse is a
+        side-channel defence against ID enumeration; collapsing 403
+        too would mask legitimate "you need a higher role" feedback
+        from users who legitimately can see the resource.
+        """
+        from django.test import Client
+
+        from sbomify.apps.access_tokens.models import AccessToken
+        from sbomify.apps.access_tokens.utils import create_personal_access_token
+        from sbomify.apps.core.models import User
+        from sbomify.apps.teams.models import Member
+
+        team = sample_team_with_owner_member.team
+        assessment = get_or_create_assessment(product.id, sample_user, team).value
+        assert assessment is not None
+
+        # Second user joined the team as a guest (below the
+        # ``(owner, admin)`` allowlist).
+        guest = User.objects.create_user(username="guest_in_team", email="gi@test.local", password="x")
+        Member.objects.create(user=guest, team=team, role="guest")
+        token_str = create_personal_access_token(guest)
+        token = AccessToken.objects.create(user=guest, encoded_token=token_str, description="guest-token")
+
+        client = Client()
+        response = client.get(
+            f"/api/v1/compliance/cra/{assessment.id}",
+            **get_api_headers(token),
+        )
+        assert response.status_code == 403, (
+            f"same-team role denial must return 403, not {response.status_code}; "
+            "collapsing role failures to 404 would mask the real reason"
+        )
+
 
 class TestGetStepContext:
     def test_returns_step_1_context(self, authenticated_api_client, assessment):

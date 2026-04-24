@@ -1,18 +1,19 @@
-"""Restrict ``annex_part`` to the two canonical values.
+"""Advertise the allowed ``annex_part`` values via ``TextChoices``.
 
-Previously the field was a free-form ``CharField(max_length=10)``
-with only a ``default`` and the 0010 ``CheckConstraint`` guarding the
-``is_mandatory == (annex_part == "part-ii")`` biconditional. An invalid
-string like ``"part-iii"`` would land with ``is_mandatory=False`` and
-pass the constraint (because both sides of the disjunction evaluate
-false), silently degrading Part II handling for any control where the
-import path produced a typo.
+The previous free-form ``CharField(max_length=10)`` silently accepted
+any string. Adding ``choices=AnnexPart.choices`` surfaces the legal
+values in admin dropdowns, form ``clean()``, and serializer schemas,
+but — important — ``choices`` is NOT enforced on ``Model.save()`` or
+``bulk_create()``. Write-path enforcement is handled by:
 
-Adding the ``AnnexPart`` TextChoices pulls the allowed values into
-the model layer so admin dropdowns, form clean(), and serializer
-introspection all enforce the invariant — the DB constraint continues
-to enforce the pairing, but the field now refuses unknown values at
-every Django entry point.
+  * ``import_catalog_to_db`` validating ``annex_part`` against the
+    allowed set and raising ``ValueError`` on unknown input, and
+  * Migration 0012's tightened ``CheckConstraint`` that enumerates
+    the two legal ``(annex_part, is_mandatory)`` pairs explicitly.
+
+This migration is purely cosmetic for existing data (every row is
+already ``part-i`` or ``part-ii`` from 0007's backfill); the real
+guarantee lives in 0012 + the import validator.
 """
 
 from __future__ import annotations
