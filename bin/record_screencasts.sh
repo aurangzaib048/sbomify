@@ -70,13 +70,13 @@ run_screencast() {
 }
 
 clean_temp_videos() {
-    # Playwright generates random-named .webm files alongside our named ones.
-    # Keep only files whose names match a screencast script.
+    # Playwright writes temp files named as 32-char hex hashes before the
+    # fixture renames them to the test-name filename.  Drop only those.
     for webm in "$OUTPUT_DIR"/*.webm; do
         [ -f "$webm" ] || continue
         local name
         name=$(basename "$webm" .webm)
-        if [ ! -f "$SCREENCASTS_DIR/${name}.py" ]; then
+        if [[ "$name" =~ ^[a-f0-9]{32}$ ]]; then
             rm -f "$webm"
         fi
     done
