@@ -567,7 +567,7 @@ def recording_context(
     context = browser.new_context(
         base_url=browser_base_url,
         viewport={"width": RECORDING_WIDTH, "height": RECORDING_HEIGHT},
-        device_scale_factor=1,
+        device_scale_factor=2,
         record_video_dir=str(OUTPUT_DIR),
         record_video_size={"width": RECORDING_WIDTH, "height": RECORDING_HEIGHT},
     )
