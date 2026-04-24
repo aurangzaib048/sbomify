@@ -15,6 +15,7 @@ jobs:
   record:
     name: Record Screencasts
     runs-on: ubuntu-latest
+    environment: screencasts
     env:
       DJANGO_SETTINGS_MODULE: sbomify.test_settings
       DEBUG: True
@@ -146,12 +147,46 @@ jobs:
             fi
           done
 
+      - name: Upload to Cloudflare R2
+        if: ${{ always() && env.R2_BUCKET != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 sync screencasts/output/ "s3://${R2_BUCKET}/screencasts/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type video/webm \
+            --cache-control "public, max-age=300" \
+            --exclude "*" --include "*.webm" \
+            --no-progress
+
+          if [ -d screencasts/output/screenshots ]; then
+            aws s3 sync screencasts/output/screenshots/ "s3://${R2_BUCKET}/screenshots/" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type image/png \
+              --cache-control "public, max-age=300" \
+              --exclude "*" --include "*.png" \
+              --no-progress
+          fi
+
       - name: Upload screencast recordings
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: screencasts
           path: screencasts/output/*.webm
+          if-no-files-found: warn
+
+      - name: Upload screencast screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshots
+          path: screencasts/output/screenshots/
           if-no-files-found: warn
 
       - name: Stop Docker Compose services
