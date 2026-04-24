@@ -78,6 +78,7 @@ class CRAStepView(LoginRequiredMixin, View):
 
         assessment = result
 
+        from sbomify.apps.compliance.services.oscal_service import CRA_EURLEX_HTML
         from sbomify.apps.compliance.services.wizard_service import get_step_context
 
         ctx = get_step_context(assessment, step)
@@ -105,6 +106,7 @@ class CRAStepView(LoginRequiredMixin, View):
             # Step 3: security.txt status for CRA Annex I Part II §5
             "security_txt_enabled": step_data.get("security_txt_enabled", False),
             "team": {"key": assessment.product.team.key},
+            "cra_oj_url": CRA_EURLEX_HTML,
         }
 
         return render(request, _STEP_TEMPLATES[step], context)

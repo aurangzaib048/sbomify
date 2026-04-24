@@ -4,7 +4,7 @@ import { showError } from '../../core/js/alerts';
 import { EU_COUNTRIES, EU_COUNTRY_NAMES } from './eu-countries';
 import { getAssessmentId, saveStepAndNavigate } from './cra-shared';
 
-interface Finding {
+export interface Finding {
   finding_id: string;
   control_id: string;
   title: string;
@@ -18,13 +18,26 @@ interface Finding {
   annex_url: string;
 }
 
-interface ControlGroup {
+export interface ControlGroup {
   group_id: string;
   group_title: string;
   controls: Finding[];
 }
 
-function craStep3() {
+/**
+ * Presentational status used by the three-button toggle. Derived from
+ * `finding.status` + the client-only `_pendingNA` map; callers must not
+ * re-implement this rule in the template to avoid the P1 duplication
+ * footgun reported in the comprehensive review.
+ */
+export type FindingButtonState =
+  | 'satisfied'
+  | 'not-satisfied'
+  | 'not-applicable'
+  | 'pending-na'
+  | 'unanswered';
+
+export function craStep3() {
   return {
     assessmentId: '',
     activeTab: 'checklist' as 'checklist' | 'vulnerability' | 'incident',
@@ -42,8 +55,8 @@ function craStep3() {
     euCountries: EU_COUNTRIES,
     euCountryNames: EU_COUNTRY_NAMES,
     isSaving: false,
-    _noteTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
-    _notesSaveStatus: {} as Record<string, 'saved' | 'failed' | 'saving'>,
+    _persistTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
+    _persistStatus: {} as Record<string, 'saved' | 'failed' | 'saving'>,
     _pendingNA: {} as Record<string, boolean>,
 
     init() {
@@ -69,8 +82,8 @@ function craStep3() {
     },
 
     destroy(): void {
-      for (const key of Object.keys(this._noteTimers)) {
-        clearTimeout(this._noteTimers[key]);
+      for (const key of Object.keys(this._persistTimers)) {
+        clearTimeout(this._persistTimers[key]);
       }
     },
 
@@ -103,8 +116,12 @@ function craStep3() {
       }
 
       // Any other status (or N/A with a justification) commits immediately.
-      delete this._pendingNA[finding.finding_id];
+      // Snapshot the rollback pair: `_pendingNA` flag and the prior status
+      // must BOTH be restored on failure, otherwise the UI ends up in a
+      // half-committed state (old status visible, pending marker gone).
+      const wasPendingNA = !!this._pendingNA[finding.finding_id];
       const oldStatus = finding.status;
+      delete this._pendingNA[finding.finding_id];
       finding.status = status;
 
       try {
@@ -125,12 +142,33 @@ function craStep3() {
         );
         if (!resp.ok) {
           finding.status = oldStatus;
+          if (wasPendingNA) this._pendingNA[finding.finding_id] = true;
           const err = await resp.json();
           showError(err.error || 'Failed to update');
         }
       } catch {
         finding.status = oldStatus;
+        if (wasPendingNA) this._pendingNA[finding.finding_id] = true;
         showError('Network error');
+      }
+    },
+
+    /**
+     * The single source of truth for "what colour is this finding's toggle".
+     * Templates and tests both consume this instead of composing
+     * ``finding.status`` + ``_pendingNA`` manually — the P1 review finding
+     * was that three template sites duplicating the rule would silently
+     * regress as new buttons/badges are added.
+     */
+    buttonState(finding: Finding): FindingButtonState {
+      if (this._pendingNA[finding.finding_id]) return 'pending-na';
+      switch (finding.status) {
+        case 'satisfied':
+        case 'not-satisfied':
+        case 'not-applicable':
+          return finding.status;
+        default:
+          return 'unanswered';
       }
     },
 
@@ -141,18 +179,18 @@ function craStep3() {
       );
     },
 
-    debouncedSaveNotes(finding: Finding): void {
+    debouncedPersist(finding: Finding): void {
       const key = finding.finding_id;
-      if (this._noteTimers[key]) {
-        clearTimeout(this._noteTimers[key]);
+      if (this._persistTimers[key]) {
+        clearTimeout(this._persistTimers[key]);
       }
-      this._notesSaveStatus[key] = 'saving';
-      this._noteTimers[key] = setTimeout(() => {
-        this.saveFindingNotes(finding);
+      this._persistStatus[key] = 'saving';
+      this._persistTimers[key] = setTimeout(() => {
+        this.persistFinding(finding);
       }, 800);
     },
 
-    async saveFindingNotes(finding: Finding): Promise<void> {
+    async persistFinding(finding: Finding): Promise<void> {
       const pendingNA = !!this._pendingNA[finding.finding_id];
       // Resolve the status to send. A pending Part I N/A only becomes
       // real when the operator has typed a justification. If
@@ -171,7 +209,7 @@ function craStep3() {
         !finding.is_mandatory &&
         !finding.justification?.trim()
       ) {
-        this._notesSaveStatus[finding.finding_id] = 'failed';
+        this._persistStatus[finding.finding_id] = 'failed';
         return;
       }
       try {
@@ -190,13 +228,13 @@ function craStep3() {
             }),
           },
         );
-        this._notesSaveStatus[finding.finding_id] = resp.ok ? 'saved' : 'failed';
+        this._persistStatus[finding.finding_id] = resp.ok ? 'saved' : 'failed';
         if (resp.ok && pendingNA) {
           finding.status = statusToSend;
           delete this._pendingNA[finding.finding_id];
         }
       } catch {
-        this._notesSaveStatus[finding.finding_id] = 'failed';
+        this._persistStatus[finding.finding_id] = 'failed';
       }
     },
 

@@ -259,7 +259,7 @@ def get_annex_reference(catalog_json: dict[str, Any], control_id: str) -> str:
     return ""
 
 
-_CRA_EURLEX_HTML = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
+CRA_EURLEX_HTML = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
 
 # Anchors extracted from the actual EUR-Lex HTML page
 _CRA_ANNEX_ANCHORS = {
@@ -272,15 +272,19 @@ def get_annex_url(annex_reference: str) -> str:
     """Build a EUR-Lex URL for the given annex reference.
 
     Links to the exact Part I or Part II section of Annex I in the official
-    EU CRA text on EUR-Lex.
+    EU CRA text on EUR-Lex. Defense-in-depth: only emit https URLs so a future
+    change to ``CRA_EURLEX_HTML`` that accidentally drops the scheme cannot
+    surface a ``javascript:`` URL to the Alpine ``:href`` binding on Step 3.
     """
     if not annex_reference:
         return ""
     for part, anchor in _CRA_ANNEX_ANCHORS.items():
         if part in annex_reference:
-            return f"{_CRA_EURLEX_HTML}#{anchor}"
-    # Fallback to Annex I
-    return f"{_CRA_EURLEX_HTML}#anx_I"
+            url = f"{CRA_EURLEX_HTML}#{anchor}"
+            break
+    else:
+        url = f"{CRA_EURLEX_HTML}#anx_I"
+    return url if url.startswith("https://") else ""
 
 
 # ---------------------------------------------------------------------------
