@@ -25,6 +25,7 @@ from trestle.oscal.common import (
 )
 
 from sbomify.apps.compliance.models import (
+    CRAAssessment,
     OSCALAssessmentResult,
     OSCALCatalog,
     OSCALControl,
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 _CATALOG_PATH = Path(__file__).resolve().parent.parent / "oscal_data" / "cra-annex-i-catalog.json"
 
 _CRA_CATALOG_NAME = "EU CRA Annex I"
-_CRA_CATALOG_VERSION = "1.0.0"
+_CRA_CATALOG_VERSION = "1.1.0"
 
 
 @functools.cache
@@ -81,6 +82,26 @@ def import_catalog_to_db(trestle_catalog: Catalog, name: str, version: str) -> O
                     if part.name == "statement" and part.prose:
                         description = part.prose
                         break
+                # Extract annex-part prop to determine Part I/II and mandatory status.
+                # Fail closed on unknown values — a typo like ``"part-iii"``
+                # in the catalog JSON would otherwise bypass ``choices``
+                # validation (``bulk_create`` does not run ``full_clean``)
+                # and land as Part I with ``is_mandatory=False``,
+                # silently downgrading a vulnerability-handling control.
+                annex_part = "part-i"
+                for prop in control.props or []:
+                    if prop.name == "annex-part":
+                        annex_part = prop.value
+                        break
+                if annex_part not in {"part-i", "part-ii"}:
+                    raise ValueError(
+                        f"Control {control.id!r} in catalog {db_catalog.name!r} has an "
+                        f"unrecognised ``annex-part`` prop: {annex_part!r}. "
+                        f"Only 'part-i' and 'part-ii' are valid (CRA Annex I)."
+                    )
+                # Part II (vulnerability handling) is always mandatory (CRA Art 13(4), FAQ 4.1.3)
+                is_mandatory = annex_part == "part-ii"
+
                 controls_to_create.append(
                     OSCALControl(
                         catalog=db_catalog,
@@ -89,6 +110,8 @@ def import_catalog_to_db(trestle_catalog: Catalog, name: str, version: str) -> O
                         group_title=group_title,
                         title=control.title,
                         description=description,
+                        is_mandatory=is_mandatory,
+                        annex_part=annex_part,
                         sort_order=sort_order,
                     )
                 )
@@ -146,18 +169,84 @@ def create_assessment_result(
     return ar
 
 
-def update_finding(finding: OSCALFinding, status: str, notes: str = "") -> OSCALFinding:
-    """Update a finding's status and notes.
+def update_finding(
+    finding: OSCALFinding,
+    status: str,
+    notes: str = "",
+    justification: str = "",
+    *,
+    actor: Any = None,
+) -> OSCALFinding:
+    """Update a finding's status, notes, and justification.
 
     Raises ``ValueError`` if *status* is not a valid ``FindingStatus`` choice.
+    Raises ``ValueError`` if a Part II control is set to not-applicable (CRA Art 13(4)).
+    Raises ``ValueError`` if a Part I control is set to not-applicable without justification.
+
+    ``actor`` is the ``User`` performing the change — recorded in the
+    audit log for CRA non-repudiation. The parameter is keyword-only so
+    existing call sites (tests, migration helpers) that don't carry a
+    user context continue to work; production callers from the API
+    layer pass ``request.user``.
     """
+    # Coerce to strings to guard against None from upstream callers
+    notes = str(notes) if notes else ""
+    justification = str(justification) if justification else ""
+
     valid_statuses = {choice[0] for choice in OSCALFinding.FindingStatus.choices}
     if status not in valid_statuses:
         raise ValueError(f"Invalid status '{status}'. Must be one of: {sorted(valid_statuses)}")
 
+    # Part II controls (vulnerability handling) are always mandatory — cannot be N/A
+    # CRA Art 13(4), FAQ 4.1.3
+    if status == "not-applicable" and finding.control.is_mandatory:
+        raise ValueError(
+            f"Control {finding.control.control_id} is a Part II (vulnerability handling) requirement "
+            f"and is always mandatory (CRA Art 13(4)). It cannot be marked as not-applicable."
+        )
+
+    # Part I controls marked N/A require a clear justification (CRA Art 13(4))
+    if status == "not-applicable" and not finding.control.is_mandatory and not justification.strip():
+        raise ValueError(
+            f"Control {finding.control.control_id} requires a clear justification when marked "
+            f"not-applicable (CRA Art 13(4))."
+        )
+
+    # Clear the justification when leaving the not-applicable state. A stale
+    # justification lingering on a satisfied / not-satisfied / unanswered
+    # finding would render misleadingly in the risk-assessment export and the
+    # technical-documentation package (CRA Annex VII) — the audit-delta row
+    # captures the implicit clear so the transition is still traceable.
+    if status != "not-applicable":
+        justification = ""
+
+    before = {"status": finding.status, "notes": finding.notes, "justification": finding.justification}
     finding.status = status
     finding.notes = notes
-    finding.save(update_fields=["status", "notes", "updated_at"])
+    finding.justification = justification
+    finding.save(update_fields=["status", "notes", "justification", "updated_at"])
+
+    from sbomify.apps.compliance.audit import log_finding_update
+
+    # Use the CRAAssessment PK (not the OSCALAssessmentResult PK) so
+    # audit events across event types (``cra.assessment.step_save`` and
+    # ``cra.finding.update``) share the same ``assessment_id`` key for
+    # downstream correlation. The OSCAL AR is an implementation detail
+    # of the assessment; operators + regulators reason about the
+    # CRAAssessment.
+    try:
+        cra_assessment_id: str | None = str(finding.assessment_result.cra_assessment.pk)
+    except CRAAssessment.DoesNotExist:
+        cra_assessment_id = None
+
+    log_finding_update(
+        user=actor,
+        assessment_id=cra_assessment_id,
+        finding_id=str(finding.pk),
+        control_id=finding.control.control_id,
+        before=before,
+        after={"status": status, "notes": notes, "justification": justification},
+    )
     return finding
 
 
@@ -178,7 +267,7 @@ def get_annex_reference(catalog_json: dict[str, Any], control_id: str) -> str:
     return ""
 
 
-_CRA_EURLEX_HTML = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
+CRA_EURLEX_HTML = "https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
 
 # Anchors extracted from the actual EUR-Lex HTML page
 _CRA_ANNEX_ANCHORS = {
@@ -191,15 +280,19 @@ def get_annex_url(annex_reference: str) -> str:
     """Build a EUR-Lex URL for the given annex reference.
 
     Links to the exact Part I or Part II section of Annex I in the official
-    EU CRA text on EUR-Lex.
+    EU CRA text on EUR-Lex. Defense-in-depth: only emit https URLs so a future
+    change to ``CRA_EURLEX_HTML`` that accidentally drops the scheme cannot
+    surface a ``javascript:`` URL to the Alpine ``:href`` binding on Step 3.
     """
     if not annex_reference:
         return ""
     for part, anchor in _CRA_ANNEX_ANCHORS.items():
         if part in annex_reference:
-            return f"{_CRA_EURLEX_HTML}#{anchor}"
-    # Fallback to Annex I
-    return f"{_CRA_EURLEX_HTML}#anx_I"
+            url = f"{CRA_EURLEX_HTML}#{anchor}"
+            break
+    else:
+        url = f"{CRA_EURLEX_HTML}#anx_I"
+    return url if url.startswith("https://") else ""
 
 
 # ---------------------------------------------------------------------------

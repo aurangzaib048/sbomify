@@ -4,24 +4,40 @@ import { showError } from '../../core/js/alerts';
 import { EU_COUNTRIES, EU_COUNTRY_NAMES } from './eu-countries';
 import { getAssessmentId, saveStepAndNavigate } from './cra-shared';
 
-interface Finding {
+export interface Finding {
   finding_id: string;
   control_id: string;
   title: string;
   description: string;
   status: string;
   notes: string;
+  justification: string;
+  is_mandatory: boolean;
+  annex_part: string;
   annex_reference: string;
   annex_url: string;
 }
 
-interface ControlGroup {
+export interface ControlGroup {
   group_id: string;
   group_title: string;
   controls: Finding[];
 }
 
-function craStep3() {
+/**
+ * Presentational status used by the three-button toggle. Derived from
+ * `finding.status` + the client-only `_pendingNA` map; callers must not
+ * re-implement this rule in the template to avoid the P1 duplication
+ * footgun reported in the comprehensive review.
+ */
+export type FindingButtonState =
+  | 'satisfied'
+  | 'not-satisfied'
+  | 'not-applicable'
+  | 'pending-na'
+  | 'unanswered';
+
+export function craStep3() {
   return {
     assessmentId: '',
     activeTab: 'checklist' as 'checklist' | 'vulnerability' | 'incident',
@@ -39,8 +55,9 @@ function craStep3() {
     euCountries: EU_COUNTRIES,
     euCountryNames: EU_COUNTRY_NAMES,
     isSaving: false,
-    _noteTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
-    _notesSaveStatus: {} as Record<string, 'saved' | 'failed' | 'saving'>,
+    _persistTimers: {} as Record<string, ReturnType<typeof setTimeout>>,
+    _persistStatus: {} as Record<string, 'saved' | 'failed' | 'saving'>,
+    _pendingNA: {} as Record<string, boolean>,
 
     init() {
       const data = window.parseJsonScript('step-data') as Record<string, unknown> | null;
@@ -65,8 +82,8 @@ function craStep3() {
     },
 
     destroy(): void {
-      for (const key of Object.keys(this._noteTimers)) {
-        clearTimeout(this._noteTimers[key]);
+      for (const key of Object.keys(this._persistTimers)) {
+        clearTimeout(this._persistTimers[key]);
       }
     },
 
@@ -84,8 +101,29 @@ function craStep3() {
     },
 
     async setFindingStatus(finding: Finding, status: string): Promise<void> {
+      // Part II controls cannot be marked N/A (CRA Art 13(4))
+      if (status === 'not-applicable' && finding.is_mandatory) return;
+
+      // Part I N/A without justification: reveal the justification textarea
+      // via ``_pendingNA`` but leave ``finding.status`` untouched. Mutating
+      // the local status here would make the group completion counter
+      // count this control as "answered" even though the server still has
+      // ``unanswered`` — reloading the page would flip it back and lose
+      // the operator's intent.
+      if (status === 'not-applicable' && !finding.is_mandatory && !finding.justification?.trim()) {
+        this._pendingNA[finding.finding_id] = true;
+        return;
+      }
+
+      // Any other status (or N/A with a justification) commits immediately.
+      // Snapshot the rollback pair: `_pendingNA` flag and the prior status
+      // must BOTH be restored on failure, otherwise the UI ends up in a
+      // half-committed state (old status visible, pending marker gone).
+      const wasPendingNA = !!this._pendingNA[finding.finding_id];
       const oldStatus = finding.status;
+      delete this._pendingNA[finding.finding_id];
       finding.status = status;
+
       try {
         const resp = await fetch(
           `/api/v1/compliance/cra/${this.assessmentId}/findings/${finding.finding_id}`,
@@ -95,32 +133,85 @@ function craStep3() {
               'Content-Type': 'application/json',
               'X-CSRFToken': getCsrfToken(),
             },
-            body: JSON.stringify({ status, notes: finding.notes }),
+            body: JSON.stringify({
+              status,
+              notes: finding.notes,
+              justification: finding.justification || '',
+            }),
           },
         );
         if (!resp.ok) {
           finding.status = oldStatus;
+          if (wasPendingNA) this._pendingNA[finding.finding_id] = true;
           const err = await resp.json();
           showError(err.error || 'Failed to update');
         }
       } catch {
         finding.status = oldStatus;
+        if (wasPendingNA) this._pendingNA[finding.finding_id] = true;
         showError('Network error');
       }
     },
 
-    debouncedSaveNotes(finding: Finding): void {
-      const key = finding.finding_id;
-      if (this._noteTimers[key]) {
-        clearTimeout(this._noteTimers[key]);
+    /**
+     * The single source of truth for "what colour is this finding's toggle".
+     * Templates and tests both consume this instead of composing
+     * ``finding.status`` + ``_pendingNA`` manually — the P1 review finding
+     * was that three template sites duplicating the rule would silently
+     * regress as new buttons/badges are added.
+     */
+    buttonState(finding: Finding): FindingButtonState {
+      if (this._pendingNA[finding.finding_id]) return 'pending-na';
+      switch (finding.status) {
+        case 'satisfied':
+        case 'not-satisfied':
+        case 'not-applicable':
+          return finding.status;
+        default:
+          return 'unanswered';
       }
-      this._notesSaveStatus[key] = 'saving';
-      this._noteTimers[key] = setTimeout(() => {
-        this.saveFindingNotes(finding);
+    },
+
+    showJustificationField(finding: Finding): boolean {
+      return (
+        !finding.is_mandatory &&
+        (finding.status === 'not-applicable' || !!this._pendingNA[finding.finding_id])
+      );
+    },
+
+    debouncedPersist(finding: Finding): void {
+      const key = finding.finding_id;
+      if (this._persistTimers[key]) {
+        clearTimeout(this._persistTimers[key]);
+      }
+      this._persistStatus[key] = 'saving';
+      this._persistTimers[key] = setTimeout(() => {
+        this.persistFinding(finding);
       }, 800);
     },
 
-    async saveFindingNotes(finding: Finding): Promise<void> {
+    async persistFinding(finding: Finding): Promise<void> {
+      const pendingNA = !!this._pendingNA[finding.finding_id];
+      // Resolve the status to send. A pending Part I N/A only becomes
+      // real when the operator has typed a justification. If
+      // justification is still empty, PUT the existing (server-
+      // persisted) status so the note the operator just typed still
+      // gets saved — only the N/A transition is deferred, not the
+      // note itself. Otherwise the operator can lose keystrokes by
+      // navigating away before committing the N/A.
+      let statusToSend = finding.status;
+      if (pendingNA && finding.justification?.trim()) {
+        statusToSend = 'not-applicable';
+      }
+      // Skip save if status is Part I N/A without justification — backend would reject with 400
+      if (
+        statusToSend === 'not-applicable' &&
+        !finding.is_mandatory &&
+        !finding.justification?.trim()
+      ) {
+        this._persistStatus[finding.finding_id] = 'failed';
+        return;
+      }
       try {
         const resp = await fetch(
           `/api/v1/compliance/cra/${this.assessmentId}/findings/${finding.finding_id}`,
@@ -130,12 +221,20 @@ function craStep3() {
               'Content-Type': 'application/json',
               'X-CSRFToken': getCsrfToken(),
             },
-            body: JSON.stringify({ status: finding.status, notes: finding.notes }),
+            body: JSON.stringify({
+              status: statusToSend,
+              notes: finding.notes,
+              justification: finding.justification || '',
+            }),
           },
         );
-        this._notesSaveStatus[finding.finding_id] = resp.ok ? 'saved' : 'failed';
+        this._persistStatus[finding.finding_id] = resp.ok ? 'saved' : 'failed';
+        if (resp.ok && pendingNA) {
+          finding.status = statusToSend;
+          delete this._pendingNA[finding.finding_id];
+        }
       } catch {
-        this._notesSaveStatus[finding.finding_id] = 'failed';
+        this._persistStatus[finding.finding_id] = 'failed';
       }
     },
 

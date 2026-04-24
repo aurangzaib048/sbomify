@@ -10,6 +10,8 @@ Manages the 5-step wizard workflow:
 
 from __future__ import annotations
 
+import calendar
+import datetime
 from typing import TYPE_CHECKING, Any
 
 from sbomify.apps.compliance.models import (
@@ -37,12 +39,35 @@ if TYPE_CHECKING:
     from sbomify.apps.core.models import User
     from sbomify.apps.teams.models import Team
 
-# Category -> default conformity procedure mapping per CRA Annex VIII
-_CATEGORY_PROCEDURE_MAP: dict[str, str] = {
+# Allowed conformity assessment procedures per product category.
+# CRA Art 32(1): Default → Module A (self-assessment)
+# CRA Art 32(2): Class I → Module A only if harmonised standard applied; otherwise B+C or H
+# CRA Art 32(3): Class II → Module B+C or H (no self-assessment)
+# CRA Art 32(3): Critical → Module B+C or H (EUCC not yet mandated per Art 8(1))
+# CRA Art 32(5): FOSS with public tech docs may use Module A for Class I/II (not modelled separately)
+_CATEGORY_PROCEDURE_OPTIONS: dict[str, list[str]] = {
+    CRAAssessment.ProductCategory.DEFAULT: [CRAAssessment.ConformityProcedure.MODULE_A],
+    CRAAssessment.ProductCategory.CLASS_I: [
+        CRAAssessment.ConformityProcedure.MODULE_A,
+        CRAAssessment.ConformityProcedure.MODULE_B_C,
+        CRAAssessment.ConformityProcedure.MODULE_H,
+    ],
+    CRAAssessment.ProductCategory.CLASS_II: [
+        CRAAssessment.ConformityProcedure.MODULE_B_C,
+        CRAAssessment.ConformityProcedure.MODULE_H,
+    ],
+    CRAAssessment.ProductCategory.CRITICAL: [
+        CRAAssessment.ConformityProcedure.MODULE_B_C,
+        CRAAssessment.ConformityProcedure.MODULE_H,
+    ],
+}
+
+# Default procedure per category (used when user hasn't explicitly selected)
+_CATEGORY_DEFAULT_PROCEDURE: dict[str, str] = {
     CRAAssessment.ProductCategory.DEFAULT: CRAAssessment.ConformityProcedure.MODULE_A,
     CRAAssessment.ProductCategory.CLASS_I: CRAAssessment.ConformityProcedure.MODULE_A,
     CRAAssessment.ProductCategory.CLASS_II: CRAAssessment.ConformityProcedure.MODULE_B_C,
-    CRAAssessment.ProductCategory.CRITICAL: CRAAssessment.ConformityProcedure.EUCC,
+    CRAAssessment.ProductCategory.CRITICAL: CRAAssessment.ConformityProcedure.MODULE_B_C,
 }
 
 WIZARD_STEPS = (1, 2, 3, 4, 5)
@@ -52,6 +77,52 @@ WIZARD_STEPS = (1, 2, 3, 4, 5)
 # would bloat the row and could DoS JSON serialisation. 2 KB is
 # generous for a one-paragraph audit explanation.
 _MAX_WAIVER_JUSTIFICATION_CHARS = 2_000
+
+# Generic caps for Step 1 free-text fields (intended_use,
+# support_period_short_justification). ``intended_use`` flows into the
+# DoC; ``support_period_short_justification`` is stored-only today but
+# is regulated audit evidence per CRA Art 13(8). Same rationale as the
+# waiver cap above — the JSONField / TextField surfaces have no server
+# cap and would otherwise accept arbitrarily large blobs that bloat
+# the row and stall JSON serialisation.
+_MAX_STEP_1_TEXT_CHARS = 4_000
+
+# EU member states (ISO 3166-1 alpha-2). Mirrors
+# ``sbomify/apps/compliance/js/eu-countries.ts`` — a market code that
+# isn't in this set is rejected at save time (CRA Art 24: DoC enumerates
+# the member states the product is placed on the market in, so an
+# invalid code would land in a regulated artefact).
+_EU_COUNTRIES: frozenset[str] = frozenset(
+    {
+        "AT",
+        "BE",
+        "BG",
+        "HR",
+        "CY",
+        "CZ",
+        "DK",
+        "EE",
+        "FI",
+        "FR",
+        "DE",
+        "GR",
+        "HU",
+        "IE",
+        "IT",
+        "LV",
+        "LT",
+        "LU",
+        "MT",
+        "NL",
+        "PL",
+        "PT",
+        "RO",
+        "SK",
+        "SI",
+        "ES",
+        "SE",
+    }
+)
 
 
 def _auto_fill_from_contacts(assessment: CRAAssessment) -> None:
@@ -196,6 +267,21 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
     manufacturer_name = manufacturer.name if manufacturer else ""
     manufacturer_is_placeholder = is_placeholder_manufacturer(manufacturer_name)
 
+    # Compute the 5-year minimum support-end date server-side so the
+    # Alpine "is support period short?" check doesn't drift across time
+    # zones. ``new Date()`` is the client-local wall clock; ``today()``
+    # is the server-local date — at midnight the two can differ by a
+    # day and the UI would require (or skip) a justification the
+    # backend disagrees with. Shipping the canonical value removes the
+    # whole class of drift.
+    reference_date = product.release_date or datetime.date.today()
+    new_year = reference_date.year + 5
+    try:
+        support_period_min_end = reference_date.replace(year=new_year)
+    except ValueError:
+        last_day = calendar.monthrange(new_year, reference_date.month)[1]
+        support_period_min_end = datetime.date(new_year, reference_date.month, last_day)
+
     return ServiceResult.success(
         {
             "product": {
@@ -211,9 +297,13 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "intended_use": assessment.intended_use,
             "target_eu_markets": assessment.target_eu_markets,
             "support_period_end": assessment.support_period_end.isoformat() if assessment.support_period_end else None,
+            "support_period_min_end": support_period_min_end.isoformat(),
+            "support_period_short_justification": assessment.support_period_short_justification,
             "product_category": assessment.product_category,
             "is_open_source_steward": assessment.is_open_source_steward,
+            "harmonised_standard_applied": assessment.harmonised_standard_applied,
             "conformity_assessment_procedure": assessment.conformity_assessment_procedure,
+            "conformity_procedure_options": _CATEGORY_PROCEDURE_OPTIONS,
             # EN 18031 applicability flags (issue #905). Orthogonal to
             # ``product_category``; surface separately so the wizard
             # renders both a CRA risk-tier selector and a RED-scope
@@ -356,6 +446,9 @@ def _build_step_3_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
                 "description": finding.control.description,
                 "status": finding.status,
                 "notes": finding.notes,
+                "justification": finding.justification,
+                "is_mandatory": finding.control.is_mandatory,
+                "annex_part": finding.control.annex_part,
                 "annex_reference": annex_ref,
                 "annex_url": get_annex_url(annex_ref),
             }
@@ -543,6 +636,30 @@ _STEP_4_FIELDS = (
 )
 
 
+_AUDITED_STEP_FIELDS: dict[int, tuple[str, ...]] = {
+    1: (
+        "product_category",
+        "conformity_assessment_procedure",
+        "harmonised_standard_applied",
+        "support_period_end",
+        "support_period_short_justification",
+        "target_eu_markets",
+        "is_radio_equipment",
+        "is_open_source_steward",
+        "intended_use",
+    ),
+    2: ("bsi_waivers",),
+    3: ("vdp_url", "security_contact_url", "csirt_contact_email"),
+    4: ("update_frequency", "update_method", "support_email"),
+    5: (),
+}
+
+
+def _audit_snapshot(assessment: CRAAssessment, step: int) -> dict[str, Any]:
+    """Capture the audited fields for a step as a dict for diffing."""
+    return {field: getattr(assessment, field, None) for field in _AUDITED_STEP_FIELDS.get(step, ())}
+
+
 def save_step_data(
     assessment: CRAAssessment,
     step: int,
@@ -560,7 +677,21 @@ def save_step_data(
         4: _save_step_4,
         5: _save_step_5,
     }
-    return savers[step](assessment, data, user)
+
+    before = _audit_snapshot(assessment, step)
+    result = savers[step](assessment, data, user)
+    if result.ok and result.value is not None:
+        from sbomify.apps.compliance.audit import log_step_save
+
+        log_step_save(
+            user=user,
+            assessment_id=str(result.value.pk),
+            team_id=result.value.team_id,
+            step=step,
+            before=before,
+            after=_audit_snapshot(result.value, step),
+        )
+    return result
 
 
 def _save_step_1(
@@ -569,20 +700,40 @@ def _save_step_1(
     user: User,
 ) -> ServiceResult[CRAAssessment]:
     """Save Step 1: Product Profile & Classification."""
-    import datetime
-
-    # Validate product_category if provided
+    # Validate product_category if provided. Require a string — a
+    # non-hashable type (``list`` / ``dict``) would otherwise crash the
+    # ``x not in set`` check with ``TypeError: unhashable type`` and
+    # surface as a 500 instead of a controlled 400.
     if "product_category" in data:
+        category_raw = data["product_category"]
+        if not isinstance(category_raw, str):
+            return ServiceResult.failure("product_category must be a string", status_code=400)
         valid_categories = {c[0] for c in CRAAssessment.ProductCategory.choices}
-        if data["product_category"] not in valid_categories:
+        if category_raw not in valid_categories:
             return ServiceResult.failure(
                 f"Invalid product_category. Must be one of: {sorted(valid_categories)}", status_code=400
             )
 
-    # Apply simple text/char fields
+    # Apply simple text/char fields. Reject non-string inputs with a 400
+    # before the cap is evaluated — ``setattr`` + ``assessment.save()``
+    # would later coerce a ``list`` / ``dict`` to its ``repr`` (which
+    # bypasses the length cap's ``isinstance`` branch and can still
+    # bloat the row / stall JSON serialisation on later reads) or
+    # raise a DB-adapter error that surfaces as a 500.
     for field in (*_STEP_1_TEXT_FIELDS, *_STEP_1_CHAR_FIELDS):
         if field in data:
-            setattr(assessment, field, data[field])
+            raw = data[field]
+            if raw is None:
+                setattr(assessment, field, "")
+                continue
+            if not isinstance(raw, str):
+                return ServiceResult.failure(f"{field} must be a string", status_code=400)
+            if len(raw) > _MAX_STEP_1_TEXT_CHARS:
+                return ServiceResult.failure(
+                    f"{field} exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
+                    status_code=400,
+                )
+            setattr(assessment, field, raw)
 
     for field in _STEP_1_BOOL_FIELDS:
         if field in data:
@@ -597,9 +748,13 @@ def _save_step_1(
     if "target_eu_markets" in data:
         markets = data["target_eu_markets"]
         if markets is not None:
-            if not isinstance(markets, list) or not all(isinstance(m, str) and len(m) == 2 for m in markets):
+            if not isinstance(markets, list) or not all(isinstance(m, str) for m in markets):
+                return ServiceResult.failure("target_eu_markets must be a list of strings", status_code=400)
+            invalid = [m for m in markets if m not in _EU_COUNTRIES]
+            if invalid:
                 return ServiceResult.failure(
-                    "target_eu_markets must be a list of 2-letter country codes", status_code=400
+                    f"Invalid EU country code(s): {invalid}. Must be an EU member-state ISO 3166-1 alpha-2 code.",
+                    status_code=400,
                 )
         assessment.target_eu_markets = markets or []
 
@@ -617,10 +772,99 @@ def _save_step_1(
         else:
             return ServiceResult.failure("Invalid type for support_period_end", status_code=400)
 
-    # Auto-set conformity procedure based on category
-    assessment.conformity_assessment_procedure = _CATEGORY_PROCEDURE_MAP.get(
-        assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
-    )
+    # Harmonised-standard flag (CRA Art 32(2)). Treat an absent key as
+    # "unchanged" — the normal PATCH semantic — so a partial save that
+    # edits ``intended_use`` doesn't silently clear an earlier operator
+    # affirmation. The Art 32(2) gate below reads the post-payload
+    # state; a re-tick is only required when the operator explicitly
+    # sends ``False`` or transitions category/procedure into the
+    # gated combination (Class I + Module A) without the stored flag
+    # being ``True``.
+    if "harmonised_standard_applied" in data:
+        val = data["harmonised_standard_applied"]
+        if isinstance(val, bool):
+            assessment.harmonised_standard_applied = val
+        elif isinstance(val, str):
+            assessment.harmonised_standard_applied = val.lower() in ("true", "1", "yes")
+        elif isinstance(val, int):
+            assessment.harmonised_standard_applied = bool(val)
+        else:
+            return ServiceResult.failure(
+                "harmonised_standard_applied must be a boolean, string, or integer",
+                status_code=400,
+            )
+
+    # Apply support_period_short_justification from payload BEFORE the
+    # 5-year gate reads it (CRA Art 13(8)). Previously the gate read the
+    # stored value, then the assignment happened after — a payload
+    # sending ``""`` would clear the justification while still passing
+    # the gate via the stored non-empty value.
+    #
+    # Type validation matches the other Step 1 free-text fields
+    # (``_STEP_1_TEXT_FIELDS`` above): ``None`` clears the value; any
+    # other non-string payload returns 400 so clients see a schema
+    # error rather than silently losing their typed justification.
+    if "support_period_short_justification" in data:
+        raw = data["support_period_short_justification"]
+        if raw is None:
+            assessment.support_period_short_justification = ""
+        elif not isinstance(raw, str):
+            return ServiceResult.failure(
+                "support_period_short_justification must be a string",
+                status_code=400,
+            )
+        elif len(raw) > _MAX_STEP_1_TEXT_CHARS:
+            return ServiceResult.failure(
+                f"support_period_short_justification exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
+                status_code=400,
+            )
+        else:
+            assessment.support_period_short_justification = raw
+
+    # Handle conformity procedure selection (CRA Art 32(1-5))
+    allowed = _CATEGORY_PROCEDURE_OPTIONS.get(assessment.product_category, [])
+    if "conformity_assessment_procedure" in data:
+        chosen = data["conformity_assessment_procedure"]
+        if chosen not in allowed:
+            return ServiceResult.failure(
+                f"Procedure '{chosen}' is not allowed for category '{assessment.product_category}'. "
+                f"Allowed: {allowed} (CRA Art 32)",
+                status_code=400,
+            )
+    else:
+        chosen = _CATEGORY_DEFAULT_PROCEDURE.get(
+            assessment.product_category, CRAAssessment.ConformityProcedure.MODULE_A
+        )
+
+    # Class I + Module A requires harmonised standard (CRA Art 32(2))
+    if (
+        assessment.product_category == CRAAssessment.ProductCategory.CLASS_I
+        and chosen == CRAAssessment.ConformityProcedure.MODULE_A
+        and not assessment.harmonised_standard_applied
+    ):
+        return ServiceResult.failure(
+            "Class I products may only use Module A when a harmonised standard has been applied "
+            "(CRA Art 32(2)). Either select a different procedure or confirm harmonised standard.",
+            status_code=400,
+        )
+    assessment.conformity_assessment_procedure = chosen
+
+    # Validate support period minimum of 5 years (CRA Art 13(8), FAQ 4.5.2)
+    if assessment.support_period_end:
+        reference_date = assessment.product.release_date or datetime.date.today()
+        new_year = reference_date.year + 5
+        try:
+            min_end = reference_date.replace(year=new_year)
+        except ValueError:
+            # Handle leap-day reference dates (e.g., Feb 29) for non-leap target years
+            last_day = calendar.monthrange(new_year, reference_date.month)[1]
+            min_end = datetime.date(new_year, reference_date.month, last_day)
+        if assessment.support_period_end < min_end and not assessment.support_period_short_justification.strip():
+            return ServiceResult.failure(
+                "Support period is less than 5 years. CRA Art 13(8) requires at least 5 years "
+                "unless the product's expected use time is shorter. Please provide a justification.",
+                status_code=400,
+            )
 
     # EN 18031-2 and -3 are RED harmonised standards — they are not
     # standalone privacy / fraud standards. A product that doesn't fall
@@ -656,10 +900,12 @@ def _save_step_1(
         update_fields=[
             "product_category",
             "is_open_source_steward",
+            "harmonised_standard_applied",
             "conformity_assessment_procedure",
             "intended_use",
             "target_eu_markets",
             "support_period_end",
+            "support_period_short_justification",
             "is_radio_equipment",
             "processes_personal_data",
             "handles_financial_value",
@@ -811,33 +1057,60 @@ def _save_step_3(
             finding_id = fd.get("finding_id")
             if not finding_id:
                 continue
-            finding = OSCALFinding.objects.get(
+            # Eager-load ``assessment_result__cra_assessment`` because
+            # ``update_finding`` now reads the CRAAssessment PK for the
+            # audit log — without this join a Step 3 payload with N
+            # finding updates would fire 2×N extra queries.
+            finding = OSCALFinding.objects.select_related(
+                "control",
+                "assessment_result__cra_assessment",
+            ).get(
                 pk=finding_id,
                 assessment_result=assessment.oscal_assessment_result,
             )
-            update_finding(finding, fd.get("status", finding.status), fd.get("notes", finding.notes))
+            try:
+                update_finding(
+                    finding,
+                    fd.get("status", finding.status),
+                    fd.get("notes", finding.notes),
+                    fd.get("justification", finding.justification),
+                    actor=user,
+                )
+            except ValueError as e:
+                return ServiceResult.failure(str(e), status_code=400)
 
-        # Update vulnerability handling fields
+        # Update vulnerability handling fields. Reject wrong-type
+        # inputs with a controlled 400 — Step 1 already behaves this
+        # way, and a silent ``continue`` here lets an SDK client lose
+        # writes without any signal.
         vh = data.get("vulnerability_handling", {})
+        if not isinstance(vh, dict):
+            return ServiceResult.failure("vulnerability_handling must be an object", status_code=400)
         for field in _STEP_3_VH_FIELDS:
             if field in vh:
                 val = vh[field]
                 if field == "acknowledgment_timeline_days":
                     if val is not None and not isinstance(val, int):
-                        continue
+                        return ServiceResult.failure(f"{field} must be an integer or null", status_code=400)
+                elif val is None:
+                    val = ""
                 elif not isinstance(val, str):
-                    continue
+                    return ServiceResult.failure(f"{field} must be a string", status_code=400)
                 setattr(assessment, field, val)
 
         # Update Article 14 fields
         art14 = data.get("article_14", {})
+        if not isinstance(art14, dict):
+            return ServiceResult.failure("article_14 must be an object", status_code=400)
         for field in _STEP_3_ART14_FIELDS:
             if field in art14:
                 val = art14[field]
                 if field == "enisa_srp_registered":
                     setattr(assessment, field, bool(val))
+                elif val is None:
+                    setattr(assessment, field, "")
                 elif not isinstance(val, str):
-                    continue
+                    return ServiceResult.failure(f"{field} must be a string", status_code=400)
                 else:
                     setattr(assessment, field, val)
 
@@ -979,3 +1252,121 @@ def get_assessment_list_for_team(team_id: int | str) -> ServiceResult[list[dict[
             for a in assessments
         ]
     )
+
+
+_SCOPE_TEXT_CAP = 4_000
+_SCOPE_NAME_CAP = 255
+
+
+def _parse_scope_bool(val: object, default: bool = False) -> bool:
+    """Normalise scope-screening boolean payloads into Python ``bool``.
+
+    Accepts the shapes clients actually send: a JSON ``bool``; a
+    string spelled ``"true"``/``"1"``/``"yes"`` (case-insensitive)
+    for the truthy side, anything else for the falsy side; an
+    integer treated as truthy/falsy via ``bool(val)``. Anything else
+    falls back to ``default`` so a malformed-but-non-destructive
+    payload does not silently flip a persisted flag.
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("true", "1", "yes")
+    if isinstance(val, int):
+        return bool(val)
+    return default
+
+
+def save_scope_screening(
+    product: Any,
+    user: User,
+    data: dict[str, Any],
+) -> ServiceResult[Any]:
+    """Persist a ``CRAScopeScreening`` from validated JSON data.
+
+    Central service-layer gate for the scope-determination write path.
+    Returns ``ServiceResult`` so the view and any future Ninja/SDK
+    endpoint share the same length caps, coercion rules, and audit
+    emission — without those rules duplicated and drifting across
+    surfaces.
+    """
+    from django.db import IntegrityError, transaction
+
+    from sbomify.apps.compliance.audit import log_scope_screening_change
+    from sbomify.apps.compliance.models import CRAScopeScreening
+
+    # Length caps (CWE-400). Check the ``str(...)`` coerced form so a
+    # caller passing ``list``/``dict`` can't bypass the string-only
+    # ``isinstance`` branch and still bloat the row.
+    notes_coerced = str(data.get("screening_notes") or "")
+    if len(notes_coerced) > _SCOPE_TEXT_CAP:
+        return ServiceResult.failure("screening_notes exceeds 4000-char cap", status_code=400)
+    name_coerced = str(data.get("exempted_legislation_name") or "")
+    if len(name_coerced) > _SCOPE_NAME_CAP:
+        return ServiceResult.failure("exempted_legislation_name exceeds 255-char cap", status_code=400)
+
+    # Capture before-state so the audit log diff reflects only actual
+    # deltas. ``screening_exists`` drives the create vs update log.
+    try:
+        existing = CRAScopeScreening.objects.get(product=product)
+        before = {
+            "has_data_connection": existing.has_data_connection,
+            "is_own_use_only": existing.is_own_use_only,
+            "is_testing_version": existing.is_testing_version,
+            "is_covered_by_other_legislation": existing.is_covered_by_other_legislation,
+            "exempted_legislation_name": existing.exempted_legislation_name,
+            "is_dual_use": existing.is_dual_use,
+            "screening_notes": existing.screening_notes,
+        }
+    except CRAScopeScreening.DoesNotExist:
+        before = {}
+
+    # ``OneToOneField`` uniqueness race — wrap the get_or_create AND
+    # the field writes in the same atomic block so a concurrent POST
+    # can't squeeze between the create and the subsequent save.
+    try:
+        with transaction.atomic():
+            screening, _created = CRAScopeScreening.objects.select_for_update().get_or_create(
+                product=product,
+                defaults={"team": product.team, "created_by": user},
+            )
+            screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
+            screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
+            screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
+            screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
+            screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
+            screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
+            screening.screening_notes = str(data.get("screening_notes") or "").strip()
+            screening.save()
+    except IntegrityError:
+        # The OneToOne raced under us — reload and retry write. This
+        # loses the ``created_by`` marker on the second winner but keeps
+        # the data consistent with the losing caller's payload.
+        screening = CRAScopeScreening.objects.get(product=product)
+        screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
+        screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
+        screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
+        screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
+        screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
+        screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
+        screening.screening_notes = str(data.get("screening_notes") or "").strip()
+        screening.save()
+
+    after = {
+        "has_data_connection": screening.has_data_connection,
+        "is_own_use_only": screening.is_own_use_only,
+        "is_testing_version": screening.is_testing_version,
+        "is_covered_by_other_legislation": screening.is_covered_by_other_legislation,
+        "exempted_legislation_name": screening.exempted_legislation_name,
+        "is_dual_use": screening.is_dual_use,
+        "screening_notes": screening.screening_notes,
+    }
+    log_scope_screening_change(
+        user=user,
+        product_id=str(product.id),
+        team_id=product.team_id,
+        before=before,
+        after=after,
+    )
+
+    return ServiceResult.success(screening)

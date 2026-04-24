@@ -39,21 +39,33 @@ _Response = tuple[int, Any]
 
 
 def _get_assessment_or_error(request: HttpRequest, assessment_id: str) -> CRAAssessment | _Response:
-    """Fetch assessment with access checks (billing gate + team role)."""
-    try:
-        assessment = CRAAssessment.objects.select_related("team", "product", "oscal_assessment_result__catalog").get(
-            pk=assessment_id
-        )
-    except CRAAssessment.DoesNotExist:
-        return 404, ErrorResponse(error="Assessment not found", error_code="not_found")
+    """Fetch assessment with access checks (billing gate + team role).
 
-    if not verify_item_access(request, assessment, ["owner", "admin"]):
-        return 403, ErrorResponse(error="Forbidden", error_code="permission_denied")
+    Thin HTTP-adapter around ``permissions.require_assessment_access``
+    — keeps role, billing, and cross-team-404 logic in one place so a
+    future rule change (new role, billing plan, enumeration-resistance
+    policy) doesn't drift between the view and API surfaces.
+    """
+    from sbomify.apps.compliance.permissions import AccessCheckFailure, require_assessment_access
 
-    if not check_cra_access(assessment.team):
-        return 403, ErrorResponse(error="CRA Compliance requires Business plan or higher", error_code="billing_gate")
-
-    return assessment
+    result = require_assessment_access(request, assessment_id)
+    if isinstance(result, AccessCheckFailure):
+        # Route by ``error_code``, not ``status_code``: two distinct
+        # 403 cases live behind the same status (role denial vs billing
+        # gate) and must surface with different ``error_code`` values
+        # so API clients can react programmatically without parsing
+        # human-readable messages.
+        if result.error_code == "not_found":
+            return 404, ErrorResponse(error="Assessment not found", error_code="not_found")
+        if result.error_code == "billing_gate":
+            return 403, ErrorResponse(
+                error="CRA Compliance requires Business plan or higher",
+                error_code="billing_gate",
+            )
+        if result.error_code == "permission_denied":
+            return 403, ErrorResponse(error="Forbidden", error_code="permission_denied")
+        return result.status_code, ErrorResponse(error=result.message, error_code=result.error_code)
+    return result
 
 
 def _assessment_to_schema(a: CRAAssessment) -> CRAAssessmentSchema:
@@ -85,6 +97,9 @@ def _finding_to_schema(f: OSCALFinding) -> FindingSchema:
         group_title=f.control.group_title,
         status=f.status,  # type: ignore[arg-type]
         notes=f.notes,
+        justification=f.justification,
+        is_mandatory=f.control.is_mandatory,
+        annex_part=f.control.annex_part,
         annex_reference=annex_ref,
         annex_url=get_annex_url(annex_ref),
         updated_at=f.updated_at,
@@ -219,13 +234,26 @@ def get_sbom_status(request: HttpRequest, assessment_id: str) -> _Response:
 def update_finding(
     request: HttpRequest, assessment_id: str, finding_id: str, payload: FindingUpdateSchema
 ) -> _Response:
-    """Update a single finding's status and notes."""
+    """Update a single finding's status, notes, and justification.
+
+    ``justification`` is required when a Part I control is marked
+    ``not-applicable`` (CRA Art 13(4)).
+    """
     result = _get_assessment_or_error(request, assessment_id)
     if not isinstance(result, CRAAssessment):
         return result
 
     try:
-        finding = OSCALFinding.objects.select_related("control", "assessment_result__catalog").get(
+        # Eager-load ``assessment_result__cra_assessment`` so the audit
+        # log inside ``update_finding`` doesn't take two extra queries
+        # per PUT (one for ``assessment_result``, one for the reverse
+        # ``cra_assessment``). Step 3 interactions are latency-sensitive
+        # — each finding click hits this endpoint.
+        finding = OSCALFinding.objects.select_related(
+            "control",
+            "assessment_result__catalog",
+            "assessment_result__cra_assessment",
+        ).get(
             pk=finding_id,
             assessment_result=result.oscal_assessment_result,
         )
@@ -235,7 +263,13 @@ def update_finding(
     from .services.oscal_service import update_finding as _update_finding
 
     try:
-        updated = _update_finding(finding, payload.status, payload.notes)
+        updated = _update_finding(
+            finding,
+            payload.status,
+            payload.notes,
+            payload.justification,
+            actor=request.user,
+        )
     except ValueError as e:
         return 400, ErrorResponse(error=str(e))
 

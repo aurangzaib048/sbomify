@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from sbomify.apps.compliance.models import (
@@ -221,7 +223,10 @@ class TestSaveStepData:
             "target_eu_markets": ["DE", "FR", "NL"],
             "product_category": "class_i",
             "is_open_source_steward": False,
-            "support_period_end": "2029-06-30",
+            "harmonised_standard_applied": True,
+            "support_period_end": str(
+                datetime.date(datetime.date.today().year + 6, 6, 30)
+            ),  # June 30, 6 years from now — always satisfies 5-year minimum (CRA Art 13(8))
         }
         result = save_step_data(assessment, 1, data, sample_user)
 
@@ -230,8 +235,9 @@ class TestSaveStepData:
         assert a.intended_use == "Home automation controller"
         assert a.target_eu_markets == ["DE", "FR", "NL"]
         assert a.product_category == "class_i"
-        # Class I defaults to Module A
+        # Class I defaults to Module A (requires harmonised standard per CRA Art 32(2))
         assert a.conformity_assessment_procedure == CRAAssessment.ConformityProcedure.MODULE_A
+        assert a.harmonised_standard_applied is True
         assert 1 in a.completed_steps
         assert a.status == CRAAssessment.WizardStatus.IN_PROGRESS
 
@@ -240,10 +246,18 @@ class TestSaveStepData:
         assert result.ok
         assert result.value.conformity_assessment_procedure == CRAAssessment.ConformityProcedure.MODULE_B_C
 
-    def test_step_1_critical_sets_eucc(self, assessment, sample_user):
+    def test_step_1_critical_defaults_to_module_bc(self, assessment, sample_user):
+        """Critical products default to Module B+C (CRA Art 32(3)); EUCC not yet mandated."""
         result = save_step_data(assessment, 1, {"product_category": "critical"}, sample_user)
         assert result.ok
-        assert result.value.conformity_assessment_procedure == CRAAssessment.ConformityProcedure.EUCC
+        assert result.value.conformity_assessment_procedure == CRAAssessment.ConformityProcedure.MODULE_B_C
+
+    def test_step_1_class_i_without_harmonised_standard_rejected(self, assessment, sample_user):
+        """Class I + Module A requires harmonised standard (CRA Art 32(2))."""
+        result = save_step_data(assessment, 1, {"product_category": "class_i"}, sample_user)
+        assert not result.ok
+        assert result.status_code == 400
+        assert "harmonised standard" in result.error.lower()
 
     def test_step_1_invalid_category_rejected(self, assessment, sample_user):
         result = save_step_data(assessment, 1, {"product_category": "invalid"}, sample_user)
@@ -268,11 +282,263 @@ class TestSaveStepData:
         assert result.ok
         a = result.value
 
-        save = save_step_data(a, 1, {"product_category": "class_i"}, sample_user)
+        # Use ``default`` category so the Class I + Module A harmonised
+        # check (CRA Art 32(2)) introduced by the scope-screening work
+        # doesn't fire first — this test targets the placeholder-manufacturer
+        # guard (Annex V item 2) specifically.
+        save = save_step_data(a, 1, {"product_category": "default"}, sample_user)
 
         assert not save.ok
         assert save.status_code == 400
         assert "Annex V" in (save.error or "")
+
+    def test_step_1_absent_harmonised_flag_preserves_stored_value(self, assessment, sample_user):
+        """Partial-PATCH semantic: absent key means "unchanged". A
+        prior save that set ``harmonised_standard_applied=True`` must
+        survive a subsequent Step 1 save that omits the key (e.g. the
+        operator edits only ``intended_use`` on a second visit). The
+        Art 32(2) gate is evaluated after the payload is applied, so
+        the stored ``True`` keeps the Class I + Module A combination
+        valid — which preserves presumption of conformity in the next
+        DoC render."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": True,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert first.ok
+        assert first.value.harmonised_standard_applied is True
+
+        # Second save omits the key — must succeed, flag must stay True.
+        second = save_step_data(
+            assessment,
+            1,
+            {"intended_use": "Updated description", "support_period_end": support},
+            sample_user,
+        )
+        assert second.ok, second.error
+        assessment.refresh_from_db()
+        assert assessment.harmonised_standard_applied is True
+
+    def test_step_1_explicit_false_harmonised_flag_fails_art_32_gate(self, assessment, sample_user):
+        """The ``absent means unchanged`` semantic does not let
+        operators bypass Art 32(2). Sending ``False`` explicitly still
+        flips the flag and the gate blocks Class I + Module A."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": True,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert first.ok
+
+        second = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "class_i",
+                "harmonised_standard_applied": False,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert not second.ok
+        assert second.status_code == 400
+        assert "harmonised standard" in (second.error or "").lower()
+
+    def test_step_1_support_period_justification_cleared_after_gate(self, assessment, sample_user):
+        """CRA Art 13(8) audit-trail bypass regression (P0). A payload
+        that submits ``support_period_short_justification=""`` with a
+        <5-year support date must be rejected on the same save that
+        tries to clear the justification — not pass the gate by
+        reading the stored value and then silently overwrite it."""
+        # First save: short support period + valid justification.
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        first = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "product discontinued after 2 years",
+            },
+            sample_user,
+        )
+        assert first.ok
+        # Second save: try to clear the justification — must fail.
+        second = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "",
+            },
+            sample_user,
+        )
+        assert not second.ok
+        assert second.status_code == 400
+        assert "5 years" in (second.error or "") or "justification" in (second.error or "").lower()
+
+    def test_step_1_support_period_justification_whitespace_rejected(self, assessment, sample_user):
+        """Whitespace-only justification is not a real audit record."""
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "   \t\n   ",
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_1_support_period_justification_length_cap(self, assessment, sample_user):
+        """4000-char cap mirrors the one on ``intended_use`` — a
+        ``TextField`` with no DB-side size limit would otherwise let a
+        client bloat the regulated-evidence row. Without the cap the
+        stored value is returned to every subsequent Step 1 GET and
+        dominates JSON serialisation time."""
+        short_date = str(datetime.date(datetime.date.today().year + 2, 1, 1))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "support_period_end": short_date,
+                "support_period_short_justification": "x" * 4_001,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "4000-character cap" in (result.error or "")
+
+    def test_step_1_rejects_non_eu_two_letter_code(self, assessment, sample_user):
+        """EU-markets allowlist (P1). ``["XY"]`` passes the
+        old length-only check but is not an EU member state; the DoC
+        would list it verbatim. The allowlist must fail-closed."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "target_eu_markets": ["XY"],
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "XY" in (result.error or "") or "country" in (result.error or "").lower()
+
+    def test_step_1_rejects_non_eu_existing_two_letter(self, assessment, sample_user):
+        """``US`` is a valid ISO 3166-1 alpha-2 code but not EU —
+        regression seal for the narrower check."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "target_eu_markets": ["US"], "support_period_end": support},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+
+    def test_step_1_leap_day_support_period_clamp(self, assessment, sample_user):
+        """Feb 29 release date → target year 5 years later (non-leap)
+        must clamp to Feb 28, not crash on ``date.replace(year=…)``.
+        Without this clamp, saving a support period of Feb 28 in the
+        target year would be rejected as < 5 years despite being
+        exactly the clamp boundary (CRA Art 13(8))."""
+        # Seed a leap-day release date on the product.
+        assessment.product.release_date = datetime.date(2024, 2, 29)
+        assessment.product.save(update_fields=["release_date"])
+
+        # 2029 is not a leap year — clamp to Feb 28. Feb 28 boundary
+        # is exactly the minimum and must be accepted.
+        boundary = str(datetime.date(2029, 2, 28))
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "support_period_end": boundary},
+            sample_user,
+        )
+        assert result.ok, result.error
+
+        # Feb 27 2029 is one day below the clamp — should require justification.
+        below = str(datetime.date(2029, 2, 27))
+        result_below = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "support_period_end": below},
+            sample_user,
+        )
+        assert not result_below.ok
+        assert "5 years" in (result_below.error or "")
+
+    def test_step_1_rejects_oversized_intended_use(self, assessment, sample_user):
+        """Length cap on free-text ``intended_use`` (P1, row-bloat /
+        DoS via JSON serialiser stall). 4 KB is generous."""
+        support = str(datetime.date(datetime.date.today().year + 6, 6, 30))
+        result = save_step_data(
+            assessment,
+            1,
+            {
+                "product_category": "default",
+                "intended_use": "x" * 10_000,
+                "support_period_end": support,
+            },
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "intended_use" in (result.error or "")
+
+    def test_step_1_rejects_non_string_text_field(self, assessment, sample_user):
+        """A non-string ``intended_use`` (``list`` / ``dict``) bypasses
+        the ``isinstance(raw, str)`` branch of the length cap. Without
+        an explicit type check the value would reach ``setattr`` and
+        later blow up inside ``assessment.save()`` as a 500 or — worse —
+        get coerced to a ``repr`` that defeats the row-bloat guard."""
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": "default", "intended_use": ["bypass"] * 500},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "intended_use" in (result.error or "")
+
+    def test_step_1_rejects_non_string_product_category(self, assessment, sample_user):
+        """``product_category`` goes through a ``x not in set`` check. A
+        ``list`` / ``dict`` payload would raise ``TypeError: unhashable
+        type`` and become a 500. Require a string up front."""
+        result = save_step_data(
+            assessment,
+            1,
+            {"product_category": ["class_i"]},
+            sample_user,
+        )
+        assert not result.ok
+        assert result.status_code == 400
+        assert "product_category" in (result.error or "")
 
     def test_step_2_marks_complete(self, assessment, sample_user):
         result = save_step_data(assessment, 2, {}, sample_user)
@@ -401,6 +667,34 @@ class TestSaveStepData:
         result = save_step_data(assessment, 3, data, sample_user)
         assert not result.ok
         assert result.status_code == 400
+
+    def test_step_3_vulnerability_handling_not_dict_rejected(self, assessment, sample_user):
+        """Silent-drop regression: a non-dict ``vulnerability_handling``
+        or wrong-type inner value previously skipped the write without
+        any signal. An SDK/curl client would see a 200 while the DB
+        retained the old value. Return 400 to match Step 1's strictness."""
+        result = save_step_data(
+            assessment, 3, {"vulnerability_handling": "not-a-dict"}, sample_user
+        )
+        assert not result.ok and result.status_code == 400
+
+    def test_step_3_article_14_not_dict_rejected(self, assessment, sample_user):
+        result = save_step_data(
+            assessment, 3, {"article_14": ["not-a-dict"]}, sample_user
+        )
+        assert not result.ok and result.status_code == 400
+
+    def test_step_3_vh_wrong_type_rejected(self, assessment, sample_user):
+        """A non-string ``vdp_url`` (``list`` / ``dict`` / int) used to
+        be silently dropped. Reject so the caller learns their payload
+        shape is wrong."""
+        result = save_step_data(
+            assessment,
+            3,
+            {"vulnerability_handling": {"vdp_url": ["bypass"]}},
+            sample_user,
+        )
+        assert not result.ok and result.status_code == 400
 
     def test_step_4_saves_user_info(self, assessment, sample_user):
         data = {
