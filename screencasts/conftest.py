@@ -94,12 +94,16 @@ def pace(page: Page, ms: int = 600) -> None:
     """Pause for a natural beat between actions.
 
     Long pauses (>= 800ms) double as screenshot capture points when at
-    least 3s have passed since the last frame. The capture happens inside
-    the wait so the video does not see any extra stall.
+    least 3s have passed since the last frame. Screenshot time is counted
+    against the requested pause so the overall delay stays about the same.
     """
+    remaining_ms = ms
     if ms >= _SCREENSHOT_MIN_PACE_MS:
+        started = time.monotonic()
         _maybe_capture_screenshot(page)
-    page.wait_for_timeout(ms)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        remaining_ms = max(0, ms - elapsed_ms)
+    page.wait_for_timeout(remaining_ms)
 
 
 def hover_and_click(page: Page, locator: Locator, pause_ms: int = 250) -> None:
