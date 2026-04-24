@@ -154,15 +154,15 @@ function craStep3() {
 
     async saveFindingNotes(finding: Finding): Promise<void> {
       const pendingNA = !!this._pendingNA[finding.finding_id];
-      // Resolve the status to send. A pending Part I N/A only becomes real
-      // when the operator has typed a justification — otherwise keep the
-      // existing (server-persisted) status and skip the PUT.
+      // Resolve the status to send. A pending Part I N/A only becomes
+      // real when the operator has typed a justification. If
+      // justification is still empty, PUT the existing (server-
+      // persisted) status so the note the operator just typed still
+      // gets saved — only the N/A transition is deferred, not the
+      // note itself. Otherwise the operator can lose keystrokes by
+      // navigating away before committing the N/A.
       let statusToSend = finding.status;
-      if (pendingNA) {
-        if (!finding.justification?.trim()) {
-          this._notesSaveStatus[finding.finding_id] = 'failed';
-          return;
-        }
+      if (pendingNA && finding.justification?.trim()) {
         statusToSend = 'not-applicable';
       }
       // Skip save if status is Part I N/A without justification — backend would reject with 400

@@ -399,7 +399,12 @@ class TestUpdateFinding:
 
         assert records, "expected at least one audit record"
         event = records[-1]
-        assert event.message == "cra.finding.update"
+        assert event.message.startswith("cra.finding.update")
+        # The structured payload must be embedded in the message text
+        # so production log formatters that only render %(message)s
+        # still capture the audit context.
+        assert '"user_id"' in event.message
+        assert '"delta"' in event.message
         assert getattr(event, "user_id", None) == sample_user.id
         assert "status" in getattr(event, "delta", {})
 

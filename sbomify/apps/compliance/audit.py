@@ -21,12 +21,31 @@ that would truncate the trail.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from sbomify.apps.core.models import User
 
 _LOG = logging.getLogger("sbomify.compliance.audit")
+
+
+def _payload_json(payload: dict[str, Any]) -> str:
+    """Serialise a payload for inclusion in the log message.
+
+    The project's default logging formatter (``sbomify/settings.py``)
+    only renders ``%(message)s`` — anything passed via ``extra=...``
+    is captured on the ``LogRecord`` object but doesn't land in the
+    rendered log line. For CRA non-repudiation we need the structured
+    context to be durable regardless of which sink collects the logs,
+    so we embed a JSON payload directly in the message while still
+    populating ``extra`` so tests (and structured sinks that can read
+    extras) can query individual fields.
+
+    ``default=str`` lets us handle ``date`` / ``datetime`` / enum values
+    from model deltas without separate serialisation plumbing.
+    """
+    return json.dumps(payload, default=str, sort_keys=True)
 
 
 def _diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
@@ -55,16 +74,14 @@ def log_scope_screening_change(
     delta = _diff(before, after)
     if not delta:
         return
-    _LOG.info(
-        "cra.scope_screening.write",
-        extra={
-            "event": "cra.scope_screening.write",
-            "user_id": getattr(user, "id", None),
-            "team_id": team_id,
-            "product_id": product_id,
-            "delta": delta,
-        },
-    )
+    payload = {
+        "event": "cra.scope_screening.write",
+        "user_id": getattr(user, "id", None),
+        "team_id": team_id,
+        "product_id": product_id,
+        "delta": delta,
+    }
+    _LOG.info("cra.scope_screening.write %s", _payload_json(payload), extra=payload)
 
 
 def log_step_save(
@@ -80,17 +97,15 @@ def log_step_save(
     delta = _diff(before, after)
     if not delta:
         return
-    _LOG.info(
-        "cra.assessment.step_save",
-        extra={
-            "event": "cra.assessment.step_save",
-            "user_id": getattr(user, "id", None),
-            "team_id": team_id,
-            "assessment_id": assessment_id,
-            "step": step,
-            "delta": delta,
-        },
-    )
+    payload = {
+        "event": "cra.assessment.step_save",
+        "user_id": getattr(user, "id", None),
+        "team_id": team_id,
+        "assessment_id": assessment_id,
+        "step": step,
+        "delta": delta,
+    }
+    _LOG.info("cra.assessment.step_save %s", _payload_json(payload), extra=payload)
 
 
 def log_finding_update(
@@ -106,14 +121,12 @@ def log_finding_update(
     delta = _diff(before, after)
     if not delta:
         return
-    _LOG.info(
-        "cra.finding.update",
-        extra={
-            "event": "cra.finding.update",
-            "user_id": getattr(user, "id", None),
-            "assessment_id": assessment_id,
-            "finding_id": finding_id,
-            "control_id": control_id,
-            "delta": delta,
-        },
-    )
+    payload = {
+        "event": "cra.finding.update",
+        "user_id": getattr(user, "id", None),
+        "assessment_id": assessment_id,
+        "finding_id": finding_id,
+        "control_id": control_id,
+        "delta": delta,
+    }
+    _LOG.info("cra.finding.update %s", _payload_json(payload), extra=payload)
