@@ -91,17 +91,52 @@
                                     {# Justification field for Part I controls marked not-applicable (CRA Art 13(4)) #}
                                     <div x-show="showJustificationField(finding)"
                                          x-cloak
-                                         class="p-3 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 rounded-lg">
-                                        <label class="tw-form-label text-xs">Justification (required per CRA Art 13(4))</label>
-                                        <p class="text-xs text-text-muted mb-2">
-                                            Explain why this requirement is not applicable to your product.
-                                            This justification will be included in the technical documentation.
-                                        </p>
-                                        <textarea x-model="finding.justification"
-                                                  @input="debouncedSaveNotes(finding)"
-                                                  rows="2"
-                                                  class="tw-form-input w-full text-sm"
-                                                  placeholder="e.g., This requirement is incompatible with the nature of the product because..."></textarea>
+                                         class="mt-2 overflow-hidden rounded-lg border-l-4 border-amber-500 dark:border-amber-400 bg-surface dark:bg-gray-900 shadow-sm ring-1 ring-amber-200 dark:ring-amber-800/60">
+                                        <div class="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/70">
+                                            <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/60 shrink-0">
+                                                <i class="fas fa-scale-balanced text-sm text-amber-700 dark:text-amber-300"></i>
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                                <div class="flex items-center gap-2 flex-wrap">
+                                                    <span class="font-semibold text-sm text-text">Justification required</span>
+                                                    <a href="https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847#d1e47-68-1"
+                                                       target="_blank"
+                                                       rel="noopener noreferrer"
+                                                       class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:underline">
+                                                        CRA Art 13(4)
+                                                        <i class="fas fa-up-right-from-square text-[9px] opacity-70"></i>
+                                                    </a>
+                                                </div>
+                                                <p class="text-xs text-text-muted mt-1 m-0 leading-snug">
+                                                    Marking a Part I requirement as Not Applicable only holds up if the reasoning is documented.
+                                                    This text is copied verbatim into the technical documentation package and Declaration of Conformity.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div class="px-4 py-3">
+                                            <label class="sr-only" :for="`just-${finding.finding_id}`">Justification</label>
+                                            <textarea x-model="finding.justification"
+                                                      @input="debouncedSaveNotes(finding)"
+                                                      :id="`just-${finding.finding_id}`"
+                                                      rows="3"
+                                                      class="tw-form-input w-full text-sm focus:border-amber-500 focus:ring-amber-500"
+                                                      placeholder="e.g., This requirement is incompatible with the nature of the product because..."></textarea>
+                                            <div class="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                                                <span x-show="!finding.justification?.trim()"
+                                                      class="flex items-center gap-1 text-amber-700 dark:text-amber-300 font-medium">
+                                                    <i class="fas fa-exclamation-circle"></i>
+                                                    A non-empty justification is required before N/A is saved.
+                                                </span>
+                                                <span x-show="finding.justification?.trim()"
+                                                      x-cloak
+                                                      class="flex items-center gap-1 text-green-600 dark:text-green-400 font-medium">
+                                                    <i class="fas fa-circle-check"></i>
+                                                    Saved on next update
+                                                </span>
+                                                <span class="text-text-muted tabular-nums"
+                                                      x-text="`${(finding.justification || '').length} chars`"></span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </template>
