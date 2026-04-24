@@ -1277,6 +1277,34 @@ def _parse_scope_bool(val: object, default: bool = False) -> bool:
     return default
 
 
+def _cra_applies(
+    has_data_connection: bool,
+    is_own_use_only: bool,
+    is_covered_by_other_legislation: bool,
+) -> bool:
+    """Pure version of ``CRAScopeScreening.cra_applies`` for before/after comparisons."""
+    return bool(has_data_connection) and not is_own_use_only and not is_covered_by_other_legislation
+
+
+def _status_from_completed_steps(completed_steps: list[int]) -> str:
+    """Derive the would-be wizard status from the step-completion list.
+
+    Used by ``save_scope_screening`` to pick the "back to last good
+    state" status when a stale assessment becomes valid again because
+    the operator flipped CRA scope applicability back on. ``STALE``
+    itself overwrites the previous status so the only way to restore
+    it without adding another column is to look at what the operator
+    has actually finished.
+    """
+    from sbomify.apps.compliance.models import CRAAssessment
+
+    if not completed_steps:
+        return CRAAssessment.WizardStatus.DRAFT
+    if set(completed_steps) >= {1, 2, 3, 4, 5}:
+        return CRAAssessment.WizardStatus.COMPLETE
+    return CRAAssessment.WizardStatus.IN_PROGRESS
+
+
 def save_scope_screening(
     product: Any,
     user: User,
@@ -1289,11 +1317,20 @@ def save_scope_screening(
     endpoint share the same length caps, coercion rules, and audit
     emission — without those rules duplicated and drifting across
     surfaces.
+
+    Scope-flip → assessment stale (issue #921). When this write changes
+    ``CRAScopeScreening.cra_applies`` from ``True`` to ``False`` and a
+    live ``CRAAssessment`` exists for the product, the assessment is
+    flipped to ``WizardStatus.STALE``. The assessment row survives
+    (ADR-004 — we never destroy evidence) but every mutation endpoint
+    refuses edits with 409 until the operator either re-scopes CRA
+    back on (which auto-unstales) or explicitly deletes the assessment
+    via a separate delete path.
     """
     from django.db import IntegrityError, transaction
 
     from sbomify.apps.compliance.audit import log_scope_screening_change
-    from sbomify.apps.compliance.models import CRAScopeScreening
+    from sbomify.apps.compliance.models import CRAAssessment, CRAScopeScreening
 
     # Length caps (CWE-400). Check the ``str(...)`` coerced form so a
     # caller passing ``list``/``dict`` can't bypass the string-only
@@ -1369,4 +1406,82 @@ def save_scope_screening(
         after=after,
     )
 
+    # Stale-flag (issue #921). Detect the scope-flip AFTER the audit
+    # log is emitted so the scope-edit event is visible in the trail
+    # irrespective of whether an assessment existed — the stale
+    # transition is logged separately below so regulators can
+    # correlate the two when reconstructing the history.
+    applies_before = bool(before) and _cra_applies(
+        bool(before.get("has_data_connection", True)),
+        bool(before.get("is_own_use_only", False)),
+        bool(before.get("is_covered_by_other_legislation", False)),
+    )
+    applies_after = _cra_applies(
+        bool(screening.has_data_connection),
+        bool(screening.is_own_use_only),
+        bool(screening.is_covered_by_other_legislation),
+    )
+    try:
+        assessment = CRAAssessment.objects.get(product=product)
+    except CRAAssessment.DoesNotExist:
+        assessment = None
+
+    if assessment is not None:
+        if applies_before and not applies_after and assessment.status != CRAAssessment.WizardStatus.STALE:
+            prior_status = assessment.status
+            assessment.status = CRAAssessment.WizardStatus.STALE
+            assessment.save(update_fields=["status", "updated_at"])
+            _log_assessment_stale_transition(
+                user=user,
+                assessment=assessment,
+                before_status=prior_status,
+                after_status=CRAAssessment.WizardStatus.STALE,
+                reason="scope_flipped_out",
+            )
+        elif (not applies_before) and applies_after and assessment.status == CRAAssessment.WizardStatus.STALE:
+            # Operator re-scoped back into CRA; unstale to whatever
+            # status the completed-steps list implies so the wizard
+            # picks up from where they left off.
+            restored = _status_from_completed_steps(assessment.completed_steps or [])
+            assessment.status = restored
+            assessment.save(update_fields=["status", "updated_at"])
+            _log_assessment_stale_transition(
+                user=user,
+                assessment=assessment,
+                before_status=CRAAssessment.WizardStatus.STALE,
+                after_status=restored,
+                reason="scope_flipped_in",
+            )
+
     return ServiceResult.success(screening)
+
+
+def _log_assessment_stale_transition(
+    *,
+    user: User,
+    assessment: Any,
+    before_status: str,
+    after_status: str,
+    reason: str,
+) -> None:
+    """Emit a ``cra.assessment.stale_transition`` audit event.
+
+    Kept as a thin wrapper so the call sites above read linearly and
+    future correlation keys (e.g., the scope-screening event id that
+    triggered the flip) can be attached in one place.
+    """
+    import logging
+
+    _audit_logger = logging.getLogger("sbomify.compliance.audit")
+    _audit_logger.info(
+        "cra.assessment.stale_transition",
+        extra={
+            "event": "cra.assessment.stale_transition",
+            "user_id": getattr(user, "id", None),
+            "assessment_id": str(assessment.pk),
+            "team_id": assessment.team_id,
+            "before_status": before_status,
+            "after_status": after_status,
+            "reason": reason,
+        },
+    )

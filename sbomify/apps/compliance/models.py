@@ -220,6 +220,15 @@ class CRAAssessment(models.Model):
         DRAFT = "draft", "Draft"
         IN_PROGRESS = "in_progress", "In Progress"
         COMPLETE = "complete", "Complete"
+        # Set by ``save_scope_screening`` when the operator edits the scope
+        # screening and ``CRAScopeScreening.cra_applies`` flips
+        # ``True → False`` while a live assessment exists (issue #921). The
+        # assessment is preserved on disk (ADR-004) but every mutation
+        # endpoint refuses further edits with 409 until the operator either
+        # re-scopes back into CRA-applicable territory (clears the stale
+        # flag) or explicitly deletes the assessment. See
+        # ``wizard_service.save_scope_screening`` for the transition code.
+        STALE = "stale", "Stale (scope changed)"
 
     class Meta:
         ordering = ["-created_at"]
@@ -463,3 +472,76 @@ class CRAScopeScreening(models.Model):
     def __str__(self) -> str:
         applies = "in scope" if self.cra_applies else "out of scope"
         return f"CRA Scope Screening for {self.product} ({applies})"
+
+
+class CRAReportSubmission(models.Model):
+    """Audit record for an Article 14 report submission to the ENISA SRP.
+
+    CRA Art 14 mandates automated submission of actively-exploited
+    vulnerabilities and severe-incident reports to the ENISA Single
+    Reporting Platform from 2026-09-11. The SRP technical interface
+    (REST endpoint, authentication shape, payload schema) has not been
+    published by ENISA as of April 2026 — this model + the sibling
+    ``services/srp_service.py`` adapter seam are the "ready to drop the
+    transport in" pieces so callers don't have to be rewritten when the
+    spec lands.
+
+    Each row captures exactly one submission attempt; retries allocate
+    a new row under the same ``idempotency_key`` so the audit trail
+    shows every transport interaction the platform made on behalf of
+    the manufacturer (which is itself a CRA Annex VII evidence point).
+    """
+
+    class Kind(models.TextChoices):
+        # Three Article 14 submission types, matching the templates
+        # shipped by PR #903 in the export bundle.
+        EARLY_WARNING = "early_warning", "Early Warning (24h)"
+        VULNERABILITY_NOTIFICATION = "vulnerability_notification", "Vulnerability Notification (72h)"
+        FINAL_REPORT = "final_report", "Final Report (14d)"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SUBMITTED = "submitted", "Submitted"
+        FAILED = "failed", "Failed"
+        ADAPTER_NOT_CONFIGURED = "adapter_not_configured", "Adapter not configured"
+
+    class Meta:
+        ordering = ["-created_at"]
+        db_table = "compliance_cra_report_submissions"
+        constraints = [
+            # Idempotency: an operator retrying a submission for the
+            # same assessment/kind/payload hash should not create a
+            # duplicate row. ``srp_service.submit_report`` derives the
+            # key from ``assessment_id + kind + sha256(payload)``.
+            models.UniqueConstraint(fields=["idempotency_key"], name="cra_report_submission_idem_key_unique"),
+        ]
+
+    id = models.CharField(max_length=20, primary_key=True, default=generate_id, editable=False)
+    assessment = models.ForeignKey(CRAAssessment, on_delete=models.CASCADE, related_name="report_submissions")
+    kind = models.CharField(max_length=40, choices=Kind.choices)
+    status = models.CharField(max_length=40, choices=Status.choices, default=Status.PENDING)
+    # ``sha256(payload_json).hexdigest()`` prefixed with the assessment PK +
+    # kind so two assessments submitting the same (anonymous) payload do
+    # not collide.
+    idempotency_key = models.CharField(max_length=128)
+    payload = models.JSONField(help_text="The report body the service attempted to submit")
+    acknowledgement = models.JSONField(
+        null=True, blank=True, help_text="Opaque SRP response envelope returned on successful submit"
+    )
+    error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Transport/adapter error captured on FAILED or ADAPTER_NOT_CONFIGURED submissions",
+    )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="cra_report_submissions",
+        help_text="Operator who triggered the submission",
+    )
+    submitted_at = models.DateTimeField(null=True, blank=True, help_text="When the SRP acknowledged the submission")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"CRA Art 14 {self.kind} submission for {self.assessment_id} ({self.status})"

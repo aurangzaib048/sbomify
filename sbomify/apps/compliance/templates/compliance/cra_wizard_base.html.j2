@@ -16,6 +16,14 @@
 {% block dashboard_content %}
     {# Stepper #}
     {% include "compliance/components/cra_stepper.html.j2" %}
+    {# Stale banner (issue #921). Only rendered when the linked scope
+       screening has flipped CRA out of scope while the assessment row
+       still exists. Every mutation API returns 409 in this state; the
+       operator either re-runs scope screening (which auto-unstales)
+       or deletes the assessment. #}
+    {% if assessment and assessment.status == "stale" %}
+        {% include "compliance/components/_assessment_stale_banner.html.j2" with assessment_id=assessment.id product_id=assessment.product_id team_key=team.key %}
+    {% endif %}
     {# Each step template overrides this block with x-data wrapping both content and footer #}
     {% block step_wrapper %}
     {% endblock step_wrapper %}
