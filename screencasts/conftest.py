@@ -75,6 +75,20 @@ _screenshot_state: dict[str, Any] = {
 }
 
 
+def _recording_name(request: pytest.FixtureRequest) -> str:
+    """Filename stem for the recorded artifacts.
+
+    For parametrized tests, produces ``<func>_<param_id>`` so the
+    pytest brackets do not end up in filenames (which trips shell
+    globs and downstream cleanup heuristics).
+    """
+    node = request.node
+    callspec = getattr(node, "callspec", None)
+    if callspec is not None:
+        return f"{node.originalname}_{callspec.id}"
+    return node.name
+
+
 def _maybe_capture_screenshot(page: Page) -> None:
     out_dir = _screenshot_state["dir"]
     if out_dir is None:
@@ -275,6 +289,34 @@ def create_global_document_component(page: Page, name: str) -> None:
 
     page.wait_for_load_state("networkidle")
     pace(page, 800)
+
+
+def enable_and_save_plugin(page: Page, plugin_slug: str) -> None:
+    """Navigate to Plugins, toggle the given plugin on, and save.
+
+    Shared by the per-plugin FAQ screencasts in plugin_enablement.py.
+    """
+    navigate_to_plugins(page)
+
+    page.locator("#plugin-settings-form").wait_for(state="visible", timeout=15_000)
+    pace(page, 1500)
+
+    # Attribute selector (not #id) because some plugin slugs contain dots
+    # (e.g. bsi-tr03183-v2.1-compliance) which have CSS-special meaning.
+    toggle = page.locator(f"[id='plugin-{plugin_slug}']")
+    toggle.scroll_into_view_if_needed()
+    pace(page, 600)
+    hover_and_click(page, toggle)
+    pace(page, 1200)
+
+    save_btn = page.locator("button[type='submit'][form='plugin-settings-form']")
+    save_btn.scroll_into_view_if_needed()
+    pace(page, 500)
+    hover_and_click(page, save_btn)
+
+    page.wait_for_load_state("networkidle")
+    dismiss_toasts(page)
+    pace(page, 2000)
 
 
 def enable_and_configure_trust_center(page: Page) -> None:
@@ -601,7 +643,9 @@ def recording_page(
     # visible while the first real navigation loads.
     page.set_content(SPLASH_HTML, wait_until="commit")
 
-    screenshot_dir = OUTPUT_DIR / "screenshots" / request.node.name
+    recording_name = _recording_name(request)
+
+    screenshot_dir = OUTPUT_DIR / "screenshots" / recording_name
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     _screenshot_state["dir"] = screenshot_dir
     _screenshot_state["last_time"] = 0.0
@@ -618,5 +662,5 @@ def recording_page(
     page.close()
 
     if video:
-        final_path = OUTPUT_DIR / f"{request.node.name}.webm"
+        final_path = OUTPUT_DIR / f"{recording_name}.webm"
         video.save_as(str(final_path))

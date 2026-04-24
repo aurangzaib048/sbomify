@@ -138,11 +138,13 @@ jobs:
         if: always()
         run: |
           sudo chown -R $USER:$USER screencasts/output/ 2>/dev/null || true
-          # Remove Playwright's random-named temp .webm files, keep only named screencasts
+          # Playwright writes temp files as 32-char hex hashes before the
+          # fixture renames them; drop only those so named recordings
+          # (including parametrized ones without a matching .py stem) stay.
           for webm in screencasts/output/*.webm; do
             [ -f "$webm" ] || continue
             name=$(basename "$webm" .webm)
-            if [ ! -f "screencasts/${name}.py" ]; then
+            if [[ "$name" =~ ^[a-f0-9]{32}$ ]]; then
               rm -f "$webm"
             fi
           done
