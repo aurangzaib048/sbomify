@@ -170,7 +170,6 @@ jobs:
               --content-type image/png \
               --cache-control "public, max-age=300" \
               --exclude "*" --include "*.png" \
-              --delete \
               --no-progress
           fi
 

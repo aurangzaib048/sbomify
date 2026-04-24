@@ -1,3 +1,4 @@
+import sys
 import time
 from pathlib import Path
 from typing import Any, Generator
@@ -7,7 +8,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.test import Client
-from playwright.sync_api import Browser, BrowserContext, Locator, Page, Playwright, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Error as PlaywrightError, Locator, Page, Playwright, sync_playwright
 
 from sbomify.apps.core.tests.fixtures import sample_user  # noqa: F401
 from sbomify.apps.core.tests.shared_fixtures import (  # noqa: F401
@@ -85,7 +86,8 @@ def _maybe_capture_screenshot(page: Page) -> None:
     path = out_dir / f"frame_{_screenshot_state['counter']:03d}.png"
     try:
         page.screenshot(path=str(path), full_page=False)
-    except Exception:
+    except PlaywrightError as exc:
+        print(f"[screencasts] screenshot capture failed: {exc}", file=sys.stderr)
         return
     _screenshot_state["last_time"] = now
 
