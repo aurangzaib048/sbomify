@@ -96,7 +96,7 @@ def log_step_save(
 def log_finding_update(
     *,
     user: User | None,
-    assessment_id: str,
+    assessment_id: str | None,
     finding_id: str,
     control_id: str,
     before: dict[str, Any],

@@ -62,6 +62,7 @@ function craStep1() {
     handlesFinancialValue: false,
     euMarkets: [] as string[],
     supportPeriodEnd: '',
+    supportPeriodMinEnd: '',
     supportPeriodShortJustification: '',
     intendedUse: '',
     conformityAssessmentProcedure: '',
@@ -85,6 +86,10 @@ function craStep1() {
         this.handlesFinancialValue = !!(d.handles_financial_value);
         this.euMarkets = (d.target_eu_markets as string[]) || [];
         this.supportPeriodEnd = (d.support_period_end as string) || '';
+        // Server-computed 5-year minimum — mirrors the backend Art 13(8)
+        // gate so the UI and the 400 response never disagree across
+        // time zones / near-midnight client clocks.
+        this.supportPeriodMinEnd = (d.support_period_min_end as string) || '';
         this.supportPeriodShortJustification = (d.support_period_short_justification as string) || '';
         this.intendedUse = (d.intended_use as string) || '';
         this.conformityAssessmentProcedure =
@@ -174,41 +179,18 @@ function craStep1() {
       return true;
     },
 
-    /** Whether the selected support period is less than 5 years from reference date. */
+    /** Whether the selected support period is less than 5 years from reference date.
+     *
+     * Compares the operator-entered ``YYYY-MM-DD`` string against the
+     * server-computed ``supportPeriodMinEnd`` directly — both are
+     * canonicalised on the backend, so lexical comparison is equivalent
+     * to chronological comparison and we avoid every tz/DST edge case
+     * that plagued the previous client-side ``new Date()`` path.
+     */
     get supportPeriodShort(): boolean {
-      if (!this.supportPeriodEnd) return false;
-      // Parse ``YYYY-MM-DD`` as a local date. JS's Date constructor
-      // silently overflows out-of-range values ("2030-13-40" becomes
-      // March 12, 2031), so we shape-check the input and round-trip
-      // back to ISO before trusting the date — anything that doesn't
-      // survive the round-trip is treated as "not short" (falsy) so
-      // the UI doesn't demand a justification for garbage input.
-      const parseLocal = (s: string): Date | null => {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-        const [y, m, d] = s.split('-').map(Number);
-        if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
-        const dt = new Date(y, m - 1, d);
-        if (
-          dt.getFullYear() !== y ||
-          dt.getMonth() !== m - 1 ||
-          dt.getDate() !== d
-        ) {
-          return null;
-        }
-        return dt;
-      };
-      const end = parseLocal(this.supportPeriodEnd);
-      if (!end) return false;
-      const refDate = (this.product.release_date && parseLocal(this.product.release_date)) || new Date();
-      // Mirror backend date math: add 5 years and clamp to last valid day of month
-      // (e.g. Feb 29 on a non-leap target year → Feb 28)
-      const targetYear = refDate.getFullYear() + 5;
-      const baseMonth = refDate.getMonth();
-      let minEnd = new Date(targetYear, baseMonth, refDate.getDate());
-      if (minEnd.getMonth() !== baseMonth) {
-        minEnd = new Date(targetYear, baseMonth + 1, 0);
-      }
-      return end < minEnd;
+      if (!this.supportPeriodEnd || !this.supportPeriodMinEnd) return false;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(this.supportPeriodEnd)) return false;
+      return this.supportPeriodEnd < this.supportPeriodMinEnd;
     },
 
     /** Available conformity procedures for the current category (CRA Art 32). */

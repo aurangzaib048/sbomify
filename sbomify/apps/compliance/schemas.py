@@ -39,7 +39,11 @@ class FindingSchema(Schema):
 
 
 class FindingUpdateSchema(Schema):
-    status: Literal["satisfied", "not-satisfied", "not-applicable"]
+    # ``unanswered`` is allowed so the Alpine Step 3 UI can save notes
+    # on a finding before the operator picks a terminal status. Without
+    # it, the debounced ``saveFindingNotes`` PUT 422s on any finding
+    # whose status is still ``unanswered`` and notes silently drop.
+    status: Literal["satisfied", "not-satisfied", "not-applicable", "unanswered"]
     notes: str = ""
     justification: str = ""
 

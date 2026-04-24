@@ -25,6 +25,7 @@ from trestle.oscal.common import (
 )
 
 from sbomify.apps.compliance.models import (
+    CRAAssessment,
     OSCALAssessmentResult,
     OSCALCatalog,
     OSCALControl,
@@ -208,9 +209,20 @@ def update_finding(
 
     from sbomify.apps.compliance.audit import log_finding_update
 
+    # Use the CRAAssessment PK (not the OSCALAssessmentResult PK) so
+    # audit events across event types (``cra.assessment.step_save`` and
+    # ``cra.finding.update``) share the same ``assessment_id`` key for
+    # downstream correlation. The OSCAL AR is an implementation detail
+    # of the assessment; operators + regulators reason about the
+    # CRAAssessment.
+    try:
+        cra_assessment_id: str | None = str(finding.assessment_result.cra_assessment.pk)
+    except CRAAssessment.DoesNotExist:
+        cra_assessment_id = None
+
     log_finding_update(
         user=actor,
-        assessment_id=str(finding.assessment_result_id),
+        assessment_id=cra_assessment_id,
         finding_id=str(finding.pk),
         control_id=finding.control.control_id,
         before=before,

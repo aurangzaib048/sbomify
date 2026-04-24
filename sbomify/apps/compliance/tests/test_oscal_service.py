@@ -298,6 +298,64 @@ class TestUpdateFinding:
         assert updated.status == "not-applicable"
         assert updated.justification == "Not applicable to this product type"
 
+    def test_accepts_unanswered_status(self, sample_team_with_owner_member, sample_user, product):
+        """Step 3 notes autosave needs to PUT the current (potentially
+        ``unanswered``) status alongside the typed notes. Reject here
+        would force the UI to require a terminal status before any
+        note can be persisted."""
+        catalog = ensure_cra_catalog()
+        team = sample_team_with_owner_member.team
+        ar = create_assessment_result(catalog, team, product, sample_user)
+        finding = OSCALFinding.objects.filter(assessment_result=ar).first()
+        assert finding is not None
+
+        updated = update_finding(finding, "unanswered", notes="Work-in-progress note", justification="")
+        assert updated.status == "unanswered"
+        assert updated.notes == "Work-in-progress note"
+
+    def test_audit_log_uses_cra_assessment_id(self, sample_team_with_owner_member, sample_user, product):
+        """Audit events across event types must share the same
+        ``assessment_id`` key so downstream consumers can correlate a
+        ``cra.finding.update`` with the ``cra.assessment.step_save``
+        that follows. Log the ``CRAAssessment`` PK, not the
+        ``OSCALAssessmentResult`` PK.
+        """
+        import logging
+
+        from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
+
+        team = sample_team_with_owner_member.team
+        assessment_result = get_or_create_assessment(product.id, sample_user, team)
+        assert assessment_result.ok
+        assessment = assessment_result.value
+        assert assessment is not None
+
+        finding = OSCALFinding.objects.filter(
+            assessment_result=assessment.oscal_assessment_result,
+            control__is_mandatory=False,
+        ).first()
+        assert finding is not None
+
+        records: list[logging.LogRecord] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _ListHandler(level=logging.INFO)
+        audit_logger = logging.getLogger("sbomify.compliance.audit")
+        audit_logger.addHandler(handler)
+        try:
+            update_finding(finding, "satisfied", notes="", justification="", actor=sample_user)
+        finally:
+            audit_logger.removeHandler(handler)
+
+        assert records
+        event = records[-1]
+        # CRAAssessment PK, not the OSCAL AR PK.
+        assert getattr(event, "assessment_id", None) == assessment.pk
+        assert getattr(event, "assessment_id", None) != str(finding.assessment_result_id)
+
     def test_emits_audit_log_on_status_change(self, sample_team_with_owner_member, sample_user, product):
         """CRA non-repudiation: every finding state change must leave
         a durable trail of who/when/before/after. Without this a

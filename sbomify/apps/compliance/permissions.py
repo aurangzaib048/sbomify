@@ -66,8 +66,16 @@ def require_assessment_access(
     from sbomify.apps.compliance.models import CRAAssessment
     from sbomify.apps.core.utils import verify_item_access
 
+    # Eager-load the hot-path joins that Step 3 context builders and
+    # the Ninja API consumed via a wider ``select_related`` before this
+    # helper consolidated access checks. Without ``oscal_assessment_result__catalog``
+    # every step render fires an extra query per request.
     try:
-        assessment = CRAAssessment.objects.select_related("team", "product").get(pk=assessment_id)
+        assessment = CRAAssessment.objects.select_related(
+            "team",
+            "product",
+            "oscal_assessment_result__catalog",
+        ).get(pk=assessment_id)
     except CRAAssessment.DoesNotExist:
         return AccessCheckFailure(status_code=404, message="Not found")
 

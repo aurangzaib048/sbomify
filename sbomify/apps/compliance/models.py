@@ -72,9 +72,15 @@ class OSCALControl(models.Model):
         default=False,
         help_text="Part II (vulnerability handling) controls are always mandatory (CRA Art 13(4))",
     )
+
+    class AnnexPart(models.TextChoices):
+        PART_I = "part-i", "Part I (Essential requirements)"
+        PART_II = "part-ii", "Part II (Vulnerability handling)"
+
     annex_part = models.CharField(
         max_length=10,
-        default="part-i",
+        choices=AnnexPart.choices,
+        default=AnnexPart.PART_I,
         help_text="Which part of CRA Annex I this control belongs to (part-i or part-ii)",
     )
     sort_order = models.PositiveIntegerField()

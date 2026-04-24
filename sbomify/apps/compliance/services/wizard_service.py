@@ -267,6 +267,21 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
     manufacturer_name = manufacturer.name if manufacturer else ""
     manufacturer_is_placeholder = is_placeholder_manufacturer(manufacturer_name)
 
+    # Compute the 5-year minimum support-end date server-side so the
+    # Alpine "is support period short?" check doesn't drift across time
+    # zones. ``new Date()`` is the client-local wall clock; ``today()``
+    # is the server-local date — at midnight the two can differ by a
+    # day and the UI would require (or skip) a justification the
+    # backend disagrees with. Shipping the canonical value removes the
+    # whole class of drift.
+    reference_date = product.release_date or datetime.date.today()
+    new_year = reference_date.year + 5
+    try:
+        support_period_min_end = reference_date.replace(year=new_year)
+    except ValueError:
+        last_day = calendar.monthrange(new_year, reference_date.month)[1]
+        support_period_min_end = datetime.date(new_year, reference_date.month, last_day)
+
     return ServiceResult.success(
         {
             "product": {
@@ -282,6 +297,7 @@ def _build_step_1_context(assessment: CRAAssessment) -> ServiceResult[dict[str, 
             "intended_use": assessment.intended_use,
             "target_eu_markets": assessment.target_eu_markets,
             "support_period_end": assessment.support_period_end.isoformat() if assessment.support_period_end else None,
+            "support_period_min_end": support_period_min_end.isoformat(),
             "support_period_short_justification": assessment.support_period_short_justification,
             "product_category": assessment.product_category,
             "is_open_source_steward": assessment.is_open_source_steward,
@@ -1038,6 +1054,7 @@ def _save_step_3(
                     fd.get("status", finding.status),
                     fd.get("notes", finding.notes),
                     fd.get("justification", finding.justification),
+                    actor=user,
                 )
             except ValueError as e:
                 return ServiceResult.failure(str(e), status_code=400)
