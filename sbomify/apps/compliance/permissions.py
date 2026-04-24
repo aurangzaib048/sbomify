@@ -91,8 +91,12 @@ def require_assessment_access(
 
     Access decisions:
       - Assessment missing OR user not a member of its team → 404
-        (closes the timing side-channel that would otherwise let a
-        cross-tenant attacker enumerate assessment IDs).
+        (collapses both cases to the same status code so a cross-tenant
+        caller cannot distinguish "does not exist" from "exists on a
+        team you have no role on" via the response status alone; note
+        response *timing* can still differ because the DB lookup only
+        runs in the "exists" branch — the protection is on the status
+        channel, not timing-resistant).
       - User is a member but role is not in ``allowed_roles`` → 403
         (the caller can legitimately know the assessment exists; the
         failure reason is the role check).

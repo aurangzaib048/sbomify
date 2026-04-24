@@ -799,14 +799,27 @@ def _save_step_1(
     # stored value, then the assignment happened after — a payload
     # sending ``""`` would clear the justification while still passing
     # the gate via the stored non-empty value.
+    #
+    # Type validation matches the other Step 1 free-text fields
+    # (``_STEP_1_TEXT_FIELDS`` above): ``None`` clears the value; any
+    # other non-string payload returns 400 so clients see a schema
+    # error rather than silently losing their typed justification.
     if "support_period_short_justification" in data:
         raw = data["support_period_short_justification"]
-        if isinstance(raw, str) and len(raw) > _MAX_STEP_1_TEXT_CHARS:
+        if raw is None:
+            assessment.support_period_short_justification = ""
+        elif not isinstance(raw, str):
+            return ServiceResult.failure(
+                "support_period_short_justification must be a string",
+                status_code=400,
+            )
+        elif len(raw) > _MAX_STEP_1_TEXT_CHARS:
             return ServiceResult.failure(
                 f"support_period_short_justification exceeds the {_MAX_STEP_1_TEXT_CHARS}-character cap",
                 status_code=400,
             )
-        assessment.support_period_short_justification = raw if isinstance(raw, str) else ""
+        else:
+            assessment.support_period_short_justification = raw
 
     # Handle conformity procedure selection (CRA Art 32(1-5))
     allowed = _CATEGORY_PROCEDURE_OPTIONS.get(assessment.product_category, [])
@@ -1246,11 +1259,14 @@ _SCOPE_NAME_CAP = 255
 
 
 def _parse_scope_bool(val: object, default: bool = False) -> bool:
-    """Mirror of ``views.cra_wizard._parse_bool`` for service-layer use.
+    """Normalise scope-screening boolean payloads into Python ``bool``.
 
-    Kept here to avoid a view-layer import cycle; the view still owns
-    the HTTP-only bits (JSON parsing, status codes, redirect shaping)
-    while this module owns the persistence + validation rules.
+    Accepts the shapes clients actually send: a JSON ``bool``; a
+    string spelled ``"true"``/``"1"``/``"yes"`` (case-insensitive)
+    for the truthy side, anything else for the falsy side; an
+    integer treated as truthy/falsy via ``bool(val)``. Anything else
+    falls back to ``default`` so a malformed-but-non-destructive
+    payload does not silently flip a persisted flag.
     """
     if isinstance(val, bool):
         return val

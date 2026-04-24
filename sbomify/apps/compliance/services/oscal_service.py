@@ -212,6 +212,14 @@ def update_finding(
             f"not-applicable (CRA Art 13(4))."
         )
 
+    # Clear the justification when leaving the not-applicable state. A stale
+    # justification lingering on a satisfied / not-satisfied / unanswered
+    # finding would render misleadingly in the risk-assessment export and the
+    # technical-documentation package (CRA Annex VII) — the audit-delta row
+    # captures the implicit clear so the transition is still traceable.
+    if status != "not-applicable":
+        justification = ""
+
     before = {"status": finding.status, "notes": finding.notes, "justification": finding.justification}
     finding.status = status
     finding.notes = notes
