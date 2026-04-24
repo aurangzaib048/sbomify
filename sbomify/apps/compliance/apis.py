@@ -50,14 +50,21 @@ def _get_assessment_or_error(request: HttpRequest, assessment_id: str) -> CRAAss
 
     result = require_assessment_access(request, assessment_id)
     if isinstance(result, AccessCheckFailure):
-        if result.status_code == 404:
+        # Route by ``error_code``, not ``status_code``: two distinct
+        # 403 cases live behind the same status (role denial vs billing
+        # gate) and must surface with different ``error_code`` values
+        # so API clients can react programmatically without parsing
+        # human-readable messages.
+        if result.error_code == "not_found":
             return 404, ErrorResponse(error="Assessment not found", error_code="not_found")
-        if result.status_code == 403:
+        if result.error_code == "billing_gate":
             return 403, ErrorResponse(
                 error="CRA Compliance requires Business plan or higher",
                 error_code="billing_gate",
             )
-        return result.status_code, ErrorResponse(error=result.message, error_code="access_denied")
+        if result.error_code == "permission_denied":
+            return 403, ErrorResponse(error="Forbidden", error_code="permission_denied")
+        return result.status_code, ErrorResponse(error=result.message, error_code=result.error_code)
     return result
 
 

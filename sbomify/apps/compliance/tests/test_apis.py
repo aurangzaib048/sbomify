@@ -216,6 +216,29 @@ class TestGetAssessment:
             f"same-team role denial must return 403, not {response.status_code}; "
             "collapsing role failures to 404 would mask the real reason"
         )
+        # The two distinct 403 cases must be distinguishable via
+        # error_code so an API client can tell a role denial from a
+        # billing-gate denial without parsing messages.
+        assert response.json()["error_code"] == "permission_denied"
+
+    def test_billing_gate_returns_billing_error_code_not_permission_denied(
+        self, authenticated_api_client, assessment
+    ):
+        """Both billing-gate and role-denial failures return 403, but
+        they carry different ``error_code`` values so callers can
+        discriminate. A regression that collapsed the two would mis-
+        report a role failure as a billing problem (or vice versa) to
+        every API client."""
+        from sbomify.apps.core.tests.shared_fixtures import get_api_headers
+
+        client, token = authenticated_api_client
+        with patch("sbomify.apps.compliance.permissions.check_cra_access", return_value=False):
+            response = client.get(
+                f"/api/v1/compliance/cra/{assessment.id}",
+                **get_api_headers(token),
+            )
+        assert response.status_code == 403
+        assert response.json()["error_code"] == "billing_gate"
 
 
 class TestGetStepContext:

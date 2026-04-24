@@ -26,10 +26,17 @@ class AccessCheckFailure:
     equivalent ``(status_code, ErrorResponse(...))``. Centralising the
     decision in one place keeps the two surfaces from drifting on a
     future role or billing rule change.
+
+    ``error_code`` lets callers distinguish three different ``403``
+    reasons (``permission_denied`` for role failures vs ``billing_gate``
+    for plan failures) without pattern-matching on the human-readable
+    ``message`` — the Ninja API surfaces these codes directly into its
+    structured error response so clients can react programmatically.
     """
 
     status_code: int
     message: str
+    error_code: str = "access_denied"
 
 
 def check_cra_access(team: Team | None = None, *, billing_plan_key: str | None = None) -> bool:
@@ -105,16 +112,20 @@ def require_assessment_access(
             "oscal_assessment_result__catalog",
         ).get(pk=assessment_id)
     except CRAAssessment.DoesNotExist:
-        return AccessCheckFailure(status_code=404, message="Not found")
+        return AccessCheckFailure(status_code=404, message="Not found", error_code="not_found")
 
     if not _is_team_member(request, assessment.team_id):
-        return AccessCheckFailure(status_code=404, message="Not found")
+        return AccessCheckFailure(status_code=404, message="Not found", error_code="not_found")
 
     if not verify_item_access(request, assessment, list(allowed_roles)):
-        return AccessCheckFailure(status_code=403, message="Forbidden")
+        return AccessCheckFailure(status_code=403, message="Forbidden", error_code="permission_denied")
 
     if not check_cra_access(assessment.team):
-        return AccessCheckFailure(status_code=403, message="CRA access requires a Business plan")
+        return AccessCheckFailure(
+            status_code=403,
+            message="CRA access requires a Business plan",
+            error_code="billing_gate",
+        )
 
     return assessment
 
@@ -137,15 +148,19 @@ def require_product_cra_access(
     try:
         product = Product.objects.select_related("team").get(pk=product_id)
     except Product.DoesNotExist:
-        return AccessCheckFailure(status_code=404, message="Not found")
+        return AccessCheckFailure(status_code=404, message="Not found", error_code="not_found")
 
     if not _is_team_member(request, product.team_id):
-        return AccessCheckFailure(status_code=404, message="Not found")
+        return AccessCheckFailure(status_code=404, message="Not found", error_code="not_found")
 
     if not verify_item_access(request, product, list(allowed_roles)):
-        return AccessCheckFailure(status_code=403, message="Forbidden")
+        return AccessCheckFailure(status_code=403, message="Forbidden", error_code="permission_denied")
 
     if not check_cra_access(product.team):
-        return AccessCheckFailure(status_code=403, message="CRA access requires a Business plan")
+        return AccessCheckFailure(
+            status_code=403,
+            message="CRA access requires a Business plan",
+            error_code="billing_gate",
+        )
 
     return product
