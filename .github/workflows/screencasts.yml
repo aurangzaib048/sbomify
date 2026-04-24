@@ -148,6 +148,7 @@ jobs:
           done
 
       - name: Upload to Cloudflare R2
+        if: ${{ always() && env.R2_BUCKET != '' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
