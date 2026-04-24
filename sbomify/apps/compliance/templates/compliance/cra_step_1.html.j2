@@ -164,18 +164,18 @@
                         {# Harmonised standard confirmation for Class I + Module A (CRA Art 32(2)) #}
                         <div x-show="category === 'class_i' && conformityAssessmentProcedure === 'module_a'"
                              x-cloak
-                             class="mt-2 overflow-hidden rounded-lg border-l-4 border-amber-500 dark:border-amber-400 bg-surface dark:bg-gray-900 shadow-sm ring-1 ring-amber-200 dark:ring-amber-800/60">
-                            <div class="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/70">
-                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/60 shrink-0">
+                             class="mt-2 rounded-lg border border-border border-l-4 border-l-amber-500 dark:border-l-amber-400 bg-surface shadow-sm">
+                            <div class="flex items-start gap-3 px-4 pt-4">
+                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/40 shrink-0">
                                     <i class="fas fa-shield-halved text-sm text-amber-700 dark:text-amber-300"></i>
                                 </div>
-                                <div class="flex-1 min-w-0">
+                                <div class="flex-1 min-w-0 pt-0.5">
                                     <div class="flex items-center gap-2 flex-wrap">
                                         <span class="font-semibold text-sm text-text">Harmonised standard required</span>
                                         <a href="https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
                                            target="_blank"
                                            rel="noopener noreferrer"
-                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:underline">
+                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700/70 hover:underline">
                                             CRA Art 32(2)
                                             <i class="fas fa-up-right-from-square text-[9px] opacity-70"></i>
                                         </a>
@@ -186,7 +186,7 @@
                                     </p>
                                 </div>
                             </div>
-                            <label class="flex items-start gap-3 px-4 py-3 cursor-pointer">
+                            <label class="flex items-start gap-3 px-4 pt-3 pb-4 cursor-pointer">
                                 <input type="checkbox"
                                        x-model="harmonisedStandardApplied"
                                        class="w-5 h-5 shrink-0 mt-0.5 rounded border-border text-primary focus:ring-primary">
@@ -311,18 +311,18 @@
                         {# Warning when support period < 5 years (CRA Art 13(8), FAQ 4.5.2) #}
                         <div x-show="supportPeriodShort"
                              x-cloak
-                             class="overflow-hidden rounded-lg border-l-4 border-amber-500 dark:border-amber-400 bg-surface dark:bg-gray-900 shadow-sm ring-1 ring-amber-200 dark:ring-amber-800/60">
-                            <div class="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/70">
-                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/60 shrink-0">
+                             class="rounded-lg border border-border border-l-4 border-l-amber-500 dark:border-l-amber-400 bg-surface shadow-sm">
+                            <div class="flex items-start gap-3 px-4 pt-4">
+                                <div class="flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900/40 shrink-0">
                                     <i class="fas fa-clock-rotate-left text-sm text-amber-700 dark:text-amber-300"></i>
                                 </div>
-                                <div class="flex-1 min-w-0">
+                                <div class="flex-1 min-w-0 pt-0.5">
                                     <div class="flex items-center gap-2 flex-wrap">
                                         <span class="font-semibold text-sm text-text">Support period below 5-year minimum</span>
                                         <a href="https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ:L_202402847"
                                            target="_blank"
                                            rel="noopener noreferrer"
-                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:underline">
+                                           class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700/70 hover:underline">
                                             CRA Art 13(8)
                                             <i class="fas fa-up-right-from-square text-[9px] opacity-70"></i>
                                         </a>
@@ -333,7 +333,7 @@
                                     </p>
                                 </div>
                             </div>
-                            <div class="px-4 py-3">
+                            <div class="px-4 pt-3 pb-4">
                                 <label class="tw-form-label" for="support-short-justification">Justification (required)</label>
                                 <textarea id="support-short-justification"
                                           x-model="supportPeriodShortJustification"
