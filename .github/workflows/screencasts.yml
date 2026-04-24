@@ -15,6 +15,7 @@ jobs:
   record:
     name: Record Screencasts
     runs-on: ubuntu-latest
+    environment: screencasts
     env:
       DJANGO_SETTINGS_MODULE: sbomify.test_settings
       DEBUG: True
@@ -145,6 +146,21 @@ jobs:
               rm -f "$webm"
             fi
           done
+
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws s3 sync screencasts/output/ "s3://${R2_BUCKET}/screencasts/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type video/webm \
+            --cache-control "public, max-age=300" \
+            --exclude "*" --include "*.webm" \
+            --no-progress
 
       - name: Upload screencast recordings
         if: always()
