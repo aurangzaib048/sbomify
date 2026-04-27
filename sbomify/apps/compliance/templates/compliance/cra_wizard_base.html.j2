@@ -24,7 +24,7 @@
         or deletes the assessment.
     {% endcomment %}
     {% if assessment and assessment.status == "stale" %}
-        {% include "compliance/components/_assessment_stale_banner.html.j2" with assessment_id=assessment.id product_id=assessment.product_id team_key=team.key %}
+        {% include "compliance/components/_assessment_stale_banner.html.j2" with product_id=assessment.product_id %}
     {% endif %}
     {# Each step template overrides this block with x-data wrapping both content and footer #}
     {% block step_wrapper %}

@@ -4,8 +4,8 @@ When ``save_scope_screening`` flips ``CRAScopeScreening.cra_applies``
 from ``True`` to ``False`` while a live assessment row exists, the
 assessment transitions to ``CRAAssessment.WizardStatus.STALE``.
 Mutation endpoints refuse edits with ``409`` until the operator
-reconciles — either by flipping scope back on (auto-unstales) or by
-deleting the assessment row entirely.
+re-runs scope screening — flipping CRA back on auto-unstales the
+assessment to the status implied by ``completed_steps``.
 """
 
 from __future__ import annotations
@@ -192,7 +192,14 @@ class TestStatusFromCompletedSteps:
 
 
 class TestApiMutationGate:
-    """Every mutation endpoint must short-circuit with 409 when the assessment is stale."""
+    """Every mutation endpoint must short-circuit with 409 when the assessment is stale.
+
+    The gate fires inside ``_get_assessment_or_error`` before any
+    nested resource is looked up — that's why the parametrised cases
+    below can use placeholder ids (``stale-finding``, ``vdp``) and
+    still exercise the stale check: they would 404 on a non-stale
+    assessment, but the 409 short-circuit fires earlier.
+    """
 
     @pytest.fixture
     def stale_assessment(self, assessment):
@@ -222,6 +229,39 @@ class TestApiMutationGate:
         assert response.status_code == 409
         assert response.json()["error_code"] == "assessment_stale"
 
+    @pytest.mark.parametrize(
+        ("method", "path_suffix", "payload"),
+        [
+            # PUT /findings/{finding_id} — placeholder id triggers 409 before 404
+            ("put", "/findings/stale-finding", {"status": "satisfied"}),
+            # POST /findings/{finding_id}/observations
+            (
+                "post",
+                "/findings/stale-finding/observations",
+                {"description": "x", "method": "TEST"},
+            ),
+            # POST /generate/{kind}
+            ("post", "/generate/vdp", None),
+            # POST /refresh
+            ("post", "/refresh", None),
+        ],
+    )
+    def test_other_mutation_endpoints_return_409_on_stale(
+        self, authenticated_api_client, stale_assessment, method, path_suffix, payload
+    ):
+        client, token = authenticated_api_client
+        kwargs: dict = {**get_api_headers(token), "content_type": "application/json"}
+        if payload is not None:
+            kwargs["data"] = json.dumps(payload)
+        response = getattr(client, method)(
+            f"/api/v1/compliance/cra/{stale_assessment.id}{path_suffix}",
+            **kwargs,
+        )
+        assert response.status_code == 409, (
+            f"{method.upper()} {path_suffix} returned {response.status_code}, expected 409"
+        )
+        assert response.json()["error_code"] == "assessment_stale"
+
     def test_read_endpoints_still_work_on_stale(self, authenticated_api_client, stale_assessment):
         """GET endpoints must continue to work so the operator can see the banner."""
         client, token = authenticated_api_client
@@ -233,8 +273,25 @@ class TestApiMutationGate:
         # the only outcome we care about here is that the gate did not fire.
         assert response.status_code != 409
 
+    def test_get_assessment_serialises_stale_status(self, authenticated_api_client, stale_assessment):
+        """``GET /cra/{id}`` must serialise a stale assessment without 500-ing.
+
+        ``CRAAssessmentSchema.status`` must include ``"stale"`` in its
+        ``Literal`` so Pydantic accepts the read-side value. A regression
+        on the schema would surface as a 500 here.
+        """
+        client, token = authenticated_api_client
+        response = client.get(
+            f"/api/v1/compliance/cra/{stale_assessment.id}",
+            **get_api_headers(token),
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "stale"
+        assert body["id"] == stale_assessment.id
+
     def test_non_stale_mutations_still_succeed(self, authenticated_api_client, assessment):
-        """Baseline: a non-stale assessment accepts step saves."""
+        """Baseline: a non-stale assessment accepts step saves with a 200 + payload."""
         client, token = authenticated_api_client
         response = client.patch(
             f"/api/v1/compliance/cra/{assessment.id}/step/1",
@@ -242,5 +299,9 @@ class TestApiMutationGate:
             content_type="application/json",
             **get_api_headers(token),
         )
-        # 200 on success, NOT 409.
-        assert response.status_code != 409
+        # Explicit 200 — guards against the gate regressing to fail-open
+        # and silently 4xx-ing for an unrelated reason (404/422/etc).
+        assert response.status_code == 200
+        body = response.json()
+        assert body["id"] == assessment.id
+        assert body["status"] != "stale"

@@ -5,14 +5,13 @@
     "stale"``. A stale assessment is one whose product scope screening
     has flipped CRA out of scope while the assessment row still
     exists — every mutation API refuses edits with 409 until the
-    operator reconciles. This banner surfaces both reconciliation paths:
-    re-run the scope screening (flipping CRA back on auto-unstales) or
-    delete the assessment.
+    operator reconciles. The only reconciliation path surfaced here is
+    re-running the scope screening: flipping CRA back on auto-unstales
+    the assessment. There is intentionally no in-UI delete action
+    (ADR-004 — we never destroy regulated evidence from this surface).
 
     Expected context:
-      - ``assessment_id``: the stale ``CRAAssessment.id``
       - ``product_id``: the linked product id for the scope-screening link
-      - ``team_key``: team key for the delete-assessment endpoint
 {% endcomment %}
 <div role="alert"
      aria-live="polite"
@@ -33,8 +32,8 @@
             <p class="text-xs text-text-muted mt-1 m-0 leading-snug">
                 The product's CRA scope screening now says CRA does not apply to this product.
                 This assessment is preserved on disk but cannot be edited or exported until
-                it is reconciled. Re-run the scope screening (flipping CRA back on will
-                auto-restore this assessment) or delete it if the prior work is obsolete.
+                it is reconciled. Re-run the scope screening — flipping CRA back on will
+                auto-restore this assessment to where you left off.
             </p>
         </div>
     </div>

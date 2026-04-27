@@ -130,3 +130,33 @@ def log_finding_update(
         "delta": delta,
     }
     _LOG.info("cra.finding.update %s", _payload_json(payload), extra=payload)
+
+
+def log_assessment_stale_transition(
+    *,
+    user: User | None,
+    assessment_id: str,
+    team_id: int,
+    before_status: str,
+    after_status: str,
+    reason: str,
+) -> None:
+    """Record a CRAAssessment stale/unstale transition (issue #921).
+
+    ``reason`` is the machine-readable trigger code (``scope_flipped_out``
+    or ``scope_flipped_in``) so a regulator can correlate this event
+    with the immediately preceding ``cra.scope_screening.write`` event
+    when reconstructing why mutability changed.
+    """
+    if before_status == after_status:
+        return
+    payload = {
+        "event": "cra.assessment.stale_transition",
+        "user_id": getattr(user, "id", None),
+        "team_id": team_id,
+        "assessment_id": assessment_id,
+        "before_status": before_status,
+        "after_status": after_status,
+        "reason": reason,
+    }
+    _LOG.info("cra.assessment.stale_transition %s", _payload_json(payload), extra=payload)
