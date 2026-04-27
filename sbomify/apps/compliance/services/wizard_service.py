@@ -1277,6 +1277,49 @@ def _parse_scope_bool(val: object, default: bool = False) -> bool:
     return default
 
 
+def _cra_applies(
+    has_data_connection: bool,
+    is_own_use_only: bool,
+    is_covered_by_other_legislation: bool,
+) -> bool:
+    """Delegate to ``CRAScopeScreening.cra_applies`` to keep one authoritative impl.
+
+    The wizard flow needs to evaluate applicability over the **before**
+    snapshot (a dict pulled from the DB row before mutation), where there
+    is no model instance available. Construct an unsaved
+    ``CRAScopeScreening`` with the three triggering fields and let the
+    model's own property answer — that way the semantics never drift if
+    the property is later refined (e.g., for testing-version edge cases).
+    """
+    from sbomify.apps.compliance.models import CRAScopeScreening
+
+    probe = CRAScopeScreening(
+        has_data_connection=has_data_connection,
+        is_own_use_only=is_own_use_only,
+        is_covered_by_other_legislation=is_covered_by_other_legislation,
+    )
+    return probe.cra_applies
+
+
+def _status_from_completed_steps(completed_steps: list[int]) -> str:
+    """Derive the would-be wizard status from the step-completion list.
+
+    Used by ``save_scope_screening`` to pick the "back to last good
+    state" status when a stale assessment becomes valid again because
+    the operator flipped CRA scope applicability back on. ``STALE``
+    itself overwrites the previous status so the only way to restore
+    it without adding another column is to look at what the operator
+    has actually finished.
+    """
+    from sbomify.apps.compliance.models import CRAAssessment
+
+    if not completed_steps:
+        return CRAAssessment.WizardStatus.DRAFT
+    if set(completed_steps) >= {1, 2, 3, 4, 5}:
+        return CRAAssessment.WizardStatus.COMPLETE
+    return CRAAssessment.WizardStatus.IN_PROGRESS
+
+
 def save_scope_screening(
     product: Any,
     user: User,
@@ -1289,11 +1332,20 @@ def save_scope_screening(
     endpoint share the same length caps, coercion rules, and audit
     emission — without those rules duplicated and drifting across
     surfaces.
+
+    Scope-flip → assessment stale (issue #921). When this write changes
+    ``CRAScopeScreening.cra_applies`` from ``True`` to ``False`` and a
+    live ``CRAAssessment`` exists for the product, the assessment is
+    flipped to ``WizardStatus.STALE``. The assessment row survives
+    (ADR-004 — we never destroy evidence) but every mutation endpoint
+    refuses edits with 409 until the operator either re-scopes CRA
+    back on (which auto-unstales) or explicitly deletes the assessment
+    via a separate delete path.
     """
     from django.db import IntegrityError, transaction
 
-    from sbomify.apps.compliance.audit import log_scope_screening_change
-    from sbomify.apps.compliance.models import CRAScopeScreening
+    from sbomify.apps.compliance.audit import log_assessment_stale_transition, log_scope_screening_change
+    from sbomify.apps.compliance.models import CRAAssessment, CRAScopeScreening
 
     # Length caps (CWE-400). Check the ``str(...)`` coerced form so a
     # caller passing ``list``/``dict`` can't bypass the string-only
@@ -1321,36 +1373,76 @@ def save_scope_screening(
     except CRAScopeScreening.DoesNotExist:
         before = {}
 
+    applies_before = bool(before) and _cra_applies(
+        bool(before.get("has_data_connection", True)),
+        bool(before.get("is_own_use_only", False)),
+        bool(before.get("is_covered_by_other_legislation", False)),
+    )
+
+    def _apply_field_writes(target: CRAScopeScreening) -> None:
+        target.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
+        target.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
+        target.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
+        target.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
+        target.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
+        target.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
+        target.screening_notes = str(data.get("screening_notes") or "").strip()
+
+    def _apply_stale_transition() -> tuple[CRAAssessment, str, str, str] | None:
+        """Lock the assessment row and apply the stale flip if needed.
+
+        Must be called inside the same ``transaction.atomic()`` block as
+        the screening write so the screening edit and the stale-flip
+        either both commit or both roll back. ``select_for_update``
+        serialises against concurrent step writes that read ``status``
+        before mutating, preventing TOCTOU windows where a concurrent
+        step save could complete against an "about to be stale" row.
+        """
+        try:
+            assessment = CRAAssessment.objects.select_for_update().get(product=product)
+        except CRAAssessment.DoesNotExist:
+            return None
+        applies_after = bool(screening.cra_applies)
+        if applies_before and not applies_after and assessment.status != CRAAssessment.WizardStatus.STALE:
+            prior_status = assessment.status
+            assessment.status = CRAAssessment.WizardStatus.STALE
+            assessment.save(update_fields=["status", "updated_at"])
+            return (assessment, prior_status, CRAAssessment.WizardStatus.STALE, "scope_flipped_out")
+        if (not applies_before) and applies_after and assessment.status == CRAAssessment.WizardStatus.STALE:
+            restored = _status_from_completed_steps(assessment.completed_steps or [])
+            assessment.status = restored
+            assessment.save(update_fields=["status", "updated_at"])
+            return (assessment, CRAAssessment.WizardStatus.STALE, restored, "scope_flipped_in")
+        return None
+
     # ``OneToOneField`` uniqueness race — wrap the get_or_create AND
-    # the field writes in the same atomic block so a concurrent POST
-    # can't squeeze between the create and the subsequent save.
+    # the field writes AND the assessment stale-flip in the same atomic
+    # block. The screening edit and the linked-assessment status change
+    # are a single regulated transition (ADR-004): either both commit
+    # or both roll back. Without this, an exception during the
+    # assessment update could leave a contradictory regulated state
+    # (screening out-of-scope while assessment still mutable).
+    transition: tuple[CRAAssessment, str, str, str] | None = None
     try:
         with transaction.atomic():
             screening, _created = CRAScopeScreening.objects.select_for_update().get_or_create(
                 product=product,
                 defaults={"team": product.team, "created_by": user},
             )
-            screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
-            screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
-            screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
-            screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
-            screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
-            screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
-            screening.screening_notes = str(data.get("screening_notes") or "").strip()
+            _apply_field_writes(screening)
             screening.save()
+            transition = _apply_stale_transition()
     except IntegrityError:
-        # The OneToOne raced under us — reload and retry write. This
-        # loses the ``created_by`` marker on the second winner but keeps
-        # the data consistent with the losing caller's payload.
-        screening = CRAScopeScreening.objects.get(product=product)
-        screening.has_data_connection = _parse_scope_bool(data.get("has_data_connection"), default=True)
-        screening.is_own_use_only = _parse_scope_bool(data.get("is_own_use_only"))
-        screening.is_testing_version = _parse_scope_bool(data.get("is_testing_version"))
-        screening.is_covered_by_other_legislation = _parse_scope_bool(data.get("is_covered_by_other_legislation"))
-        screening.exempted_legislation_name = str(data.get("exempted_legislation_name") or "").strip()
-        screening.is_dual_use = _parse_scope_bool(data.get("is_dual_use"))
-        screening.screening_notes = str(data.get("screening_notes") or "").strip()
-        screening.save()
+        # The OneToOne raced under us — reload under lock and retry the
+        # write inside a fresh atomic so the assessment flip is still
+        # atomic with the screening write on the retry path. This loses
+        # the ``created_by`` marker on the second winner but keeps the
+        # data consistent with the losing caller's payload.
+        with transaction.atomic():
+            screening = CRAScopeScreening.objects.select_for_update().get(product=product)
+            _apply_field_writes(screening)
+            screening.save()
+            transition = _apply_stale_transition()
 
     after = {
         "has_data_connection": screening.has_data_connection,
@@ -1361,6 +1453,8 @@ def save_scope_screening(
         "is_dual_use": screening.is_dual_use,
         "screening_notes": screening.screening_notes,
     }
+    # Audit emissions live outside the atomic so a logging-pipeline hiccup
+    # cannot roll back the regulated state — the writes are already durable.
     log_scope_screening_change(
         user=user,
         product_id=str(product.id),
@@ -1368,5 +1462,15 @@ def save_scope_screening(
         before=before,
         after=after,
     )
+    if transition is not None:
+        flipped_assessment, prior_status, after_status, reason = transition
+        log_assessment_stale_transition(
+            user=user,
+            assessment_id=str(flipped_assessment.pk),
+            team_id=flipped_assessment.team_id,
+            before_status=prior_status,
+            after_status=after_status,
+            reason=reason,
+        )
 
     return ServiceResult.success(screening)

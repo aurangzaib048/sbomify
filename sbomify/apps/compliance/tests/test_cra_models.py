@@ -119,7 +119,11 @@ class TestCRAAssessment:
         assert choices.DRAFT == "draft"
         assert choices.IN_PROGRESS == "in_progress"
         assert choices.COMPLETE == "complete"
-        assert len(choices.choices) == 3
+        # ``STALE`` was added in issue #921 — kept in this enumeration
+        # so the stale-flag can ride the same ``status`` column without
+        # a parallel boolean.
+        assert choices.STALE == "stale"
+        assert len(choices.choices) == 4
 
     def test_str(self, cra_assessment):
         assert "CRA Assessment for" in str(cra_assessment)

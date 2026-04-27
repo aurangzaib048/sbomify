@@ -12,7 +12,10 @@ class CRAAssessmentSchema(Schema):
     id: str
     product_id: str
     product_name: str
-    status: Literal["draft", "in_progress", "complete"]
+    # ``stale`` is a valid read-side value (issue #921) — the schema must
+    # admit it so ``GET /cra/{id}`` on a stale assessment serialises
+    # without tripping Pydantic validation and 500-ing the response.
+    status: Literal["draft", "in_progress", "complete", "stale"]
     current_step: int
     completed_steps: list[int]
     product_category: str

@@ -38,13 +38,25 @@ router = Router(tags=["Compliance"], auth=(PersonalAccessTokenAuth(), django_aut
 _Response = tuple[int, Any]
 
 
-def _get_assessment_or_error(request: HttpRequest, assessment_id: str) -> CRAAssessment | _Response:
+def _get_assessment_or_error(
+    request: HttpRequest,
+    assessment_id: str,
+    *,
+    require_mutable: bool = False,
+) -> CRAAssessment | _Response:
     """Fetch assessment with access checks (billing gate + team role).
 
     Thin HTTP-adapter around ``permissions.require_assessment_access``
     — keeps role, billing, and cross-team-404 logic in one place so a
     future rule change (new role, billing plan, enumeration-resistance
     policy) doesn't drift between the view and API surfaces.
+
+    ``require_mutable`` — when ``True``, additionally refuse 409 on
+    ``WizardStatus.STALE`` assessments (issue #921). Read endpoints
+    keep the default ``False`` so operators can still see the stale
+    banner and reconcile via the scope-screening path; mutation
+    endpoints pass ``True`` so the 409 short-circuits before any
+    persistence write happens.
     """
     from sbomify.apps.compliance.permissions import AccessCheckFailure, require_assessment_access
 
@@ -65,6 +77,16 @@ def _get_assessment_or_error(request: HttpRequest, assessment_id: str) -> CRAAss
         if result.error_code == "permission_denied":
             return 403, ErrorResponse(error="Forbidden", error_code="permission_denied")
         return result.status_code, ErrorResponse(error=result.message, error_code=result.error_code)
+
+    if require_mutable and result.status == CRAAssessment.WizardStatus.STALE:
+        return 409, ErrorResponse(
+            error=(
+                "Assessment is stale — the product's CRA scope screening now says CRA "
+                "does not apply. Re-run the scope screening (flipping CRA back on unstales the "
+                "assessment automatically) or delete the assessment before continuing."
+            ),
+            error_code="assessment_stale",
+        )
     return result
 
 
@@ -187,11 +209,17 @@ def get_step_context(request: HttpRequest, assessment_id: str, step: int) -> _Re
 
 @router.patch(
     "/cra/{assessment_id}/step/{step}",
-    response={200: CRAAssessmentSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse},
+    response={
+        200: CRAAssessmentSchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+    },
 )
 def save_step_data(request: HttpRequest, assessment_id: str, step: int, payload: StepDataSchema) -> _Response:
     """Save data for a wizard step."""
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 
@@ -229,7 +257,13 @@ def get_sbom_status(request: HttpRequest, assessment_id: str) -> _Response:
 
 @router.put(
     "/cra/{assessment_id}/findings/{finding_id}",
-    response={200: FindingSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse},
+    response={
+        200: FindingSchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+    },
 )
 def update_finding(
     request: HttpRequest, assessment_id: str, finding_id: str, payload: FindingUpdateSchema
@@ -239,7 +273,7 @@ def update_finding(
     ``justification`` is required when a Part I control is marked
     ``not-applicable`` (CRA Art 13(4)).
     """
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 
@@ -278,13 +312,19 @@ def update_finding(
 
 @router.post(
     "/cra/{assessment_id}/findings/{finding_id}/observations",
-    response={201: ObservationSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse},
+    response={
+        201: ObservationSchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+    },
 )
 def create_observation(
     request: HttpRequest, assessment_id: str, finding_id: str, payload: ObservationCreateSchema
 ) -> _Response:
     """Add an observation (evidence) to a finding."""
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 
@@ -327,11 +367,18 @@ def create_observation(
 
 @router.post(
     "/cra/{assessment_id}/generate/{kind}",
-    response={200: DocumentSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 502: ErrorResponse},
+    response={
+        200: DocumentSchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+        502: ErrorResponse,
+    },
 )
 def generate_document(request: HttpRequest, assessment_id: str, kind: str) -> _Response:
     """Generate a compliance document."""
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 
@@ -374,11 +421,18 @@ def preview_document(request: HttpRequest, assessment_id: str, kind: str) -> _Re
 
 @router.post(
     "/cra/{assessment_id}/export",
-    response={201: ExportPackageSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 502: ErrorResponse},
+    response={
+        201: ExportPackageSchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+        502: ErrorResponse,
+    },
 )
 def create_export(request: HttpRequest, assessment_id: str) -> _Response:
     """Build a ZIP export package."""
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 
@@ -500,11 +554,18 @@ def export_oscal_json(request: HttpRequest, assessment_id: str) -> _Response:
 
 @router.post(
     "/cra/{assessment_id}/refresh",
-    response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 502: ErrorResponse},
+    response={
+        200: dict,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+        502: ErrorResponse,
+    },
 )
 def refresh_stale(request: HttpRequest, assessment_id: str) -> _Response:
     """Regenerate stale documents."""
-    result = _get_assessment_or_error(request, assessment_id)
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
     if not isinstance(result, CRAAssessment):
         return result
 

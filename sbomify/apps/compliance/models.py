@@ -220,6 +220,15 @@ class CRAAssessment(models.Model):
         DRAFT = "draft", "Draft"
         IN_PROGRESS = "in_progress", "In Progress"
         COMPLETE = "complete", "Complete"
+        # Set by ``save_scope_screening`` when the operator edits the scope
+        # screening and ``CRAScopeScreening.cra_applies`` flips
+        # ``True → False`` while a live assessment exists (issue #921). The
+        # assessment is preserved on disk (ADR-004) but every mutation
+        # endpoint refuses further edits with 409 until the operator either
+        # re-scopes back into CRA-applicable territory (clears the stale
+        # flag) or explicitly deletes the assessment. See
+        # ``wizard_service.save_scope_screening`` for the transition code.
+        STALE = "stale", "Stale (scope changed)"
 
     class Meta:
         ordering = ["-created_at"]
