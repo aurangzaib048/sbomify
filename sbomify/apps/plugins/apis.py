@@ -45,7 +45,16 @@ def _is_run_failing(run: AssessmentRun) -> bool:
     """Check if a completed assessment run has issues.
 
     For security plugins: any vulnerability (total_findings > 0 from by_severity) is a failure.
-    For compliance/other plugins: fail_count > 0 or error_count > 0 is a failure.
+
+    For compliance/attestation/other plugins: a run is failing when it has
+    explicit failures or errors, OR when it produced *no* positive
+    findings (``pass_count == 0`` with warnings only). The latter case
+    closes a UI-side mirror of the orchestrator's warnings-only false
+    positive: a plugin that emitted only warnings (e.g. the legacy
+    github-attestation "no VCS info" warning) was counted as passing
+    in the dashboard, despite verifying nothing. The badge now matches
+    the dependency-gate verdict — if BSI's ``requires_one_of`` does not
+    treat the run as passing, neither does the UI summary.
 
     Skipped runs are NOT failing — they never scanned, so they produced no
     findings. They're not passing either (see ``_compute_status_summary``).
@@ -69,7 +78,8 @@ def _is_run_failing(run: AssessmentRun) -> bool:
 
     fail_count: int = summary.get("fail_count", 0)
     error_count: int = summary.get("error_count", 0)
-    return fail_count > 0 or error_count > 0
+    pass_count: int = summary.get("pass_count", 0)
+    return fail_count > 0 or error_count > 0 or pass_count == 0
 
 
 def _get_plugin_display_names_map(plugin_names: set[str]) -> dict[str, str]:

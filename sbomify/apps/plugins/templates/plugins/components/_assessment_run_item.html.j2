@@ -1,8 +1,9 @@
 {# Individual assessment run collapsible card - rendered server-side #}
 {% load plugins_extras %}
 {# Safely compute has_issues - run.result may be None for pending/running assessments #}
-{% with run_id=run.id|default:loop_index result=run.result|default_if_none:"" summary=run.result.summary|default_if_none:"" fail_count=run.result.summary.fail_count|default:0 error_count=run.result.summary.error_count|default:0 %}
-    {% with has_issues=fail_count|add:error_count is_security=run.category|is_security_category %}
+{% with run_id=run.id|default:loop_index result=run.result|default_if_none:"" summary=run.result.summary|default_if_none:"" fail_count=run.result.summary.fail_count|default:0 error_count=run.result.summary.error_count|default:0 pass_count=run.result.summary.pass_count|default:0 warning_count=run.result.summary.warning_count|default:0 %}
+    {% comment %}has_issues is the explicit-failure signal (fail+error). A run with only warnings (pass_count==0) is shown as "Warnings Only" rather than "Passed" so the per-card badge matches the dashboard summary and BSI's dependency gate (see _is_run_failing and orchestrator._is_passing).{% endcomment %}
+    {% with has_issues=fail_count|add:error_count is_security=run.category|is_security_category warnings_only=warning_count|add:0 %}
         {# Compute security total from by_severity #}
         {% if is_security and run.result.summary.by_severity %}
             {% with sev=run.result.summary.by_severity security_total=run.result.summary.total_findings|default:0 %}
@@ -236,7 +237,7 @@
             {% endwith %}
         {% else %}
             {# Compliance / non-security rendering #}
-            <div class="tw-collapsible-card {% if error_count %}tw-collapsible-card--danger{% elif fail_count %}tw-collapsible-card--warning{% elif run.status == 'completed' %}tw-collapsible-card--success{% endif %}"
+            <div class="tw-collapsible-card {% if error_count %}tw-collapsible-card--danger{% elif fail_count %}tw-collapsible-card--warning{% elif run.status == 'completed' and pass_count == 0 %}tw-collapsible-card--warning{% elif run.status == 'completed' %}tw-collapsible-card--success{% endif %}"
                  id="plugin-{{ run.plugin_name }}"
                  x-data="{ expanded: false }">
                 <div class="tw-collapsible-header" @click="expanded = !expanded">
@@ -257,6 +258,11 @@
                             {% if has_issues %}
                                 <span class="tw-badge-secondary">
                                     <i class="fas fa-exclamation-triangle mr-1"></i>{{ has_issues }} Issue{{ has_issues|pluralize }}
+                                </span>
+                            {% elif pass_count == 0 %}
+                                {% comment %}All findings were warnings — no positive verdict was produced. Surface distinctly so operators don't misread as a pass.{% endcomment %}
+                                <span class="tw-badge-secondary">
+                                    <i class="fas fa-exclamation-circle mr-1"></i>Warnings Only
                                 </span>
                             {% else %}
                                 <span class="tw-badge-secondary">
