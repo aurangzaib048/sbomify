@@ -325,6 +325,79 @@ class PluginOrchestrator:
         assessment_run.completed_at = timezone.now()
         assessment_run.save(update_fields=["status", "error_message", "completed_at"])
 
+    def finalize_retry_exhausted(self, run_id: str, error_message: str) -> AssessmentRun | None:
+        """Settle a run that has burnt through every ``RetryLaterError`` slot.
+
+        The orchestrator's ``RetryLaterError`` handler resets the run to
+        ``PENDING`` so the task layer can re-queue it. When the task layer
+        gives up after the configured retry budget, **the run is left
+        dangling in PENDING forever** unless someone finalises it. That
+        breaks downstream consumers in two ways:
+
+        - BSI's ``requires_one_of: attestation`` query filters by
+          ``status=COMPLETED``; a permanently-pending run is invisible
+          to the gate, so BSI keeps reporting "No attestation plugin
+          has been run for this SBOM" even though one was attempted.
+        - The SBOM detail page shows the card stuck on a spinner
+          forever.
+
+        This method synthesises a minimal failing ``AssessmentResult``
+        — one ``error`` finding wrapping the retry-exhausted message —
+        writes it onto the run, and flips status to ``COMPLETED``. The
+        run now appears in the orchestrator's ``_check_one_of`` query
+        and ``_is_passing`` returns ``False`` (one fail finding), so
+        the gate correctly reports the plugin in ``failed_plugins``.
+
+        Idempotent: if the run is already in a terminal state, no-op.
+        Returns the run on success, ``None`` if the run isn't found.
+        """
+        try:
+            run = AssessmentRun.objects.get(id=run_id)
+        except AssessmentRun.DoesNotExist:
+            logger.warning(f"[PLUGIN] finalize_retry_exhausted: run {run_id} not found")
+            return None
+
+        if run.status not in (RunStatus.PENDING.value, RunStatus.RUNNING.value):
+            # Already terminal — keep what's there.
+            return run
+
+        synthesized_result = {
+            "plugin_name": run.plugin_name,
+            "plugin_version": run.plugin_version,
+            "category": run.category,
+            "assessed_at": timezone.now().isoformat(),
+            "summary": {
+                "total_findings": 1,
+                "pass_count": 0,
+                "fail_count": 0,
+                "warning_count": 0,
+                "error_count": 1,
+            },
+            "findings": [
+                {
+                    "id": f"{run.plugin_name}:retry-exhausted",
+                    "title": "Assessment Retry Budget Exhausted",
+                    "description": (
+                        "The plugin reported a transient condition for every retry attempt "
+                        "in the configured budget. The condition may have become permanent "
+                        f"(e.g., the upstream resource never became available). Last error: {error_message}"
+                    ),
+                    "status": "error",
+                    "severity": "high",
+                    "metadata": {"retry_exhausted": True, "last_error": error_message},
+                }
+            ],
+            "metadata": {"retry_exhausted": True},
+        }
+
+        run.status = RunStatus.COMPLETED.value
+        run.result = synthesized_result
+        run.error_message = f"Retry budget exhausted: {error_message}"  # surfaces in run-detail UI alongside findings
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "result", "error_message", "completed_at"])
+        logger.info(f"[PLUGIN] finalize_retry_exhausted: marked run {run_id} as COMPLETED with retry-exhausted finding")
+        return run
+
     def _sync_run_releases(self, assessment_run: AssessmentRun, sbom_id: str) -> None:
         """Populate AssessmentRun.releases M2M from current ReleaseArtifact state.
 
