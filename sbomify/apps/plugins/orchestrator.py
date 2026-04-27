@@ -157,6 +157,15 @@ class PluginOrchestrator:
                     f"not '{metadata.name}'"
                 )
 
+            # Eager pending rows (created by ``_create_pending_assessment_run``
+            # in the task layer) leave the config hash empty because the
+            # plugin instance hadn't been resolved yet. Fill it in now so
+            # the run carries the same auditable provenance whether it
+            # came through the eager or lazy creation path.
+            if not assessment_run.plugin_config_hash:
+                assessment_run.plugin_config_hash = config_hash
+                assessment_run.save(update_fields=["plugin_config_hash"])
+
             logger.info(
                 f"[PLUGIN] Reusing existing run {assessment_run.id} for SBOM {sbom_id} "
                 f"with plugin {metadata.name} v{metadata.version}"

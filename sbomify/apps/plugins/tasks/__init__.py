@@ -316,6 +316,58 @@ def run_assessment_task(
         raise  # Re-raise for Dramatiq retry
 
 
+def _create_pending_assessment_run(
+    sbom_id: str,
+    plugin_name: str,
+    run_reason: RunReason,
+    triggered_by_user: User | None,
+    triggered_by_token: AccessToken | None,
+) -> str | None:
+    """Eagerly create an ``AssessmentRun`` in PENDING state.
+
+    Called by ``enqueue_assessment`` when a delay is configured (e.g.
+    attestation plugins are deferred by ``ATTESTATION_DELAY_MS`` to give
+    GitHub time to publish attestations). Without this eager row, the
+    SBOM page lists every other plugin's card immediately while the
+    delayed plugin's card materialises only after the delay elapses,
+    which reads as a missing plugin to operators.
+
+    Returns the new run's ID on success so ``run_assessment_task`` can
+    reuse the row via ``_existing_run_id`` instead of creating a fresh
+    one. Returns ``None`` when the plugin isn't registered or eager
+    creation fails — the task layer falls back to lazy creation in that
+    case so we never block enqueueing on this UX detail.
+    """
+    from ..models import AssessmentRun, RegisteredPlugin
+    from ..sdk.enums import RunStatus
+
+    try:
+        registered = RegisteredPlugin.objects.only("name", "version", "category").get(name=plugin_name)
+    except RegisteredPlugin.DoesNotExist:
+        logger.warning(f"[PLUGIN] Cannot eagerly create pending run — plugin '{plugin_name}' is not registered")
+        return None
+
+    try:
+        run = AssessmentRun.objects.create(
+            sbom_id=sbom_id,
+            plugin_name=registered.name,
+            plugin_version=registered.version,
+            # Config hash is recomputed when the worker actually runs the
+            # plugin (using the merged config), so leave it empty here.
+            plugin_config_hash="",
+            category=registered.category,
+            run_reason=run_reason.value,
+            status=RunStatus.PENDING.value,
+            triggered_by_user=triggered_by_user,
+            triggered_by_token=triggered_by_token,
+        )
+    except Exception as exc:
+        logger.warning(f"[PLUGIN] Failed to eagerly create pending run for {plugin_name} on SBOM {sbom_id}: {exc}")
+        return None
+
+    return str(run.id)
+
+
 def enqueue_assessment(
     sbom_id: str,
     plugin_name: str,
@@ -334,6 +386,13 @@ def enqueue_assessment(
     The task dispatch is wrapped in transaction.on_commit() to ensure that
     the SBOM and any related data are visible to the worker when the task
     runs. If called outside a transaction, the task is sent immediately.
+
+    When ``delay_ms`` is set (currently used for attestation-category
+    plugins to give GitHub time to publish attestations), an
+    ``AssessmentRun`` row is created in PENDING state immediately and
+    its ID is threaded through to the deferred task so the SBOM page
+    surfaces the plugin's card right away rather than waiting for the
+    delay window to expire.
 
     Args:
         sbom_id: The SBOM's primary key.
@@ -368,6 +427,18 @@ def enqueue_assessment(
     task_delay_ms = delay_ms
     task_release_id = release_id
 
+    # Materialise the pending row eagerly when the task is delayed so the
+    # UI reflects the plugin as queued during the delay window.
+    task_existing_run_id: str | None = None
+    if delay_ms:
+        task_existing_run_id = _create_pending_assessment_run(
+            sbom_id=sbom_id,
+            plugin_name=plugin_name,
+            run_reason=run_reason,
+            triggered_by_user=triggered_by_user,
+            triggered_by_token=triggered_by_token,
+        )
+
     def _send_task() -> None:
         """Send the assessment task to the queue."""
         run_assessment_task.send_with_options(
@@ -381,11 +452,11 @@ def enqueue_assessment(
                 "triggered_by_token_id": task_token_id,
                 "release_id": task_release_id,
                 "_retry_later_count": 0,
-                "_existing_run_id": None,
+                "_existing_run_id": task_existing_run_id,
             },
             delay=task_delay_ms,
         )
-        delay_info = f", delay={task_delay_ms}ms" if task_delay_ms else ""
+        delay_info = f", delay={task_delay_ms}ms, pending_run={task_existing_run_id}" if task_delay_ms else ""
         logger.info(
             f"[PLUGIN] Enqueued assessment for SBOM {task_sbom_id} with plugin {task_plugin_name} "
             f"(reason: {task_run_reason}{delay_info})"
