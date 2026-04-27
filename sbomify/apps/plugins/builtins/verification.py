@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -44,7 +45,7 @@ import requests
 
 from sbomify.apps.plugins.builtins._spdx3_helpers import is_spdx3
 from sbomify.apps.plugins.sdk.base import AssessmentPlugin, RetryLaterError, SBOMContext
-from sbomify.apps.plugins.sdk.enums import AssessmentCategory
+from sbomify.apps.plugins.sdk.enums import AssessmentCategory, ScanMode
 from sbomify.apps.plugins.sdk.results import (
     AssessmentResult,
     AssessmentSummary,
@@ -85,7 +86,20 @@ class SBOMVerificationPlugin(AssessmentPlugin):
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
-        self.timeout = int(self.config.get("timeout", self.DEFAULT_TIMEOUT))
+        # The plugin config UI doesn't enforce field types, so a saved
+        # team-level value could be a string or anything else. Coerce
+        # defensively and fall back to the default rather than failing
+        # plugin instantiation on a bad config blob.
+        raw_timeout = self.config.get("timeout", self.DEFAULT_TIMEOUT)
+        try:
+            self.timeout = int(raw_timeout)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid timeout config %r; falling back to default %s seconds",
+                raw_timeout,
+                self.DEFAULT_TIMEOUT,
+            )
+            self.timeout = self.DEFAULT_TIMEOUT
         self.certificate_oidc_issuer = self.config.get(
             "certificate_oidc_issuer",
             self.DEFAULT_CERTIFICATE_OIDC_ISSUER,
@@ -96,6 +110,13 @@ class SBOMVerificationPlugin(AssessmentPlugin):
             name="sbom-verification",
             version=self.VERSION,
             category=AssessmentCategory.ATTESTATION,
+            # GitHub's attestation pipeline is asynchronous — a 404 on the
+            # public Attestations API immediately after a workflow run can
+            # mean "not yet published" rather than "doesn't exist". The
+            # github-attestation flow raises ``RetryLaterError`` (via the
+            # ``AttestationNotYetAvailableError`` subclass) on 404, which
+            # is the contract for ``ScanMode.CONTINUOUS``.
+            scan_mode=ScanMode.CONTINUOUS,
             supported_bom_types=["sbom"],
         )
 
@@ -460,18 +481,30 @@ class SBOMVerificationPlugin(AssessmentPlugin):
 
         github_org = vcs_info.get("org", "")
         github_repo = vcs_info.get("repo", "")
+        # ``--certificate-identity-regexp`` interprets its argument as a
+        # regex, so any metacharacters (``.``, ``+``, etc.) in the org or
+        # repo would broaden the match and weaken identity verification.
+        # Escape both segments when building the default pattern. An
+        # explicit override in plugin config is left untouched — operators
+        # who set a custom pattern are expected to know it's a regex.
         identity_regexp = self.config.get(
             "certificate_identity_regexp",
-            f"^https://github.com/{github_org}/{github_repo}/.*",
+            rf"^https://github\.com/{re.escape(github_org)}/{re.escape(github_repo)}/.*",
         )
 
         precomputed = context.sha256_hash if context else None
         digest = precomputed or hashlib.sha256(sbom_data).hexdigest()
 
+        # Per-source failures below emit ``warning`` rather than ``fail`` so
+        # they don't drive ``fail_count > 0`` on the run when another source
+        # (stored signature/provenance) has already verified the SBOM. The
+        # aggregating ``verification:attestation`` summary is the single
+        # ``fail`` signal for "no source verified" — it's what BSI's
+        # ``requires_one_of: attestation`` consumes.
         bundle = self._download_github_bundle(github_org, github_repo, digest)
         if not bundle.get("success"):
             return self._gha_finding(
-                "fail",
+                "warning",
                 "No GitHub Attestation Found",
                 (
                     f"Could not download attestation from GitHub for this SBOM. "
@@ -488,7 +521,7 @@ class SBOMVerificationPlugin(AssessmentPlugin):
         bundle_path = bundle.get("bundle_path")
         if not isinstance(bundle_path, str):
             return self._gha_finding(
-                "fail",
+                "warning",
                 "GitHub Attestation Bundle Missing",
                 "Bundle download reported success but returned no path.",
                 metadata={"github_org": github_org, "github_repo": github_repo},
@@ -516,7 +549,7 @@ class SBOMVerificationPlugin(AssessmentPlugin):
                 },
             )
         return self._gha_finding(
-            "fail",
+            "warning",
             "GitHub Attestation Verification Failed",
             verified.get("message", "cosign verify-blob-attestation reported a failure."),
             metadata={
@@ -574,7 +607,17 @@ class SBOMVerificationPlugin(AssessmentPlugin):
                 "error": f"GitHub API error: {response.status_code} - {response.text}",
             }
 
-        data = response.json()
+        # GitHub's edge can return HTML on rate-limit / abuse / 5xx pages
+        # even when the upstream status code arrived as 200 (rare but
+        # observed). Guard the JSON parse so the run records an
+        # auditable error rather than crashing the worker.
+        try:
+            data = response.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as exc:
+            return {
+                "success": False,
+                "error": f"GitHub API returned an invalid JSON response: {exc}",
+            }
         attestations = data.get("attestations", [])
         if not attestations:
             return {"success": False, "error": "No attestations returned from GitHub API"}

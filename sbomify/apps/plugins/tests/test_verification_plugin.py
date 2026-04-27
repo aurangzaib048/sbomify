@@ -451,13 +451,21 @@ class TestGitHubAttestation:
 
     @patch("sbomify.apps.plugins.builtins.verification.shutil.which", return_value=None)
     @patch("sbomify.apps.plugins.builtins.verification.get_http_session")
-    def test_github_attestation_cosign_missing_is_fail(
+    def test_github_attestation_cosign_missing_is_warning(
         self,
         mock_get_session: MagicMock,
         _mock_which: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """No ``cosign`` binary → fail with a remediation message (not a 500)."""
+        """No ``cosign`` binary → warning so the run isn't blocked from passing.
+
+        Per-source verification failures emit ``warning`` status rather
+        than ``fail``: the aggregating ``verification:attestation`` summary
+        is the single ``fail`` signal when *no* cryptographic source
+        verified. That way a stored cosign-bundle signature passing AND
+        a missing cosign CLI doesn't block the run from satisfying BSI's
+        ``requires_one_of: attestation`` gate.
+        """
         sbom_file, sha256 = _cyclonedx_with_vcs(tmp_path)
         context = SBOMContext(sha256_hash=sha256)
         plugin = SBOMVerificationPlugin()
@@ -471,7 +479,7 @@ class TestGitHubAttestation:
             result = plugin.assess("sbom-1", sbom_file, context=context)
 
         gh = next(f for f in result.findings if f.id == "verification:github-attestation")
-        assert gh.status == "fail"
+        assert gh.status == "warning"
 
 
 class TestAttestationSummary:

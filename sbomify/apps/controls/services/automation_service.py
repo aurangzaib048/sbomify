@@ -67,7 +67,12 @@ def _is_passing(run: AssessmentRun) -> bool:
 
     fail_count: int = summary.get("fail_count", 0)
     error_count: int = summary.get("error_count", 0)
-    pass_count: int = summary.get("pass_count", 0)
+    # Legacy summaries (from before pass_count was tracked) won't have
+    # the key. Treat absent-key as the old contract so historical runs
+    # don't retroactively flip from "promote control" to "don't promote".
+    pass_count = summary.get("pass_count")
+    if pass_count is None:
+        return fail_count == 0 and error_count == 0
     return fail_count == 0 and error_count == 0 and pass_count > 0
 
 

@@ -78,7 +78,12 @@ def _is_run_failing(run: AssessmentRun) -> bool:
 
     fail_count: int = summary.get("fail_count", 0)
     error_count: int = summary.get("error_count", 0)
-    pass_count: int = summary.get("pass_count", 0)
+    # Legacy summaries (predating ``pass_count`` tracking) lack the key
+    # entirely; treat that as the old contract. Modern runs always
+    # include the key — present-and-zero is the warnings-only signal.
+    pass_count = summary.get("pass_count")
+    if pass_count is None:
+        return fail_count > 0 or error_count > 0
     return fail_count > 0 or error_count > 0 or pass_count == 0
 
 
