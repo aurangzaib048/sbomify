@@ -345,12 +345,21 @@ class PluginOrchestrator:
         — one ``error`` finding wrapping the retry-exhausted message —
         writes it onto the run, and flips status to ``COMPLETED``. The
         run now appears in the orchestrator's ``_check_one_of`` query
-        and ``_is_passing`` returns ``False`` (one fail finding), so
-        the gate correctly reports the plugin in ``failed_plugins``.
+        and ``_is_passing`` returns ``False`` (``error_count > 0`` is
+        treated identically to ``fail_count > 0``), so the gate
+        correctly reports the plugin in ``failed_plugins``.
+
+        Concurrency: the status flip is performed via a conditional
+        ``UPDATE ... WHERE status IN (pending, running)`` so a worker
+        that races us to legitimate completion can't be clobbered. If
+        the conditional update affects zero rows we return the latest
+        row state without mutating it.
 
         Idempotent: if the run is already in a terminal state, no-op.
         Returns the run on success, ``None`` if the run isn't found.
         """
+        from django.db import transaction
+
         try:
             run = AssessmentRun.objects.get(id=run_id)
         except AssessmentRun.DoesNotExist:
@@ -361,14 +370,19 @@ class PluginOrchestrator:
             # Already terminal — keep what's there.
             return run
 
+        now = timezone.now()
+        # ``schema_version`` mirrors ``AssessmentResult.to_dict()`` (sdk/results.py)
+        # so retry-exhausted payloads share the same on-disk shape as plugin-emitted
+        # ones — consumers that key off ``result["schema_version"]`` keep working.
         synthesized_result = {
+            "schema_version": "1.0",
             "plugin_name": run.plugin_name,
             "plugin_version": run.plugin_version,
             "category": run.category,
-            "assessed_at": timezone.now().isoformat(),
+            "assessed_at": now.isoformat(),
             "summary": {
                 "total_findings": 1,
-                "pass_count": 0,
+                "pass_count": 0,  # nosec B105
                 "fail_count": 0,
                 "warning_count": 0,
                 "error_count": 1,
@@ -390,11 +404,34 @@ class PluginOrchestrator:
             "metadata": {"retry_exhausted": True},
         }
 
-        run.status = RunStatus.COMPLETED.value
-        run.result = synthesized_result
-        run.error_message = f"Retry budget exhausted: {error_message}"  # surfaces in run-detail UI alongside findings
-        run.completed_at = timezone.now()
-        run.save(update_fields=["status", "result", "error_message", "completed_at"])
+        with transaction.atomic():
+            updated = AssessmentRun.objects.filter(
+                id=run_id,
+                status__in=(RunStatus.PENDING.value, RunStatus.RUNNING.value),
+            ).update(
+                status=RunStatus.COMPLETED.value,
+                result=synthesized_result,
+                result_schema_version="1.0",
+                error_message=f"Retry budget exhausted: {error_message}",
+                completed_at=now,
+            )
+            if updated == 0:
+                # Another worker finished the run between the read and the
+                # update. Re-fetch and return the canonical row — never
+                # overwrite legitimate result data.
+                run.refresh_from_db()
+                logger.info(
+                    f"[PLUGIN] finalize_retry_exhausted: run {run_id} was finalised by another path "
+                    f"(status={run.status}); leaving its result in place"
+                )
+                return run
+
+            run.refresh_from_db()
+            # Populate the AssessmentRun↔Release M2M from the current ReleaseArtifact
+            # state so retry-exhausted runs surface against the correct releases —
+            # same contract as a normal completion.
+            self._sync_run_releases(run, str(run.sbom_id))
+
         logger.info(f"[PLUGIN] finalize_retry_exhausted: marked run {run_id} as COMPLETED with retry-exhausted finding")
         return run
 

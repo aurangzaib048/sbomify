@@ -682,6 +682,11 @@ class TestFinalizeRetryExhausted:
 
         # Synthesised payload shape — exactly what BSI's gate consumes.
         assert run.result is not None
+        # ``schema_version`` mirrors ``AssessmentResult.to_dict()`` so
+        # retry-exhausted runs round-trip through any schema-version
+        # consumer the same as plugin-emitted runs.
+        assert run.result["schema_version"] == "1.0"
+        assert run.result_schema_version == "1.0"
         summary = run.result["summary"]
         assert summary["fail_count"] == 0
         assert summary["error_count"] == 1

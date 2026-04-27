@@ -241,7 +241,19 @@ def run_assessment_task(
                 )
 
                 if run_id is not None:
-                    PluginOrchestrator().finalize_retry_exhausted(run_id, str(retry_error))
+                    # Retry-exhaustion is meant to be terminal — never let a
+                    # finalisation hiccup (DB blip, JSON serialisation issue,
+                    # etc.) bubble up to the outer ``except Exception`` and
+                    # cause Dramatiq to re-queue the task again. Log and
+                    # carry on; the row stays in PENDING but at least the
+                    # exhaustion event is recorded.
+                    try:
+                        PluginOrchestrator().finalize_retry_exhausted(run_id, str(retry_error))
+                    except Exception as finalize_err:  # noqa: BLE001
+                        logger.error(
+                            f"[TASK_run_assessment] finalize_retry_exhausted failed for run {run_id}: {finalize_err}",
+                            exc_info=True,
+                        )
 
                 response = {
                     "status": "retry_exhausted",
