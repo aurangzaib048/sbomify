@@ -151,8 +151,8 @@ class PluginsConfig(AppConfig):
                 "description": (
                     "Unified SBOM attestation verification. Recomputes SHA-256 digest, "
                     "validates Cosign/Sigstore bundle signatures, confirms provenance "
-                    "subject digests match the SBOM hash, and — when the SBOM declares a "
-                    "GitHub VCS link — fetches the GitHub-published attestation bundle and "
+                    "subject digests match the SBOM hash, and when the SBOM declares a "
+                    "GitHub VCS link, fetches the GitHub-published attestation bundle and "
                     "verifies it via cosign. Passes when at least one cryptographic source "
                     "verifies the SBOM."
                 ),
