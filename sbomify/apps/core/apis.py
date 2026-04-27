@@ -4144,31 +4144,12 @@ def list_component_sboms(
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
+        from collections import defaultdict
+        from datetime import timedelta
+
+        from django.utils import timezone
+
         from sbomify.apps.sboms.models import SBOM
-
-        def check_vulnerability_report(sbom_id: str) -> bool:
-            """Check if vulnerability report exists for an SBOM."""
-            try:
-                from datetime import timedelta
-
-                from django.db import DatabaseError
-                from django.utils import timezone
-
-                from sbomify.apps.plugins.models import AssessmentRun
-
-                recent_threshold = timezone.now() - timedelta(hours=24)
-                return AssessmentRun.objects.filter(
-                    sbom_id=sbom_id,
-                    category="security",
-                    status="completed",
-                    created_at__gte=recent_threshold,
-                ).exists()
-            except DatabaseError as e:
-                log.warning(f"Database error checking vulnerability report for SBOM {sbom_id}: {e}")
-                return False
-            except Exception as e:
-                log.error(f"Unexpected error checking vulnerability report for SBOM {sbom_id}: {e}")
-                return False
 
         try:
             sboms_queryset = SBOM.objects.filter(component_id=component_id).order_by("-created_at")
@@ -4199,52 +4180,55 @@ def list_component_sboms(
                 log.error(f"Database error fetching SBOMs for component {component_id}: {db_err}")
                 return 500, {"detail": "Database error occurred", "error_code": ErrorCode.INTERNAL_ERROR}
 
-        # Build response items with vulnerability status, releases, and assessments
-        items = []
-
         # Import assessment helpers
-        from sbomify.apps.plugins.apis import _compute_status_summary, _is_run_failing
+        from sbomify.apps.plugins.apis import _compute_status_summary, _is_run_failing, _is_run_skipped
         from sbomify.apps.plugins.models import AssessmentRun, RegisteredPlugin, TeamPluginSettings
         from sbomify.apps.plugins.schemas import AssessmentStatusSummary
         from sbomify.apps.plugins.sdk.enums import RunStatus
 
-        # Check if team has any enabled plugins (only need to check once per API call for this component)
-        # We check plugin settings for the team to determine the correct assessment status
-        # for all SBOMs in this component
+        # Build response items with vulnerability status, releases, and assessments.
+        # Everything below is batched by sbom-id so the cost is constant in
+        # the number of SBOMs on the page (~5 queries total) instead of the
+        # earlier ~4 queries × N SBOMs N+1 pattern.
+        items: list[dict[str, Any]] = []
+        sbom_ids = [str(s.id) for s in paginated_sboms]
+
+        # 1. Team-level plugin enablement (already a single query)
         team_has_enabled_plugins = False
         try:
             team = component.team
-            # Components are expected to always have an associated team; this check is defensive
-            # in case of legacy or inconsistent data where component.team may be None or otherwise falsy.
             if team:
                 plugin_settings = TeamPluginSettings.objects.filter(team=team).first()
                 if plugin_settings:
-                    # Check if enabled_plugins list exists and has items
-                    enabled_plugins = plugin_settings.enabled_plugins
-                    team_has_enabled_plugins = bool(enabled_plugins)
+                    team_has_enabled_plugins = bool(plugin_settings.enabled_plugins)
         except Exception as e:
-            # If we can't determine plugin status, default to False
             team_id = getattr(component, "team_id", None) or "unknown"
             log.warning(f"Error checking plugin settings for team {team_id}: {e}")
-            team_has_enabled_plugins = False
 
-        for sbom in paginated_sboms:
-            # Get vulnerability status
-            vuln_status = check_vulnerability_report(sbom.id)
-
-            # Get releases that contain this SBOM
-            releases = []
-            try:
-                release_artifacts = ReleaseArtifact.objects.filter(sbom=sbom).select_related(
-                    "release", "release__product"
+        # 2. Vulnerability-report presence — one EXISTS-style query for ALL SBOMs.
+        recent_threshold = timezone.now() - timedelta(hours=24)
+        vuln_sbom_ids: set[str] = set()
+        try:
+            vuln_sbom_ids = set(
+                AssessmentRun.objects.filter(
+                    sbom_id__in=sbom_ids,
+                    category="security",
+                    status="completed",
+                    created_at__gte=recent_threshold,
                 )
-            except (DatabaseError, OperationalError) as db_err:
-                # Handle database connection errors gracefully - continue with empty releases list
-                log.warning(f"Database connection error fetching release artifacts for SBOM {sbom.id}: {db_err}")
-                release_artifacts = ReleaseArtifact.objects.none()
+                .values_list("sbom_id", flat=True)
+                .distinct()
+            )
+        except (DatabaseError, OperationalError) as db_err:
+            log.warning(f"Database error checking vulnerability reports for component {component_id}: {db_err}")
 
-            for artifact in release_artifacts:
-                releases.append(
+        # 3. Release artifacts — one query, indexed into a per-SBOM list.
+        releases_by_sbom: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        try:
+            for artifact in ReleaseArtifact.objects.filter(sbom_id__in=sbom_ids).select_related(
+                "release", "release__product"
+            ):
+                releases_by_sbom[str(artifact.sbom_id)].append(
                     {
                         "id": str(artifact.release.id),
                         "name": artifact.release.name,
@@ -4255,85 +4239,73 @@ def list_component_sboms(
                         "is_public": artifact.release.product.is_public,
                     }
                 )
+        except (DatabaseError, OperationalError) as db_err:
+            log.warning(f"Database error fetching release artifacts for component {component_id}: {db_err}")
 
-            # Get assessment data for badge
-            # If no plugins are enabled, set status to "no_plugins_enabled" instead of "no_assessments"
-            default_status = "no_plugins_enabled" if not team_has_enabled_plugins else "no_assessments"
+        # 4. Latest AssessmentRun per (sbom_id, plugin_name) across ALL SBOMs.
+        # ``DISTINCT ON`` is Postgres-specific but the project standardises on
+        # Postgres 17 (see CLAUDE.md). The same index that backed the prior
+        # per-SBOM subquery — ``(sbom, plugin_name, -created_at)`` — covers
+        # this batched form too.
+        runs_by_sbom: dict[str, list[AssessmentRun]] = defaultdict(list)
+        plugin_names_seen: set[str] = set()
+        try:
+            latest_runs = list(
+                AssessmentRun.objects.filter(sbom_id__in=sbom_ids)
+                .order_by("sbom_id", "plugin_name", "-created_at")
+                .distinct("sbom_id", "plugin_name")
+            )
+            for run in latest_runs:
+                runs_by_sbom[str(run.sbom_id)].append(run)
+                plugin_names_seen.add(run.plugin_name)
+        except (DatabaseError, OperationalError) as db_err:
+            log.warning(f"Database error fetching assessment runs for component {component_id}: {db_err}")
+
+        # 5. Plugin display names — one query for every plugin actually used.
+        display_names: dict[str, str] = {}
+        if plugin_names_seen:
             try:
-                # Get latest run per plugin
-                from django.db.models import OuterRef, Subquery
+                display_names = {
+                    p.name: p.display_name
+                    for p in RegisteredPlugin.objects.filter(name__in=plugin_names_seen).only("name", "display_name")
+                }
+            except (DatabaseError, OperationalError) as db_err:
+                log.warning(f"Database error fetching plugin display names: {db_err}")
 
-                latest_run_ids = (
-                    AssessmentRun.objects.filter(sbom_id=sbom.id)
-                    .values("plugin_name")
-                    .annotate(
-                        latest_id=Subquery(
-                            AssessmentRun.objects.filter(sbom_id=sbom.id, plugin_name=OuterRef("plugin_name"))
-                            .order_by("-created_at")
-                            .values("id")[:1]
-                        )
+        default_status = "no_plugins_enabled" if not team_has_enabled_plugins else "no_assessments"
+
+        for sbom in paginated_sboms:
+            sbom_id = str(sbom.id)
+            sbom_runs = runs_by_sbom.get(sbom_id, [])
+
+            # Compose per-SBOM assessment payload from the batched lookups.
+            try:
+                if not sbom_runs:
+                    final_overall_status = default_status
+                    status_summary = AssessmentStatusSummary(
+                        overall_status=final_overall_status,
+                        total_assessments=0,
+                        passing_count=0,
+                        failing_count=0,
+                        pending_count=0,
+                        in_progress_count=0,
                     )
-                    .values_list("latest_id", flat=True)
-                )
-                latest_runs = list(AssessmentRun.objects.filter(id__in=latest_run_ids))
-
-                # Determine final status: if plugins are enabled but no runs exist yet, show "Checking..."
-                # ("no_assessments") instead of "No plugins enabled" ("no_plugins_enabled") to distinguish
-                # pending/running assessments from having no plugins configured at all.
-                if not latest_runs:
-                    # No assessment runs exist yet
-                    if team_has_enabled_plugins:
-                        # Plugins are enabled, so assessments will run (show "Checking...")
-                        final_overall_status = "no_assessments"
-                        # Create a minimal status summary for the response
-                        status_summary = AssessmentStatusSummary(
-                            overall_status="no_assessments",
-                            total_assessments=0,
-                            passing_count=0,
-                            failing_count=0,
-                            pending_count=0,
-                            in_progress_count=0,
-                        )
-                    else:
-                        # No plugins enabled, so no assessments will ever run
-                        final_overall_status = "no_plugins_enabled"
-                        # Create a minimal status summary for the response
-                        status_summary = AssessmentStatusSummary(
-                            overall_status="no_plugins_enabled",
-                            total_assessments=0,
-                            passing_count=0,
-                            failing_count=0,
-                            pending_count=0,
-                            in_progress_count=0,
-                        )
                 else:
-                    # Assessment runs exist, compute status from them
-                    status_summary = _compute_status_summary(latest_runs)
+                    status_summary = _compute_status_summary(sbom_runs)
                     final_overall_status = status_summary.overall_status
-                    log.debug(
-                        "SBOM %s: Has %d runs -> using computed status: %s",
-                        sbom.id,
-                        len(latest_runs),
-                        final_overall_status,
-                    )
 
                 plugins = []
-                for run in latest_runs:
-                    display_name = run.plugin_name
-                    try:
-                        plugin = RegisteredPlugin.objects.get(name=run.plugin_name)
-                        display_name = plugin.display_name
-                    except RegisteredPlugin.DoesNotExist:
-                        pass
-
+                for run in sbom_runs:
                     if run.status == RunStatus.COMPLETED.value:
-                        result = run.result or {}
-                        summary = result.get("summary", {})
-                        if _is_run_failing(run):
+                        if _is_run_skipped(run):
+                            plugin_status = "skipped"
+                            findings_count = 0
+                        elif _is_run_failing(run):
                             plugin_status = "fail"
+                            findings_count = (run.result or {}).get("summary", {}).get("total_findings", 0)
                         else:
                             plugin_status = "pass"
-                        findings_count = summary.get("total_findings", 0)
+                            findings_count = (run.result or {}).get("summary", {}).get("total_findings", 0)
                     elif run.status in (RunStatus.PENDING.value, RunStatus.RUNNING.value):
                         plugin_status = "pending"
                         findings_count = 0
@@ -4344,7 +4316,7 @@ def list_component_sboms(
                     plugins.append(
                         {
                             "name": run.plugin_name,
-                            "display_name": display_name,
+                            "display_name": display_names.get(run.plugin_name, run.plugin_name),
                             "status": plugin_status,
                             "findings_count": findings_count,
                             "fail_count": (run.result or {}).get("summary", {}).get("fail_count", 0),
@@ -4352,31 +4324,35 @@ def list_component_sboms(
                     )
 
                 assessment_data = {
-                    "sbom_id": str(sbom.id),
+                    "sbom_id": sbom_id,
                     "overall_status": final_overall_status,
                     "total_assessments": status_summary.total_assessments,
                     "passing_count": status_summary.passing_count,
                     "failing_count": status_summary.failing_count,
                     "pending_count": status_summary.pending_count,
+                    # ``skipped_count`` is exposed here so the SBOMs-table
+                    # context layer doesn't have to re-query the same data
+                    # via ``get_sbom_assessment_badge`` to discover it.
+                    "skipped_count": status_summary.skipped_count,
                     "plugins": plugins,
                 }
             except Exception as e:
-                log.warning(f"Error fetching assessment data for SBOM {sbom.id}: {e}")
-                # On error, still use the correct default status based on plugin settings
+                log.warning(f"Error composing assessment data for SBOM {sbom_id}: {e}")
                 assessment_data = {
-                    "sbom_id": str(sbom.id),
+                    "sbom_id": sbom_id,
                     "overall_status": default_status,
                     "total_assessments": 0,
                     "passing_count": 0,
                     "failing_count": 0,
                     "pending_count": 0,
+                    "skipped_count": 0,
                     "plugins": [],
                 }
 
             items.append(
                 {
                     "sbom": {
-                        "id": str(sbom.id),
+                        "id": sbom_id,
                         "name": sbom.name,
                         "format": sbom.format,
                         "format_version": sbom.format_version,
@@ -4384,8 +4360,8 @@ def list_component_sboms(
                         "created_at": sbom.created_at,
                         "bom_type": sbom.bom_type,
                     },
-                    "has_vulnerabilities_report": vuln_status,
-                    "releases": releases,
+                    "has_vulnerabilities_report": sbom_id in vuln_sbom_ids,
+                    "releases": releases_by_sbom.get(sbom_id, []),
                     "assessments": assessment_data,
                 }
             )

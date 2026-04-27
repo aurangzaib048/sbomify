@@ -157,6 +157,15 @@ class PluginOrchestrator:
                     f"not '{metadata.name}'"
                 )
 
+            # Eager pending rows (created by ``_create_pending_assessment_run``
+            # in the task layer) leave the config hash empty because the
+            # plugin instance hadn't been resolved yet. Fill it in now so
+            # the run carries the same auditable provenance whether it
+            # came through the eager or lazy creation path.
+            if not assessment_run.plugin_config_hash:
+                assessment_run.plugin_config_hash = config_hash
+                assessment_run.save(update_fields=["plugin_config_hash"])
+
             logger.info(
                 f"[PLUGIN] Reusing existing run {assessment_run.id} for SBOM {sbom_id} "
                 f"with plugin {metadata.name} v{metadata.version}"
@@ -510,8 +519,18 @@ class PluginOrchestrator:
     def _is_passing(self, run: AssessmentRun) -> bool:
         """Check if an assessment run is passing.
 
-        For security plugins: passing means no vulnerabilities found (by_severity all zero).
-        For compliance/other plugins: passing means no failures and no errors.
+        For security plugins: passing means no vulnerabilities found
+        (``by_severity`` all zero).
+
+        For compliance/attestation/other plugins: passing requires no
+        failures, no errors, AND at least one explicit pass. The
+        ``pass_count > 0`` requirement closes a latent hole where a
+        plugin emitting only warnings (e.g., the previous github-attestation
+        plugin returning a "no VCS info" warning) would silently satisfy
+        a ``requires_one_of`` dependency despite never having verified
+        anything. A run that produced only warnings has nothing positive
+        to assert; treating it as passing would let BSI/FDA/etc. dependency
+        gates pass on no evidence.
 
         Args:
             run: The AssessmentRun to check.
@@ -535,7 +554,16 @@ class PluginOrchestrator:
 
         fail_count: int = summary.get("fail_count", 0)
         error_count: int = summary.get("error_count", 0)
-        return fail_count == 0 and error_count == 0
+        # ``pass_count`` was added to summary payloads at the same time as
+        # this stricter check. Older runs predating that may not carry the
+        # key at all — distinguish "key absent" (legacy schema) from "key
+        # present and zero" (modern run with no positive findings) so we
+        # don't retroactively un-pass historical runs that satisfied the
+        # gate under the old contract.
+        pass_count = summary.get("pass_count")
+        if pass_count is None:
+            return fail_count == 0 and error_count == 0
+        return fail_count == 0 and error_count == 0 and pass_count > 0
 
     def get_plugin_instance(
         self,

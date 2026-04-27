@@ -279,8 +279,11 @@ class BSICompliancePlugin(AssessmentPlugin):
         ),
     }
 
-    # Supported attestation plugins - at least one must pass for BSI compliance
-    SUPPORTED_ATTESTATION_PLUGINS = ["github-attestation"]
+    # Supported attestation plugins — at least one must pass for BSI compliance.
+    # The unified ``sbom-verification`` plugin (in the ``attestation`` category)
+    # covers both sbomify-stored signatures/provenance and GitHub-published
+    # Sigstore attestations in a single run.
+    SUPPORTED_ATTESTATION_PLUGINS = ["sbom-verification"]
 
     def get_metadata(self) -> PluginMetadata:
         """Return plugin metadata.

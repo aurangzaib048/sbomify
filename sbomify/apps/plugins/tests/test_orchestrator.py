@@ -357,12 +357,12 @@ class TestDependencyChecking:
         # Create a passing attestation run
         AssessmentRun.objects.create(
             sbom_id=test_sbom.id,
-            plugin_name="github-attestation",
+            plugin_name="sbom-verification",
             plugin_version="1.0.0",
             category="attestation",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -370,7 +370,7 @@ class TestDependencyChecking:
 
         assert result is not None
         assert result["requires_one_of"]["satisfied"] is True
-        assert "github-attestation" in result["requires_one_of"]["passing_plugins"]
+        assert "sbom-verification" in result["requires_one_of"]["passing_plugins"]
 
     def test_check_one_of_no_runs(self, test_sbom, db) -> None:
         """Test _check_one_of when no runs exist."""
@@ -389,12 +389,12 @@ class TestDependencyChecking:
         """Test _check_one_of with a passing run."""
         AssessmentRun.objects.create(
             sbom_id=test_sbom.id,
-            plugin_name="github-attestation",
+            plugin_name="sbom-verification",
             plugin_version="1.0.0",
             category="attestation",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -404,13 +404,13 @@ class TestDependencyChecking:
         )
 
         assert result["satisfied"] is True
-        assert "github-attestation" in result["passing_plugins"]
+        assert "sbom-verification" in result["passing_plugins"]
 
     def test_check_one_of_with_failing_run(self, test_sbom, db) -> None:
         """Test _check_one_of with a failing run."""
         AssessmentRun.objects.create(
             sbom_id=test_sbom.id,
-            plugin_name="github-attestation",
+            plugin_name="sbom-verification",
             plugin_version="1.0.0",
             category="attestation",
             run_reason="manual",
@@ -426,7 +426,7 @@ class TestDependencyChecking:
 
         assert result["satisfied"] is False
         assert result["passing_plugins"] == []
-        assert "github-attestation" in result["failed_plugins"]
+        assert "sbom-verification" in result["failed_plugins"]
 
     def test_check_one_of_by_plugin_name(self, test_sbom, db) -> None:
         """Test _check_one_of with specific plugin dependency."""
@@ -437,7 +437,7 @@ class TestDependencyChecking:
             category="security",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -458,7 +458,7 @@ class TestDependencyChecking:
             category="compliance",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
         AssessmentRun.objects.create(
             sbom_id=test_sbom.id,
@@ -467,7 +467,7 @@ class TestDependencyChecking:
             category="security",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -492,7 +492,7 @@ class TestDependencyChecking:
             category="compliance",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -516,7 +516,7 @@ class TestDependencyChecking:
             category="compliance",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
         AssessmentRun.objects.create(
             sbom_id=test_sbom.id,
@@ -555,7 +555,7 @@ class TestDependencyChecking:
             category="compliance",
             run_reason="manual",
             status=RunStatus.COMPLETED.value,
-            result={"summary": {"fail_count": 0, "error_count": 0}},
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 1}},
         )
 
         orchestrator = PluginOrchestrator()
@@ -605,3 +605,45 @@ class TestDependencyChecking:
 
         orchestrator = PluginOrchestrator()
         assert orchestrator._is_passing(run) is False
+
+    def test_is_passing_warnings_only_is_not_passing(self, test_sbom, db) -> None:
+        """A run with only warnings (zero passes) must NOT count as passing.
+
+        Regression test for the latent bug behind the BSI / github-attestation
+        false-positive: a plugin that emits warning findings only (e.g. the
+        old github-attestation plugin returning a "no VCS info" warning) had
+        ``fail_count=0, error_count=0`` and was treated as passing — silently
+        satisfying ``requires_one_of`` dependency gates with no positive
+        evidence.
+        """
+        run = AssessmentRun.objects.create(
+            sbom_id=test_sbom.id,
+            plugin_name="test-plugin",
+            plugin_version="1.0.0",
+            category="attestation",
+            run_reason="manual",
+            status=RunStatus.COMPLETED.value,
+            result={"summary": {"fail_count": 0, "error_count": 0, "pass_count": 0, "warning_count": 3}},
+        )
+
+        orchestrator = PluginOrchestrator()
+        assert orchestrator._is_passing(run) is False
+
+    def test_is_passing_security_unaffected_by_pass_count(self, test_sbom, db) -> None:
+        """Security plugins remain governed by ``by_severity`` totals, not pass_count.
+
+        Vulnerability scanners report a clean SBOM with empty ``by_severity``
+        and zero ``pass_count`` — the run is still passing.
+        """
+        run = AssessmentRun.objects.create(
+            sbom_id=test_sbom.id,
+            plugin_name="vuln-scanner",
+            plugin_version="1.0.0",
+            category="security",
+            run_reason="manual",
+            status=RunStatus.COMPLETED.value,
+            result={"summary": {"by_severity": {}, "pass_count": 0}},
+        )
+
+        orchestrator = PluginOrchestrator()
+        assert orchestrator._is_passing(run) is True

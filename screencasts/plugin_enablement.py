@@ -17,7 +17,9 @@ PLUGIN_SLUGS = [
     "ntia-minimum-elements-2021",
     "bsi-tr03183-v2.1-compliance",
     "fda-medical-device-2025",
-    "github-attestation",
+    # ``sbom-verification`` is the unified attestation plugin — it covers
+    # both sbomify-stored signatures and GitHub-published Sigstore
+    # attestations in a single run (formerly two separate plugins).
     "sbom-verification",
 ]
 
