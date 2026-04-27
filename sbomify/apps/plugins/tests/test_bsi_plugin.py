@@ -1151,7 +1151,7 @@ class TestAttestationCheck:
         dependency_status = {
             "requires_one_of": {
                 "satisfied": True,
-                "passing_plugins": ["github-attestation"],
+                "passing_plugins": ["sbom-verification"],
                 "failed_plugins": [],
             }
         }
@@ -1160,7 +1160,7 @@ class TestAttestationCheck:
         finding = get_finding(result, "bsi-tr03183:attestation-check")
         assert finding is not None
         assert finding.status == "pass"
-        assert "github-attestation" in finding.description
+        assert "sbom-verification" in finding.description
 
     def test_attestation_check_with_failed_plugin_fails(self):
         """Attestation check with only failed attestation plugins should fail."""
@@ -1169,7 +1169,7 @@ class TestAttestationCheck:
             "requires_one_of": {
                 "satisfied": False,
                 "passing_plugins": [],
-                "failed_plugins": ["github-attestation"],
+                "failed_plugins": ["sbom-verification"],
             }
         }
         result = assess_sbom(sbom, dependency_status=dependency_status)
@@ -1178,7 +1178,7 @@ class TestAttestationCheck:
         assert finding is not None
         assert finding.status == "fail"
         assert "did not pass" in finding.description
-        assert "github-attestation" in finding.description
+        assert "sbom-verification" in finding.description
 
     def test_attestation_check_no_plugins_run_fails(self):
         """Attestation check with no attestation plugins run should fail."""
@@ -1214,7 +1214,7 @@ class TestAttestationCheck:
         dependency_status = {
             "requires_one_of": {
                 "satisfied": True,
-                "passing_plugins": ["github-attestation", "sigstore-attestation"],
+                "passing_plugins": ["sbom-verification", "sigstore-attestation"],
                 "failed_plugins": [],
             }
         }
@@ -1223,7 +1223,7 @@ class TestAttestationCheck:
         finding = get_finding(result, "bsi-tr03183:attestation-check")
         assert finding is not None
         assert finding.status == "pass"
-        assert "github-attestation" in finding.description
+        assert "sbom-verification" in finding.description
         assert "sigstore-attestation" in finding.description
 
     def test_attestation_check_mixed_passing_and_failing(self):
@@ -1232,7 +1232,7 @@ class TestAttestationCheck:
         dependency_status = {
             "requires_one_of": {
                 "satisfied": True,
-                "passing_plugins": ["github-attestation"],
+                "passing_plugins": ["sbom-verification"],
                 "failed_plugins": ["other-attestation"],
             }
         }
@@ -1241,7 +1241,7 @@ class TestAttestationCheck:
         finding = get_finding(result, "bsi-tr03183:attestation-check")
         assert finding is not None
         assert finding.status == "pass"
-        assert "github-attestation" in finding.description
+        assert "sbom-verification" in finding.description
 
     def test_attestation_check_with_requires_all_ignored(self):
         """Attestation check only uses requires_one_of, ignores requires_all."""
@@ -1250,7 +1250,7 @@ class TestAttestationCheck:
         dependency_status = {
             "requires_one_of": {
                 "satisfied": True,
-                "passing_plugins": ["github-attestation"],
+                "passing_plugins": ["sbom-verification"],
                 "failed_plugins": [],
             },
             "requires_all": {

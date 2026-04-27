@@ -510,8 +510,18 @@ class PluginOrchestrator:
     def _is_passing(self, run: AssessmentRun) -> bool:
         """Check if an assessment run is passing.
 
-        For security plugins: passing means no vulnerabilities found (by_severity all zero).
-        For compliance/other plugins: passing means no failures and no errors.
+        For security plugins: passing means no vulnerabilities found
+        (``by_severity`` all zero).
+
+        For compliance/attestation/other plugins: passing requires no
+        failures, no errors, AND at least one explicit pass. The
+        ``pass_count > 0`` requirement closes a latent hole where a
+        plugin emitting only warnings (e.g., the previous github-attestation
+        plugin returning a "no VCS info" warning) would silently satisfy
+        a ``requires_one_of`` dependency despite never having verified
+        anything. A run that produced only warnings has nothing positive
+        to assert; treating it as passing would let BSI/FDA/etc. dependency
+        gates pass on no evidence.
 
         Args:
             run: The AssessmentRun to check.
@@ -535,7 +545,8 @@ class PluginOrchestrator:
 
         fail_count: int = summary.get("fail_count", 0)
         error_count: int = summary.get("error_count", 0)
-        return fail_count == 0 and error_count == 0
+        pass_count: int = summary.get("pass_count", 0)
+        return fail_count == 0 and error_count == 0 and pass_count > 0
 
     def get_plugin_instance(
         self,
