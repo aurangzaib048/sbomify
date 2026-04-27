@@ -52,12 +52,13 @@ class ScanMode(str, Enum):
     One-shot plugins (e.g., NTIA, checksum, OSV) run ``assess()`` once and
     return a final ``AssessmentResult`` immediately.
 
-    Continuous plugins (e.g., Dependency Track, GitHub Attestation) upload
-    data or call an external service, then raise ``RetryLaterError`` to poll
-    for results over multiple retries. The framework uses this annotation to
-    call ``sync_release_tags()`` after M2M population so the plugin can
-    reconcile downstream state (e.g., DT project version tags). One-shot
-    plugins have no downstream state to reconcile, so the hook is skipped.
+    Continuous plugins (e.g., Dependency Track, SBOM Verification's GitHub
+    attestation lookup) upload data or call an external service, then raise
+    ``RetryLaterError`` to poll for results over multiple retries. The
+    framework uses this annotation to call ``sync_release_tags()`` after
+    M2M population so the plugin can reconcile downstream state (e.g., DT
+    project version tags). One-shot plugins have no downstream state to
+    reconcile, so the hook is skipped.
     """
 
     ONE_SHOT = "one_shot"
