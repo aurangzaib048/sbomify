@@ -433,6 +433,22 @@ class PluginOrchestrator:
             self._sync_run_releases(run, str(run.sbom_id))
 
         logger.info(f"[PLUGIN] finalize_retry_exhausted: marked run {run_id} as COMPLETED with retry-exhausted finding")
+
+        # ``QuerySet.update()`` bypasses Django's ``post_save`` signals, so
+        # the dependent-trigger receiver in ``plugins.signals`` doesn't run
+        # automatically here. Invoke the same helper directly so dependents
+        # (e.g. BSI's attestation gate) refresh after a retry-exhausted
+        # completion the same way they would after a normal completion.
+        try:
+            from .signals import enqueue_dependents_for_completion
+
+            enqueue_dependents_for_completion(run)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                f"[PLUGIN] finalize_retry_exhausted: dependent-trigger cascade failed for run {run_id}",
+                exc_info=True,
+            )
+
         return run
 
     def _sync_run_releases(self, assessment_run: AssessmentRun, sbom_id: str) -> None:

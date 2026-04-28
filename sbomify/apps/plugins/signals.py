@@ -88,10 +88,7 @@ def trigger_assessments_for_existing_sboms(sender: Any, instance: Any, created: 
         )
 
 
-@receiver(post_save, sender=AssessmentRun)
-def trigger_dependents_on_completion(
-    sender: Any, instance: AssessmentRun, created: bool, update_fields: Any = None, **kwargs: Any
-) -> None:
+def enqueue_dependents_for_completion(run: AssessmentRun) -> None:
     """Re-fire dependent plugins when an upstream completes.
 
     Closes the BSI ↔ sbom-verification race: ``BSI.scan_mode == ONE_SHOT``,
@@ -102,42 +99,76 @@ def trigger_dependents_on_completion(
     completed attestation runs. BSI's stored *"No attestation plugin has
     been run for this SBOM"* finding then sits frozen forever.
 
-    When any plugin run flips to ``COMPLETED``, this handler:
+    The handler is exposed as a module-level helper (rather than only
+    living inside the post_save receiver) so completion paths that bypass
+    Django signals — notably ``PluginOrchestrator.finalize_retry_exhausted``
+    which writes ``status=COMPLETED`` via ``QuerySet.update()`` — can
+    still cascade dependents by calling this directly.
 
-    1. Looks up every other enabled plugin whose ``dependencies`` JSON
-       references the just-completed plugin's *category* (e.g. BSI's
-       ``requires_one_of: [{type: category, value: attestation}]``) or
-       its *name*.
-    2. For each dependent, checks the most recent completed run of that
-       dependent on the same SBOM. If that run finished BEFORE this
-       upstream did, the dependent's verdict is provably stale —
-       enqueue a fresh run with ``RunReason.DEPENDENCY_CHANGED``.
-    3. Skips dependents whose latest run started *after* the upstream
-       (so an in-flight retry chain doesn't double-fire).
+    Logic:
 
-    The "earlier completed_at" guard makes the handler idempotent and
-    bounds retriggering: each upstream completion only refreshes
-    dependents whose verdict was actually written before us. A handler
-    invocation triggered by the dependent's own completion sees its
-    own completed_at as the latest and short-circuits (no infinite loop).
+    1. Resolve the SBOM's team and read ``TeamPluginSettings`` —
+       ``RegisteredPlugin.is_enabled`` is the *global* switch, but a
+       team's actual scan set is ``settings.enabled_plugins``. Restricting
+       candidates to that intersection prevents a re-enqueue for plugins
+       a team has explicitly opted out of.
+    2. Look up every dependent in that intersection whose ``dependencies``
+       JSON references the just-completed plugin's *category* or *name*.
+    3. For each dependent, find its latest run on the same SBOM
+       (any status). Three skip conditions:
+
+       a. PENDING/RUNNING latest → a refresh is already in flight,
+          don't double-queue.
+       b. No run at all → ON_UPLOAD's enqueue is already in the queue,
+          don't compete.
+       c. COMPLETED with ``completed_at >= upstream.completed_at`` →
+          dependent already saw an at-least-as-fresh snapshot, no
+          refresh needed (also prevents ping-pong loops when the
+          dependent's own completion fires this handler).
+
+    4. Surviving dependents are enqueued with ``RunReason.DEPENDENCY_CHANGED``
+       and the team's stored ``plugin_config`` for that plugin (so the
+       refresh runs with the same overrides as a normal scan).
     """
-    if instance.status != RunStatus.COMPLETED.value:
+    if run.status != RunStatus.COMPLETED.value:
         return
-    if not instance.completed_at:
+    if not run.completed_at:
         return
 
     # Defer the dependent enqueue to ``on_commit`` so the just-saved row is
     # visible to the dependents' workers. Avoids a race where the dependent
     # re-runs and queries for the upstream that hasn't been committed yet.
-    sbom_id = str(instance.sbom_id)
-    upstream_plugin_name = instance.plugin_name
-    upstream_category = instance.category
-    upstream_completed_at = instance.completed_at
+    sbom_id = str(run.sbom_id)
+    upstream_plugin_name = run.plugin_name
+    upstream_category = run.category
+    upstream_completed_at = run.completed_at
+
+    # Resolve the SBOM's team eagerly while ``run.sbom`` is in scope so the
+    # deferred closure doesn't have to re-traverse the relation.
+    try:
+        team_id = run.sbom.component.team_id
+    except Exception:
+        logger.warning(
+            f"[DEPENDENCY_TRIGGER] Could not resolve team for SBOM {sbom_id}; skipping dependent re-fire",
+            exc_info=True,
+        )
+        return
 
     def _enqueue_dependents() -> None:
-        from .models import RegisteredPlugin
+        from .models import RegisteredPlugin, TeamPluginSettings
 
-        candidates = RegisteredPlugin.objects.filter(is_enabled=True).exclude(name=upstream_plugin_name)
+        team_settings = (
+            TeamPluginSettings.objects.filter(team_id=team_id).only("enabled_plugins", "plugin_configs").first()
+        )
+        team_enabled_plugins = list((team_settings.enabled_plugins if team_settings else None) or [])
+        if not team_enabled_plugins:
+            # The team has opted out of all plugins — nothing to refresh.
+            return
+
+        candidates = RegisteredPlugin.objects.filter(is_enabled=True, name__in=team_enabled_plugins).exclude(
+            name=upstream_plugin_name
+        )
+
         dependents: list[str] = []
         for plugin in candidates:
             deps = plugin.dependencies or {}
@@ -156,39 +187,45 @@ def trigger_dependents_on_completion(
 
         for dep_name in dependents:
             latest = (
-                AssessmentRun.objects.filter(
-                    sbom_id=sbom_id,
-                    plugin_name=dep_name,
-                    status=RunStatus.COMPLETED.value,
-                )
-                .only("plugin_name", "completed_at")
-                .order_by("-completed_at")
+                AssessmentRun.objects.filter(sbom_id=sbom_id, plugin_name=dep_name)
+                .only("plugin_name", "status", "completed_at")
+                .order_by("-created_at")
                 .first()
             )
-            # If the dependent has never completed, ON_UPLOAD already
-            # enqueued a run; let that run on its own schedule rather
-            # than enqueueing a competing task.
+            # If the dependent has never been queued, ON_UPLOAD already
+            # owns the first run; don't compete with that enqueue.
             if latest is None:
                 continue
-            # If the dependent's last verdict is more recent than this
-            # upstream's, its verdict already saw a completed-or-newer
-            # snapshot — no refresh needed. This guard short-circuits
-            # the otherwise-infinite ping-pong when the dependent's
-            # own completion fires this signal.
-            if latest.completed_at and latest.completed_at >= upstream_completed_at:
+            # In-flight refresh wins — a PENDING/RUNNING run will pick
+            # up the newly-completed upstream when it executes, so
+            # don't queue another redundant task.
+            if latest.status in (RunStatus.PENDING.value, RunStatus.RUNNING.value):
                 continue
+            # Skip when the dependent's last completion is at least as
+            # fresh as ours (handles the dependent-completes-after-us
+            # ping-pong case naturally).
+            if (
+                latest.status == RunStatus.COMPLETED.value
+                and latest.completed_at
+                and latest.completed_at >= upstream_completed_at
+            ):
+                continue
+
+            plugin_config = team_settings.get_plugin_config(dep_name) if team_settings is not None else None
 
             logger.info(
                 f"[DEPENDENCY_TRIGGER] Re-enqueueing {dep_name} on SBOM {sbom_id} "
                 f"because upstream {upstream_plugin_name} (category={upstream_category}) "
-                f"completed at {upstream_completed_at.isoformat()} (dependent's last run "
-                f"completed at {latest.completed_at.isoformat() if latest.completed_at else 'unknown'})"
+                f"completed at {upstream_completed_at.isoformat()} "
+                f"(dependent's latest status={latest.status}, "
+                f"completed_at={latest.completed_at.isoformat() if latest.completed_at else 'n/a'})"
             )
             try:
                 enqueue_assessment(
                     sbom_id=sbom_id,
                     plugin_name=dep_name,
                     run_reason=RunReason.DEPENDENCY_CHANGED,
+                    config=plugin_config or None,
                 )
             except Exception:
                 # Re-firing dependents is a best-effort UX refresh — log and
@@ -200,3 +237,16 @@ def trigger_dependents_on_completion(
                 )
 
     run_on_commit(_enqueue_dependents)
+
+
+@receiver(post_save, sender=AssessmentRun)
+def trigger_dependents_on_completion(
+    sender: Any, instance: AssessmentRun, created: bool, update_fields: Any = None, **kwargs: Any
+) -> None:
+    """Wire ``post_save`` on AssessmentRun into the dependent-trigger helper.
+
+    The helper itself is reusable from non-signal paths (e.g.
+    ``finalize_retry_exhausted``'s ``QuerySet.update()`` write that
+    bypasses ``post_save``).
+    """
+    enqueue_dependents_for_completion(instance)
