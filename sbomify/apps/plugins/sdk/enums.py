@@ -91,3 +91,12 @@ class RunReason(str, Enum):
 
     ON_RELEASE_ASSOCIATION = "on_release_association"
     """Triggered because the SBOM was associated with a release via ReleaseArtifact."""
+
+    DEPENDENCY_CHANGED = "dependency_changed"
+    """Triggered because an upstream plugin this run depends on completed
+    AFTER this run's previous evaluation. Fires when a dependent plugin's
+    earlier verdict was based on incomplete dependency-check data — e.g.
+    BSI evaluated ``requires_one_of: attestation`` while
+    sbom-verification was still in its ATTESTATION_DELAY_MS window. The
+    completion-trigger signal handler re-enqueues the dependent so its
+    verdict reflects the now-completed upstream run."""
