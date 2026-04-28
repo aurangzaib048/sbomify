@@ -228,12 +228,32 @@ def run_assessment_task(
                     response["assessment_run_id"] = run_id
                 return response
             else:
-                # All retries exhausted - return graceful failure
+                # All retries exhausted - finalise the run so it leaves PENDING.
+                # Without this step the AssessmentRun row stays stuck on the
+                # last ``status = PENDING`` write the orchestrator made when
+                # propagating the RetryLaterError, which makes the run invisible
+                # to ``_check_one_of`` (filters by status=COMPLETED) and leaves
+                # the SBOM detail page spinning indefinitely.
                 logger.warning(
                     f"[TASK_run_assessment] Transient condition persists for SBOM {sbom_id} "
                     f"(run: {run_id or 'unknown'}) "
-                    f"after {len(RETRY_LATER_DELAYS_MS)} retries. Returning graceful failure."
+                    f"after {len(RETRY_LATER_DELAYS_MS)} retries. Finalising run as completed-with-error."
                 )
+
+                if run_id is not None:
+                    # Retry-exhaustion is meant to be terminal — never let a
+                    # finalisation hiccup (DB blip, JSON serialisation issue,
+                    # etc.) bubble up to the outer ``except Exception`` and
+                    # cause Dramatiq to re-queue the task again. Log and
+                    # carry on; the row stays in PENDING but at least the
+                    # exhaustion event is recorded.
+                    try:
+                        PluginOrchestrator().finalize_retry_exhausted(run_id, str(retry_error))
+                    except Exception as finalize_err:  # noqa: BLE001
+                        logger.error(
+                            f"[TASK_run_assessment] finalize_retry_exhausted failed for run {run_id}: {finalize_err}",
+                            exc_info=True,
+                        )
 
                 response = {
                     "status": "retry_exhausted",
