@@ -77,20 +77,19 @@ def vex_upload(recording_page: Page, component_with_sbom_and_vex: dict) -> None:
     # ── 2. Click into the seeded component ───────────────────────────────
     click_into_row(page, COMPONENT_NAME)
 
-    # ── 3. Scroll to the BOMs table so both artifacts are visible ────────
-    # The table column "Type" renders the bom_type as a coloured badge —
-    # SBOM is blue (tw-badge-info), VEX is amber (tw-badge-warning).
-    bom_type_header = page.locator("text=TYPE").first
-    bom_type_header.wait_for(state="visible", timeout=15_000)
-    bom_type_header.scroll_into_view_if_needed()
+    # ── 3. Find the VEX badge in the BOMs table ──────────────────────────
+    # The bom_type is rendered as a coloured badge in the "Type" column —
+    # SBOM is blue (tw-badge-info), VEX is amber (tw-badge-warning). The
+    # Alpine binding uppercases the text. Wait for the badge directly
+    # rather than the column header (which is hidden under md breakpoints
+    # and the all-caps "TYPE" text matches unrelated code-block tokens
+    # elsewhere on the page).
+    vex_badge = page.locator("span.tw-badge-warning:text-is('VEX')").first
+    vex_badge.wait_for(state="visible", timeout=15_000)
+    vex_badge.scroll_into_view_if_needed()
     pace(page, 1500)
 
     # ── 4. Hover the VEX badge so the cursor draws attention to it ──────
-    # The Alpine binding renders the badge text uppercased ("VEX").
-    vex_badge = page.locator("span.tw-badge-warning:text-is('VEX')").first
-    vex_badge.wait_for(state="visible", timeout=10_000)
-    vex_badge.scroll_into_view_if_needed()
-    pace(page, 600)
     vex_badge.hover()
     pace(page, 1500)
 
