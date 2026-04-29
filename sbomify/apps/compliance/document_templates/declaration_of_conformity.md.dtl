@@ -4,26 +4,20 @@
 
 ## 1. Product Identification
 
-**Name:** {{ product_name }}
-{% if product_description %}
-**Type/Model:** {{ product_description }}
-{% endif %}
-**Unique Identifier:** {{ product_uuid }}
+- **Name:** {{ product_name }}
+- **Unique Identifier:** {{ product_uuid }}
 
 ## 2. Manufacturer
 
-**Name:** {{ manufacturer_name }}
-{% if manufacturer_is_placeholder %}
+- **Name:** {{ manufacturer_name }}
+{% if manufacturer_address %}- **Address:** {{ manufacturer_address }}
+{% endif %}{% if manufacturer_email %}- **Email:** {{ manufacturer_email }}
+{% endif %}{% if manufacturer_website %}- **Website:** {{ manufacturer_website }}
+{% endif %}{% if manufacturer_is_placeholder %}
 > ⚠️  Annex V item 2 requires the manufacturer's legal name. This
 > placeholder MUST be replaced before the declaration is signed —
 > configure the manufacturer entity on the team profile and regenerate
 > the document.
-{% endif %}
-{% if manufacturer_address %}
-**Address:** {{ manufacturer_address }}
-{% endif %}
-{% if manufacturer_website %}
-**Website:** {{ manufacturer_website }}
 {% endif %}
 
 ## 3. Responsibility Statement
@@ -32,7 +26,9 @@ This EU declaration of conformity is issued under the sole responsibility of the
 
 ## 4. Object of Declaration
 
-{{ product_name }}{% if product_description %} — {{ product_description }}{% endif %}
+{{ product_name }}{% if product_description %}
+
+{{ product_description }}{% endif %}
 
 ## 5. Conformity Statement
 
@@ -54,10 +50,9 @@ The object of the declaration described above is in conformity with Regulation (
 
 ## 7. Conformity Assessment
 
-**Product Category:** {{ product_category_display }}
-**Procedure:** {{ conformity_procedure_display }}
-{% if support_period_end %}
-**Support Period Ends:** {{ support_period_end }} (Article 13(8))
+- **Product Category:** {{ product_category_display }}
+- **Procedure:** {{ conformity_procedure_display }}
+{% if support_period_end %}- **Support Period Ends:** {{ support_period_end }} (Article 13(8))
 {% endif %}
 
 ## 8. Supporting Documentation (Annex VII)
