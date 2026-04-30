@@ -2,17 +2,18 @@
 
 Gating matrix the view enforces:
 
-| product.is_public | assessment.status | DoC generated | result |
-| ----------------- | ----------------- | ------------- | ------ |
-| True              | complete          | yes           | 200    |
-| False             | complete          | yes           | 404    |
-| True              | in_progress       | yes           | 404    |
-| True              | complete          | no            | 404    |
-| any               | (no assessment)   | -             | 404    |
+| product.is_public | assessment.status | DoC generated | is_stale | result |
+| ----------------- | ----------------- | ------------- | -------- | ------ |
+| True              | complete          | yes           | False    | 200    |
+| False             | complete          | yes           | False    | 404    |
+| True              | in_progress       | yes           | False    | 404    |
+| True              | complete          | no            | -        | 404    |
+| True              | complete          | yes           | True     | 404    |
+| any               | (no assessment)   | -             | -        | 404    |
 
 The DoC must only surface when every gate passes; partial / draft
-assessments and missing documents must 404 to keep the trust-center
-declaration authoritative.
+assessments, missing documents, and stale documents must all 404 to
+keep the trust-center declaration authoritative.
 """
 
 from __future__ import annotations
@@ -170,9 +171,23 @@ class TestProductDoCPublicView:
 
         assert response.status_code == 404
 
+    def test_404_when_doc_is_stale(self, public_product):
+        """A DoC marked stale by the staleness system is no longer
+        authoritative — the public reader must not surface it even
+        though the assessment is otherwise complete."""
+        assessment = _make_assessment(public_product, status=CRAAssessment.WizardStatus.COMPLETE)
+        doc = _attach_doc(assessment)
+        doc.is_stale = True
+        doc.save(update_fields=["is_stale"])
+
+        with _stub_s3_get_document():
+            response = Client().get(reverse("compliance:product_doc_public", kwargs={"product_id": public_product.id}))
+
+        assert response.status_code == 404
+
 
 class TestInlineMarkupEdgeCases:
-    """Regression tests for ``_inline_markup`` glitches surfaced by the DoC.
+    """Regression tests for ``inline_markup`` glitches surfaced by the DoC.
 
     The DoC has more Markdown metacharacters than the VDP did (glob
     patterns inside code spans, ``***`` thematic breaks), and they
@@ -180,9 +195,9 @@ class TestInlineMarkupEdgeCases:
     """
 
     def test_asterisk_inside_code_span_is_preserved(self):
-        from sbomify.apps.compliance.views.vdp_public import _inline_markup
+        from sbomify.apps.compliance.views._public_helpers import inline_markup
 
-        out = _inline_markup("- `sboms/*.cdx.json` — Software Bill of Materials")
+        out = inline_markup("- `sboms/*.cdx.json` — Software Bill of Materials")
 
         # Whole code span survives; the italic regex must not eat the asterisk.
         assert "<code>sboms/*.cdx.json</code>" in out
@@ -190,25 +205,25 @@ class TestInlineMarkupEdgeCases:
         assert "<em>" not in out
 
     def test_italic_outside_code_span_still_renders(self):
-        from sbomify.apps.compliance.views.vdp_public import _inline_markup
+        from sbomify.apps.compliance.views._public_helpers import inline_markup
 
-        out = _inline_markup("text (*Annex I Part II(1)*)")
+        out = inline_markup("text (*Annex I Part II(1)*)")
 
         assert "<em>Annex I Part II(1)</em>" in out
 
     def test_thematic_break_with_stars(self):
-        from sbomify.apps.compliance.views.vdp_public import _markdown_to_html
+        from sbomify.apps.compliance.views._public_helpers import markdown_to_html
 
-        out = _markdown_to_html("paragraph\n\n***\n\nnext paragraph")
+        out = markdown_to_html("paragraph\n\n***\n\nnext paragraph")
 
         # *** must render as <hr>, not as literal text.
         assert "<hr>" in out
         assert "***" not in out
 
     def test_thematic_break_with_underscores(self):
-        from sbomify.apps.compliance.views.vdp_public import _markdown_to_html
+        from sbomify.apps.compliance.views._public_helpers import markdown_to_html
 
-        out = _markdown_to_html("a\n\n___\n\nb")
+        out = markdown_to_html("a\n\n___\n\nb")
 
         assert "<hr>" in out
         assert "___" not in out

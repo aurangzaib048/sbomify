@@ -238,15 +238,17 @@ class ProductDetailsPublicView(View):
         ).exists()
 
         # Expose the EU Declaration of Conformity only when (a) the
-        # assessment is in ``complete`` status and (b) the DoC has
-        # been rendered. Partial / draft assessments are not
-        # authoritative — surfacing a stale or half-finished DoC on
-        # the public trust center would be misleading to auditors and
-        # customers.
+        # assessment is in ``complete`` status, (b) the DoC has been
+        # rendered, and (c) the DoC has not been flagged stale by a
+        # downstream change (product rename, manufacturer update,
+        # control flip). Partial / draft / stale documents are not
+        # authoritative — surfacing them on the public trust center
+        # would mislead auditors and customers.
         has_doc = CRAGeneratedDocument.objects.filter(
             assessment__product_id=product_obj.id,
             assessment__status=CRAAssessment.WizardStatus.COMPLETE,
             document_kind=CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY,
+            is_stale=False,
         ).exists()
 
         # Fetch public compliance controls for this product (if controls app is available)
