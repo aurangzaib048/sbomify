@@ -38,8 +38,11 @@ def _markdown_to_html(text: str) -> str:
     for line in lines:
         stripped = line.strip()
 
-        # Horizontal rule
-        if re.fullmatch(r"-{3,}", stripped):
+        # Horizontal rule. CommonMark accepts ``---``, ``***``, and ``___``
+        # as thematic breaks; the DoC template uses ``***`` as the
+        # closing rule because ``---`` would be ambiguous with a setext
+        # heading underline when it follows a paragraph.
+        if re.fullmatch(r"-{3,}|\*{3,}|_{3,}", stripped):
             if in_list:
                 result.append("</ul>")
                 in_list = False
@@ -84,9 +87,15 @@ def _markdown_to_html(text: str) -> str:
 
 
 def _inline_markup(text: str) -> str:
-    """Convert inline Markdown: bold, italic, links.
+    """Convert inline Markdown: bold, italic, links, code spans.
 
     URLs are sanitized to only allow http, https, and mailto schemes.
+
+    Code spans are stashed with sentinels before the bold/italic passes
+    run so an asterisk inside a backtick span (e.g. ``sboms/*.cdx.json``)
+    is not eaten by the italic regex. Without this, inline code that
+    contains glob patterns or markdown metacharacters comes out
+    fragmented in the rendered HTML.
     """
 
     def _safe_link(m: re.Match[str]) -> str:
@@ -94,14 +103,26 @@ def _inline_markup(text: str) -> str:
         url = _sanitize_url(m.group(2))
         return f'<a href="{url}" class="text-primary hover:underline">{link_text}</a>'
 
-    # Links: [text](url) — sanitize URL scheme
+    # Links: [text](url) — sanitize URL scheme.
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _safe_link, text)
+
+    # Stash code spans before bold/italic so their contents are not
+    # parsed as Markdown. Sentinel uses NUL bytes which cannot legally
+    # appear in user input.
+    code_spans: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        code_spans.append(m.group(1))
+        return f"\x00CODE{len(code_spans) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", _stash, text)
     # Bold: **text**
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     # Italic: *text*
     text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
-    # Inline code: `text`
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    # Restore code spans now that bold/italic have run.
+    for i, span in enumerate(code_spans):
+        text = text.replace(f"\x00CODE{i}\x00", f"<code>{span}</code>")
     return text
 
 
