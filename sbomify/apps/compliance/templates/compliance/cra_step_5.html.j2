@@ -241,7 +241,13 @@
                                 </div>
                             </template>
                             <template x-if="!isLoadingPreview">
-                                <div class="prose prose-sm max-w-none text-text prose-headings:text-text prose-strong:text-text prose-a:text-primary prose-code:text-text prose-table:text-sm prose-td:py-1 prose-th:py-1 prose-hr:border-border/50"
+                                {% comment %}
+                                prose-code:before/after override strips the literal backticks Tailwind Typography
+                                wraps inline-code spans with. They were rendering as visible characters around
+                                each path in DoC §8 (the markdown emits proper <code> spans; the backticks were
+                                CSS decoration, not template output).
+                                {% endcomment %}
+                                <div class="prose prose-sm max-w-none text-text prose-headings:text-text prose-strong:text-text prose-a:text-primary prose-code:text-text prose-code:before:content-none prose-code:after:content-none prose-table:text-sm prose-td:py-1 prose-th:py-1 prose-hr:border-border/50"
                                      x-html="previewContent"></div>
                             </template>
                         </div>
