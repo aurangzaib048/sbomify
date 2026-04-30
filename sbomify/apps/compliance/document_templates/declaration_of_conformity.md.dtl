@@ -70,11 +70,15 @@ The following artefacts accompanying this declaration demonstrate conformity:
 - `metadata/manifest.json` + `metadata/manifest.sha256` — per-file SHA-256 manifest + self-hash for integrity verification
 
 ---
-**Signed for and on behalf of:**
-**Place:** _______________
-**Date:** {{ date }}
-**Name:** _______________
-**Function:** _______________
-**Signature:** _______________
----
+
+## Signed for and on behalf of the manufacturer
+
+- **Place:** _______________
+- **Date:** {{ date }}
+- **Name:** _______________
+- **Function:** _______________
+- **Signature:** _______________
+
+***
+
 *This declaration is drawn up in accordance with CRA Article 28 and Annex V.*
