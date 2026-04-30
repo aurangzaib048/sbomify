@@ -230,11 +230,23 @@ class ProductDetailsPublicView(View):
         product_tei = build_product_tei_urn(product_obj.uuid, team, is_public=product_obj.is_public) if team else None
 
         # Check if VDP exists for this product
-        from sbomify.apps.compliance.models import CRAGeneratedDocument
+        from sbomify.apps.compliance.models import CRAAssessment, CRAGeneratedDocument
 
         has_vdp = CRAGeneratedDocument.objects.filter(
             assessment__product_id=product_obj.id,
             document_kind=CRAGeneratedDocument.DocumentKind.VDP,
+        ).exists()
+
+        # Expose the EU Declaration of Conformity only when (a) the
+        # assessment is in ``complete`` status and (b) the DoC has
+        # been rendered. Partial / draft assessments are not
+        # authoritative — surfacing a stale or half-finished DoC on
+        # the public trust center would be misleading to auditors and
+        # customers.
+        has_doc = CRAGeneratedDocument.objects.filter(
+            assessment__product_id=product_obj.id,
+            assessment__status=CRAAssessment.WizardStatus.COMPLETE,
+            document_kind=CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY,
         ).exists()
 
         # Fetch public compliance controls for this product (if controls app is available)
@@ -273,6 +285,8 @@ class ProductDetailsPublicView(View):
             "fallback_url": workspace_public_url,
             # VDP availability
             "has_vdp": has_vdp,
+            # Declaration of Conformity availability (CRA Annex V)
+            "has_doc": has_doc,
             "preferred_base_url": build_custom_domain_url(team, "/", request.is_secure()).rstrip("/") if team else "",
             # Compliance controls summary
             "controls_summary": controls_summary,
