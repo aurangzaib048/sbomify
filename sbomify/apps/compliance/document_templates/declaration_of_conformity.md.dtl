@@ -80,11 +80,11 @@ The following artefacts accompanying this declaration demonstrate conformity:
 
 ## Signed for and on behalf of the manufacturer
 
-- **Place:** _______________
+- **Place:** {% if signature_place %}{{ signature_place }}{% else %}_______________{% endif %}
 - **Date:** {{ date }}
-- **Name:** _______________
-- **Function:** _______________
-- **Signature:** _______________
+- **Name:** {% if signature_name %}{{ signature_name }}{% else %}_______________{% endif %}
+- **Function:** {% if signature_function %}{{ signature_function }}{% else %}_______________{% endif %}
+- **Signature:** {% if signature_image %}![Signature]({{ signature_image }}){% else %}_______________{% endif %}
 
 ***
 

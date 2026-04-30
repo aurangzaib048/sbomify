@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 _SAFE_URL_SCHEMES = frozenset(("http", "https", "mailto"))
 
+# Image data URLs from the signature pad are the only ``data:`` scheme
+# we render. Any other ``data:`` (text/html, javascript:, …) would be
+# an XSS vector if the markdown renderer accepted it, so we keep the
+# image handler separate from the link handler and only accept this
+# exact prefix.
+_SAFE_IMAGE_DATA_URL_PREFIX = "data:image/png;base64,"
+
 
 def sanitize_url(url: str) -> str:
     """Only allow safe URL schemes to prevent javascript:/data: XSS."""
@@ -31,6 +38,21 @@ def sanitize_url(url: str) -> str:
     if parsed.scheme not in _SAFE_URL_SCHEMES:
         return "#"
     return url
+
+
+def _safe_image_url(url: str) -> str | None:
+    """Allow http(s) or our scoped ``data:image/png;base64`` payload.
+
+    Returns ``None`` if the URL is not allowable so the caller can drop
+    the image rather than emitting a broken ``<img>`` with a sanitized
+    placeholder.
+    """
+    if url.startswith(_SAFE_IMAGE_DATA_URL_PREFIX):
+        return url
+    parsed = urlparse(url)
+    if parsed.scheme in ("http", "https"):
+        return url
+    return None
 
 
 def markdown_to_html(text: str) -> str:
@@ -118,6 +140,20 @@ def inline_markup(text: str) -> str:
 
     # Stash code spans first so their contents are not re-parsed.
     text = re.sub(r"`([^`]+)`", _stash, text)
+
+    # Images: ![alt](url) — must run BEFORE links because both share
+    # the ``[...](...)`` shape. The DoC uses this to embed the
+    # signature PNG as a ``data:image/png;base64`` URL.
+    def _safe_image(m: re.Match[str]) -> str:
+        alt = m.group(1)
+        url = _safe_image_url(m.group(2))
+        if url is None:
+            # Drop the image entirely rather than emitting a broken
+            # ``<img>``; the alt text becomes ordinary inline copy.
+            return alt
+        return f'<img src="{url}" alt="{alt}" class="inline-block max-h-24">'
+
+    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _safe_image, text)
 
     # Links: [text](url) — sanitize URL scheme.
     def _safe_link(m: re.Match[str]) -> str:

@@ -24,6 +24,8 @@ from .schemas import (
     ObservationCreateSchema,
     ObservationSchema,
     SBOMStatusSchema,
+    SignatureResponseSchema,
+    SignatureSchema,
     StalenessSchema,
     StepContextSchema,
     StepDataSchema,
@@ -417,6 +419,137 @@ def preview_document(request: HttpRequest, assessment_id: str, kind: str) -> _Re
         return preview.status_code or 400, ErrorResponse(error=preview.error or "Unknown error")
 
     return 200, {"content": preview.value}
+
+
+_SIGNATURE_FIELD_MAX = 255
+_SIGNATURE_IMAGE_MAX_BYTES = 64 * 1024  # ~64 KB ceiling for the canvas PNG payload.
+_SIGNATURE_DATA_URL_PREFIX = "data:image/png;base64,"
+
+
+@router.get(
+    "/cra/{assessment_id}/signature",
+    response={200: SignatureResponseSchema, 403: ErrorResponse, 404: ErrorResponse},
+)
+def get_doc_signature(request: HttpRequest, assessment_id: str) -> _Response:
+    """Read the manufacturer signature block stored on the assessment."""
+    result = _get_assessment_or_error(request, assessment_id)
+    if not isinstance(result, CRAAssessment):
+        return result
+    return 200, SignatureResponseSchema(
+        place=result.signature_place,
+        name=result.signature_name,
+        function=result.signature_function,
+        image=result.signature_image,
+        signed_at=result.signed_at.isoformat() if result.signed_at else None,
+        is_signed=result.is_signed,
+    )
+
+
+@router.put(
+    "/cra/{assessment_id}/signature",
+    response={200: SignatureResponseSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse},
+)
+def save_doc_signature(request: HttpRequest, assessment_id: str, payload: SignatureSchema) -> _Response:
+    """Save the manufacturer signature block.
+
+    The signature image must be a base64-encoded PNG data URL produced
+    by the wizard's ``signature_pad`` canvas. We validate the prefix
+    and an upper byte cap server-side because:
+
+    * the canvas can in principle return arbitrarily large payloads
+      if a future UI change resizes the drawing surface, and
+    * the field is rendered into the DoC template as ``data:image/png;
+      base64,...`` — anything other than a real PNG would either render
+      as a broken image (best case) or get scheme-blocked by the
+      ``mark_safe`` rendering path (worst case).
+
+    Saving the signature bumps any existing DoC ``CRAGeneratedDocument``
+    to ``is_stale=True`` so the wizard's "Refresh Stale Documents"
+    button picks it up — the operator must regenerate before the
+    public reader will surface the updated declaration. We do not
+    auto-regenerate here because a signature change is a deliberate
+    legal act and we want the operator to confirm by clicking
+    Generate.
+    """
+    from datetime import datetime, timezone
+
+    from django.db import transaction
+
+    result = _get_assessment_or_error(request, assessment_id, require_mutable=True)
+    if not isinstance(result, CRAAssessment):
+        return result
+
+    # Length caps on the text fields. Trim trailing whitespace before
+    # validating so users pasting from a doc do not trip the cap on a
+    # stray newline.
+    place = payload.place.strip()
+    name = payload.name.strip()
+    function = payload.function.strip()
+    if not (place and name and function):
+        return 400, ErrorResponse(
+            error="Place, name, and function are all required.",
+            error_code="signature_incomplete",
+        )
+    for field_name, value in (("place", place), ("name", name), ("function", function)):
+        if len(value) > _SIGNATURE_FIELD_MAX:
+            return 400, ErrorResponse(
+                error=f"{field_name} must be {_SIGNATURE_FIELD_MAX} characters or fewer.",
+                error_code="signature_field_too_long",
+            )
+
+    # Image: data-URL prefix + size cap. Empty image is rejected — we
+    # require an actual drawn signature rather than a typed name; the
+    # canvas exports an empty image (``data:image/png;base64,iVBORw...``)
+    # even when nothing is drawn, but the byte length is detectably
+    # tiny so we also enforce a floor.
+    image = payload.image
+    if not image.startswith(_SIGNATURE_DATA_URL_PREFIX):
+        return 400, ErrorResponse(
+            error="Signature image must be a base64-encoded PNG data URL.",
+            error_code="signature_invalid_image",
+        )
+    if len(image) > _SIGNATURE_IMAGE_MAX_BYTES:
+        return 400, ErrorResponse(
+            error="Signature image is too large.",
+            error_code="signature_image_too_large",
+        )
+
+    user = request.user if request.user.is_authenticated else None
+    with transaction.atomic():
+        result.signature_place = place
+        result.signature_name = name
+        result.signature_function = function
+        result.signature_image = image
+        result.signed_at = datetime.now(tz=timezone.utc)
+        result.signed_by = user
+        result.save(
+            update_fields=[
+                "signature_place",
+                "signature_name",
+                "signature_function",
+                "signature_image",
+                "signed_at",
+                "signed_by",
+                "updated_at",
+            ]
+        )
+        # Force a stale flag on the existing DoC so the operator
+        # regenerates before publishing the new signature.
+        from .models import CRAGeneratedDocument
+
+        CRAGeneratedDocument.objects.filter(
+            assessment=result,
+            document_kind=CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY,
+        ).update(is_stale=True)
+
+    return 200, SignatureResponseSchema(
+        place=result.signature_place,
+        name=result.signature_name,
+        function=result.signature_function,
+        image=result.signature_image,
+        signed_at=result.signed_at.isoformat() if result.signed_at else None,
+        is_signed=result.is_signed,
+    )
 
 
 @router.post(

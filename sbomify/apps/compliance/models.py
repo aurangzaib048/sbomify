@@ -324,6 +324,36 @@ class CRAAssessment(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
 
+    # ── Signature block (Annex V Section 8) ───────────────────────────
+    # Captured once via the wizard's signature pad; stored alongside
+    # the assessment so the DoC template can render filled values
+    # instead of underscore placeholders. ``signature_image`` carries a
+    # base64-encoded PNG data URL (size-capped at the API layer; small
+    # canvases produce <30 KB output).
+    signature_place = models.CharField(max_length=255, blank=True, default="")
+    signature_name = models.CharField(max_length=255, blank=True, default="")
+    signature_function = models.CharField(max_length=255, blank=True, default="")
+    signature_image = models.TextField(blank=True, default="")
+    signed_at = models.DateTimeField(null=True, blank=True)
+    signed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="User who saved the signature on this assessment.",
+    )
+
+    @property
+    def is_signed(self) -> bool:
+        """Whether the manufacturer signature block is fully captured.
+
+        Returns True only when every Annex V field (place, name,
+        function, signature image) is present. Date is automatic so
+        it's not part of the gate.
+        """
+        return bool(self.signature_place and self.signature_name and self.signature_function and self.signature_image)
+
     def __str__(self) -> str:
         return f"CRA Assessment for {self.product} ({self.status})"
 
