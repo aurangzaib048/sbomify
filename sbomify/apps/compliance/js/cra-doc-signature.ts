@@ -40,7 +40,7 @@ function craDocSignature() {
     pad: null as SignaturePad | null,
     place: '',
     name: '',
-    function: '',
+    roleFunction: '',
     image: '',
     signedAt: null as string | null,
     isSigned: false,
@@ -92,7 +92,10 @@ function craDocSignature() {
         const data = (await resp.json()) as SignatureResponse;
         this.place = data.place || '';
         this.name = data.name || '';
-        this.function = data.function || '';
+        // ``function`` is a reserved JS word; locally we use ``roleFunction``
+        // so ``x-model="..."`` Alpine expressions don't choke. The wire
+        // payload still uses ``function`` so the API key matches CRA Annex V.
+        this.roleFunction = data.function || '';
         this.image = data.image || '';
         this.signedAt = data.signed_at;
         this.isSigned = data.is_signed;
@@ -112,7 +115,7 @@ function craDocSignature() {
 
     async save(): Promise<void> {
       if (this.isSaving) return;
-      if (!this.place.trim() || !this.name.trim() || !this.function.trim()) {
+      if (!this.place.trim() || !this.name.trim() || !this.roleFunction.trim()) {
         showError('Place, name, and function are all required.');
         return;
       }
@@ -134,7 +137,7 @@ function craDocSignature() {
           body: JSON.stringify({
             place: this.place.trim(),
             name: this.name.trim(),
-            function: this.function.trim(),
+            function: this.roleFunction.trim(),
             image,
           }),
         });
