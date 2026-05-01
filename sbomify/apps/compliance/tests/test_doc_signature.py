@@ -100,6 +100,27 @@ class TestSignatureProperty:
         assessment.signature_image = _TINY_PNG_DATA_URL
         assert assessment.is_signed
 
+    def test_is_signed_rejects_whitespace_only_text(self, assessment):
+        """If a field gets populated outside the API (admin shell,
+        manual SQL, future migration) with whitespace only, the
+        property must NOT report the assessment as signed — otherwise
+        the DoC template would render with a blank place/name/etc."""
+        assessment.signature_place = "   "
+        assessment.signature_name = "Rana"
+        assessment.signature_function = "Maintainer"
+        assessment.signature_image = _TINY_PNG_DATA_URL
+        assert not assessment.is_signed
+
+    def test_is_signed_rejects_image_prefix_with_no_payload(self, assessment):
+        """Image string starting with the data-URL prefix but carrying
+        no base64 payload (a stub) must NOT count as signed. Mirrors
+        the API-layer rejection."""
+        assessment.signature_place = "Berlin"
+        assessment.signature_name = "Rana"
+        assessment.signature_function = "Maintainer"
+        assessment.signature_image = "data:image/png;base64,"
+        assert not assessment.is_signed
+
 
 class TestSignatureGet:
     def test_unsigned_returns_empty_strings(self, assessment, web_client):
@@ -185,8 +206,13 @@ class TestSignaturePut:
         assert body["error_code"] == "signature_invalid_image"
 
     def test_rejects_oversized_image(self, assessment, web_client):
-        # Pad the data URL beyond the 64 KB cap.
-        big = "data:image/png;base64," + ("A" * (70 * 1024))
+        # Build a PNG-prefixed payload whose *decoded* size exceeds the
+        # 64 KB cap. The previous form padded the base64 string with
+        # ``A`` only, which now fails the earlier PNG-magic check
+        # before the size cap fires; constructing real PNG-magic-prefixed
+        # bytes exercises the size-cap branch we actually care about.
+        big_bytes = _TINY_PNG_BYTES + b"\x00" * (70 * 1024)
+        big = "data:image/png;base64," + base64.b64encode(big_bytes).decode("ascii")
         status, body = _put(
             web_client,
             assessment.id,
@@ -194,6 +220,59 @@ class TestSignaturePut:
         )
         assert status == 400
         assert body["error_code"] == "signature_image_too_large"
+
+    def test_rejects_empty_base64_payload(self, assessment, web_client):
+        """A bare prefix with no base64 body must be rejected — the
+        previous validation accepted it because the string still
+        ``startswith`` the prefix."""
+        status, body = _put(
+            web_client,
+            assessment.id,
+            {
+                "place": "Berlin",
+                "name": "Rana",
+                "function": "Maintainer",
+                "image": "data:image/png;base64,",
+            },
+        )
+        assert status == 400
+        assert body["error_code"] == "signature_invalid_image"
+
+    def test_rejects_invalid_base64(self, assessment, web_client):
+        """Bytes that look like base64 but contain illegal characters
+        (e.g. control bytes from a corrupted upload) must be rejected
+        before the PNG-magic check."""
+        status, body = _put(
+            web_client,
+            assessment.id,
+            {
+                "place": "Berlin",
+                "name": "Rana",
+                "function": "Maintainer",
+                "image": "data:image/png;base64,!!!not-base64!!!",
+            },
+        )
+        assert status == 400
+        assert body["error_code"] == "signature_invalid_image"
+
+    def test_rejects_non_png_bytes(self, assessment, web_client):
+        """Valid base64 of arbitrary bytes (e.g. JPEG, HTML, plain
+        text) must be rejected. Without the PNG-magic check the DoC
+        renderer / WeasyPrint would later trip on the wrong format."""
+        # ``Hello, world!`` is plainly not a PNG.
+        not_png = base64.b64encode(b"Hello, world!").decode("ascii")
+        status, body = _put(
+            web_client,
+            assessment.id,
+            {
+                "place": "Berlin",
+                "name": "Rana",
+                "function": "Maintainer",
+                "image": "data:image/png;base64," + not_png,
+            },
+        )
+        assert status == 400
+        assert body["error_code"] == "signature_invalid_image"
 
 
 class TestDoCTemplateSignatureBlock:
@@ -252,3 +331,23 @@ class TestImageRendering:
 
         out = inline_markup("![logo](https://example.com/logo.png)")
         assert '<img src="https://example.com/logo.png"' in out
+
+    def test_alt_and_link_text_are_html_escaped(self):
+        """Direct callers (tests, future helpers) might pass un-escaped
+        markdown into ``inline_markup`` — defensively HTML-escape the
+        alt/link text and the URL inside ``<img>`` / ``<a>`` so a
+        literal ``"`` or ``>`` can't break out of the attribute / tag
+        even when the caller skipped the outer ``html.escape`` pass."""
+        from sbomify.apps.compliance.views._public_helpers import inline_markup
+
+        out = inline_markup('[click "me" >](https://example.com)')
+        # Must NOT carry a raw ``"`` inside the link text (would break
+        # the attribute) or a raw ``>`` (would close the opening tag).
+        assert 'click "me"' not in out
+        assert "click &quot;me&quot;" in out
+        assert "&gt;" in out
+
+        # Same for image alt: ``"alt with quote"`` must be escaped.
+        img = inline_markup('![alt "x"](https://example.com/x.png)')
+        assert 'alt with raw "' not in img
+        assert "&quot;" in img

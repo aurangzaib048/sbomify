@@ -75,16 +75,19 @@ _MANIFEST_FORMAT_VERSION = "1.2"
 # Human-readable PDF document titles per CRA document kind. Used as
 # the ``<title>`` of the rendered PDF (the PDF reader's tab/header)
 # and in the worker logs when a render fails so the operator can
-# tell which document broke without grepping the manifest.
-_DOC_PDF_TITLE: dict[str, str] = {
-    "vdp": "Vulnerability Disclosure Policy",
-    "risk_assessment": "CRA Risk Assessment",
-    "user_instructions": "User Instructions (Annex II)",
-    "decommissioning_guide": "Secure Decommissioning Guide",
-    "early_warning": "CRA Article 14 — Early Warning",
-    "full_notification": "CRA Article 14 — Vulnerability Notification",
-    "final_report": "CRA Article 14 — Final Report",
-    "declaration_of_conformity": "EU Declaration of Conformity",
+# tell which document broke without grepping the manifest. Keyed by
+# the ``DocumentKind`` enum (rather than raw string literals) so a
+# rename of the choice value gets a hard mypy / typo error here
+# instead of silently dropping the entry on a stale string match.
+_DOC_PDF_TITLE: dict[CRAGeneratedDocument.DocumentKind, str] = {
+    CRAGeneratedDocument.DocumentKind.VDP: "Vulnerability Disclosure Policy",
+    CRAGeneratedDocument.DocumentKind.RISK_ASSESSMENT: "CRA Risk Assessment",
+    CRAGeneratedDocument.DocumentKind.USER_INSTRUCTIONS: "User Instructions (Annex II)",
+    CRAGeneratedDocument.DocumentKind.DECOMMISSIONING_GUIDE: "Secure Decommissioning Guide",
+    CRAGeneratedDocument.DocumentKind.EARLY_WARNING: "CRA Article 14 — Early Warning",
+    CRAGeneratedDocument.DocumentKind.FULL_NOTIFICATION: "CRA Article 14 — Vulnerability Notification",
+    CRAGeneratedDocument.DocumentKind.FINAL_REPORT: "CRA Article 14 — Final Report",
+    CRAGeneratedDocument.DocumentKind.DECLARATION_OF_CONFORMITY: "EU Declaration of Conformity",
 }
 
 
@@ -280,7 +283,14 @@ def build_export_package(
                 cra_ref = _DOC_CRA_REF.get(doc.document_kind, "")
                 full_path = f"{prefix}/{zip_path}"
                 if zip_path.endswith(".md"):
-                    pdf_title = _DOC_PDF_TITLE.get(doc.document_kind, doc.document_kind)
+                    # ``document_kind`` is a ``CharField(choices=...)`` so the
+                    # raw value is a plain ``str``; convert to the enum so
+                    # ``_DOC_PDF_TITLE`` (keyed by enum) resolves cleanly.
+                    # ``DocumentKind(doc.document_kind)`` is safe here
+                    # because ``_DOC_PATH_MAP`` already filtered out any
+                    # unrecognised kind via the earlier ``continue``.
+                    enum_kind = CRAGeneratedDocument.DocumentKind(doc.document_kind)
+                    pdf_title = _DOC_PDF_TITLE.get(enum_kind, doc.document_kind)
                     _write_md_with_pdf(zf, full_path, content, manifest_files, cra_ref, pdf_title=pdf_title)
                 else:
                     _write_to_zip(zf, full_path, content, manifest_files, cra_ref)

@@ -179,6 +179,15 @@
                                     class="tw-btn-secondary w-full">
                                 <i class="fas fa-eye mr-2"></i> Preview Declaration of Conformity
                             </button>
+                            {# On-demand DoC PDF — sidesteps the full bundle export when an auditor or notified body just wants the signed Article 28 declaration as a PDF #}
+                            <button type="button"
+                                    @click="downloadDocumentPdf('declaration_of_conformity', 'Declaration of Conformity')"
+                                    :disabled="downloadingDocPdf"
+                                    data-testid="download-doc-pdf-btn"
+                                    class="tw-btn-secondary w-full">
+                                <span x-show="!downloadingDocPdf"><i class="fas fa-file-pdf mr-2"></i> Download Declaration of Conformity (PDF)</span>
+                                <span x-show="downloadingDocPdf" x-cloak><i class="fas fa-spinner fa-spin mr-2"></i> Preparing PDF…</span>
+                            </button>
                             <button @click="exportBundle()"
                                     :disabled="isExporting || !exportAvailable"
                                     class="tw-btn-primary w-full">

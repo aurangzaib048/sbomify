@@ -28,6 +28,7 @@ of truth that auditors verify against the manifest hash.
 
 from __future__ import annotations
 
+import html
 import logging
 from typing import cast
 
@@ -141,9 +142,11 @@ def _wrap_html(body_html: str, *, title: str) -> str:
     its CSS resolution starts from a known root. The title goes into
     the document metadata (visible in PDF readers' tab/title bar) and
     is also a useful breadcrumb for the auditor opening dozens of
-    bundles in sequence.
+    bundles in sequence. We HTML-escape the title in full (not just
+    ``</``) so a hostile or malformed value can't break out of the
+    ``<title>`` element via ``<``, ``>`` or ``&``.
     """
-    safe_title = title.replace("</", "<\\/")
+    safe_title = html.escape(title or "Document", quote=False)
     return (
         "<!doctype html>"
         f'<html lang="en"><head><meta charset="utf-8"><title>{safe_title}</title>'

@@ -348,11 +348,24 @@ class CRAAssessment(models.Model):
     def is_signed(self) -> bool:
         """Whether the manufacturer signature block is fully captured.
 
-        Returns True only when every Annex V field (place, name,
-        function, signature image) is present. Date is automatic so
-        it's not part of the gate.
+        Mirrors the API's signing rules so that records populated outside
+        the API (admin, manual SQL, future migration) don't render as
+        "signed" when they have only whitespace text or a stub image
+        with no payload. Returns ``True`` only when:
+
+        - every Annex V text field is non-empty after stripping
+        - ``signature_image`` carries a non-empty payload after the
+          ``data:image/png;base64,`` prefix
+
+        Date is automatic so it's not part of the gate.
         """
-        return bool(self.signature_place and self.signature_name and self.signature_function and self.signature_image)
+        text_fields_ok = all(
+            (getattr(self, name) or "").strip() for name in ("signature_place", "signature_name", "signature_function")
+        )
+        image = self.signature_image or ""
+        prefix = "data:image/png;base64,"
+        image_has_payload = image.startswith(prefix) and len(image) > len(prefix)
+        return text_fields_ok and image_has_payload
 
     def __str__(self) -> str:
         return f"CRA Assessment for {self.product} ({self.status})"

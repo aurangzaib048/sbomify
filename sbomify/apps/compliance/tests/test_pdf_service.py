@@ -40,6 +40,14 @@ _TINY_PNG_BYTES = base64.b64decode(
 _TINY_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(_TINY_PNG_BYTES).decode("ascii")
 
 
+@pytest.fixture(autouse=True)
+def _disable_billing(settings):
+    """The CRA endpoints sit behind a Business-plan billing gate. Test
+    teams don't have a subscription so disable the gate at the
+    settings level — same pattern as ``test_doc_signature.py``."""
+    settings.BILLING = False
+
+
 class TestMarkdownToPdf:
     def test_returns_pdf_bytes_for_simple_markdown(self):
         pdf = markdown_to_pdf("# Hello\n\nA paragraph.", title="Smoke Test")
@@ -91,6 +99,24 @@ class TestMarkdownToPdf:
             {"weasyprint": None},  # forces ImportError on ``from weasyprint import HTML``
         ):
             assert markdown_to_pdf("# Anything", title="x") is None
+
+    def test_wrap_html_escapes_title_fully(self):
+        """The previous title sanitization only escaped ``</`` so a
+        title carrying ``<``, ``>``, or ``&`` would still escape into
+        the ``<title>`` element. Run the wrapper directly and verify
+        the escape covers all three."""
+        from sbomify.apps.compliance.services.pdf_service import _wrap_html
+
+        out = _wrap_html("<p>body</p>", title='Risky <script>"&" Title')
+        # Raw ``<`` MUST NOT appear inside the ``<title>`` element.
+        # We assert on the substring after ``<title>`` so the matcher
+        # doesn't trip on ``<title>`` itself.
+        title_open = out.index("<title>") + len("<title>")
+        title_close = out.index("</title>")
+        title_body = out[title_open:title_close]
+        assert "<script>" not in title_body
+        assert "&lt;script&gt;" in title_body
+        assert "&amp;" in title_body
 
     def test_returns_none_when_render_raises(self):
         """A WeasyPrint runtime failure (broken font config, malformed
@@ -153,6 +179,98 @@ def capturing_s3():
     with patch("sbomify.apps.compliance.services.export_service.S3Client") as mock_s3_cls:
         mock_s3_cls.return_value = _Capture()
         yield captured
+
+
+@pytest.mark.django_db
+class TestDownloadDocumentPdfEndpoint:
+    """Direct ``GET /api/v1/compliance/cra/<id>/documents/<kind>/download``
+    coverage. Endpoint reuses ``markdown_to_pdf``; tests focus on the
+    HTTP contract (status, Content-Type, attachment header, filename
+    convention, 503 fallback when renderer is unavailable)."""
+
+    def test_returns_pdf_with_attachment_disposition(
+        self, sample_team_with_owner_member, sample_user
+    ):
+        from django.test import Client
+
+        from sbomify.apps.compliance.services.document_generation_service import regenerate_all
+        from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
+        from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
+        from sbomify.apps.teams.models import ContactEntity, ContactProfile
+
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="DL Acme",
+            email="info@dl.test",
+            address="1 DL Way",
+            is_manufacturer=True,
+        )
+        product = Product.objects.create(name="Download Test", team=team)
+        ares = get_or_create_assessment(product.id, sample_user, team)
+        with patch("sbomify.apps.core.object_store.S3Client"):
+            regenerate_all(ares.value)
+
+        client = Client()
+        client.force_login(sample_user)
+        setup_authenticated_client_session(client, team, sample_user)
+
+        with patch("sbomify.apps.core.object_store.S3Client"):
+            resp = client.get(
+                f"/api/v1/compliance/cra/{ares.value.id}/documents/declaration_of_conformity/download"
+            )
+
+        assert resp.status_code == 200
+        assert resp["Content-Type"] == "application/pdf"
+        disposition = resp["Content-Disposition"]
+        assert disposition.startswith("attachment;")
+        # Filename slug must match the bundle layout (kebab-case .pdf)
+        # so a manually-downloaded copy lands in Downloads with the
+        # same name an auditor sees inside the bundle ZIP.
+        assert 'filename="declaration-of-conformity.pdf"' in disposition
+        assert resp.content.startswith(b"%PDF-")
+
+    def test_503_when_pdf_renderer_unavailable(
+        self, sample_team_with_owner_member, sample_user
+    ):
+        """Distroless prod without Pango: ``markdown_to_pdf`` returns
+        ``None`` and the endpoint must surface that as a 503 with a
+        ``pdf_renderer_unavailable`` error_code so the client can fall
+        back to the markdown preview without a confusing 500."""
+        from django.test import Client
+
+        from sbomify.apps.compliance.services.document_generation_service import regenerate_all
+        from sbomify.apps.compliance.services.wizard_service import get_or_create_assessment
+        from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
+        from sbomify.apps.teams.models import ContactEntity, ContactProfile
+
+        team = sample_team_with_owner_member.team
+        profile = ContactProfile.objects.create(name="Default", team=team, is_default=True)
+        ContactEntity.objects.create(
+            profile=profile,
+            name="DL Acme",
+            email="info@dl.test",
+            is_manufacturer=True,
+        )
+        product = Product.objects.create(name="Download 503", team=team)
+        ares = get_or_create_assessment(product.id, sample_user, team)
+        with patch("sbomify.apps.core.object_store.S3Client"):
+            regenerate_all(ares.value)
+
+        client = Client()
+        client.force_login(sample_user)
+        setup_authenticated_client_session(client, team, sample_user)
+
+        with patch("sbomify.apps.compliance.services.pdf_service.markdown_to_pdf", return_value=None):
+            with patch("sbomify.apps.core.object_store.S3Client"):
+                resp = client.get(
+                    f"/api/v1/compliance/cra/{ares.value.id}/documents/declaration_of_conformity/download"
+                )
+
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["error_code"] == "pdf_renderer_unavailable"
 
 
 @pytest.mark.django_db
