@@ -18,33 +18,28 @@ This assessment evaluates the cybersecurity risks associated with {{ product_nam
 
 ### 2.1 Security by Design
 
-| Control | Status | Notes |
-|---------|--------|-------|
-{% for finding in sd_findings %}| {{ finding.title }} | {{ finding.status }} | {{ finding.notes }} |
+{% for finding in sd_findings %}- **{{ finding.title }}** — _{{ finding.status }}_{% if finding.notes %}
+  {{ finding.notes }}{% endif %}
 {% endfor %}
 ### 2.2 Data Protection
 
-| Control | Status | Notes |
-|---------|--------|-------|
-{% for finding in dp_findings %}| {{ finding.title }} | {{ finding.status }} | {{ finding.notes }} |
+{% for finding in dp_findings %}- **{{ finding.title }}** — _{{ finding.status }}_{% if finding.notes %}
+  {{ finding.notes }}{% endif %}
 {% endfor %}
 ### 2.3 Availability & Resilience
 
-| Control | Status | Notes |
-|---------|--------|-------|
-{% for finding in av_findings %}| {{ finding.title }} | {{ finding.status }} | {{ finding.notes }} |
+{% for finding in av_findings %}- **{{ finding.title }}** — _{{ finding.status }}_{% if finding.notes %}
+  {{ finding.notes }}{% endif %}
 {% endfor %}
 ### 2.4 Monitoring & Logging
 
-| Control | Status | Notes |
-|---------|--------|-------|
-{% for finding in mn_findings %}| {{ finding.title }} | {{ finding.status }} | {{ finding.notes }} |
+{% for finding in mn_findings %}- **{{ finding.title }}** — _{{ finding.status }}_{% if finding.notes %}
+  {{ finding.notes }}{% endif %}
 {% endfor %}
 ### 2.5 Vulnerability Handling
 
-| Control | Status | Notes |
-|---------|--------|-------|
-{% for finding in vh_findings %}| {{ finding.title }} | {{ finding.status }} | {{ finding.notes }} |
+{% for finding in vh_findings %}- **{{ finding.title }}** — _{{ finding.status }}_{% if finding.notes %}
+  {{ finding.notes }}{% endif %}
 {% endfor %}
 ## 3. Summary
 
@@ -58,6 +53,5 @@ This assessment evaluates the cybersecurity risks associated with {{ product_nam
 
 {% if support_period_end %}**Support until:** {{ support_period_end }}
 {% else %}**Support period:** [To be determined]
-{% endif %}
----
+{% endif %}---
 *This risk assessment is prepared in accordance with CRA Annex VII, Section 3.*
