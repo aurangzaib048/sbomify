@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import typing
+from datetime import timedelta
 from time import time
 from typing import Any
 from uuid import uuid4
@@ -9,6 +12,8 @@ import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.db.models import Q
+from django.utils import timezone
 from jwt.exceptions import DecodeError, InvalidTokenError
 
 from sbomify import logging
@@ -17,6 +22,52 @@ if typing.TYPE_CHECKING:
     from .models import AccessToken
 
 log = logging.getLogger(__name__)
+
+# Append-only forensic trail of PAT/OIDC authentication outcomes. Structured
+# logging (not a table): retention is the log pipeline's job, and failure events
+# are unbounded/attacker-driftable. last_used_at stays the queryable "last seen".
+audit_log = logging.getLogger("audit.token_auth")  # -> "sbomify.audit.token_auth"
+
+
+def _token_fingerprint(token: str) -> str:
+    """Non-reversible short fingerprint, for attributing failures without the raw token."""
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
+def _emit_token_auth_event(
+    outcome: str,
+    *,
+    token: str,
+    reason: str | None = None,
+    record: AccessToken | None = None,
+    user_id: str | None = None,
+    source_ip: str | None = None,
+    attempted_action: str | None = None,
+) -> None:
+    """Emit one structured token-auth audit event. Never logs the raw token: every
+    event carries a non-reversible fingerprint, and events with a resolved DB record
+    (success, DB-row expiry) additionally carry the token id."""
+    extra = {
+        "event": "token_auth",
+        "outcome": outcome,
+        "reason": reason,
+        "token_id": str(record.pk) if record is not None else None,
+        "token_fingerprint": _token_fingerprint(token),
+        "user_id": user_id,
+        # Keep None (JSON null) for a team-less token rather than the string "None".
+        "team_id": str(record.team_id) if record is not None and record.team_id is not None else None,
+        "source_ip": source_ip,
+        "attempted_action": attempted_action,
+    }
+    # The default console formatter renders only %(message)s and drops `extra`, so
+    # serialize the fields into the message as JSON too — otherwise operators see no
+    # detail in container logs. A structured handler can still consume `extra`.
+    detail = json.dumps({k: v for k, v in extra.items() if k != "event"}, default=str)
+    # Expected end-of-life (expired) and success are INFO; genuine rejections WARNING.
+    if outcome == "success" or reason == "expired":
+        audit_log.info("token_auth %s", detail, extra=extra)
+    else:
+        audit_log.warning("token_auth %s", detail, extra=extra)
 
 
 # Token-type sentinels embedded in the JWT payload so the decoder can
@@ -27,6 +78,14 @@ log = logging.getLogger(__name__)
 # its JWT claims (it'll fail the ``exp`` and ``aud`` checks).
 TOKEN_TYPE_PAT = "pat"  # nosec B105 — token-type sentinel, not a credential
 TOKEN_TYPE_OIDC = "oidc"  # nosec B105 — token-type sentinel, not a credential
+
+# Forward clock-skew tolerance for last_used_at (#1044). A value up to this far
+# ahead of our clock is treated as a concurrent worker's lead-clock write, not a
+# stale value, so we never write an EARLIER time back over a newer one. Kept
+# SEPARATE from the throttle window so even throttle=0 (write-every-request)
+# still tolerates skew. Only a value beyond this is "broken clock / manual edit"
+# and gets recovered. Matches the 60s OIDC clock-skew convention.
+_LAST_USED_FORWARD_SKEW = timedelta(seconds=60)
 
 
 def create_personal_access_token(
@@ -200,7 +259,9 @@ def get_user_from_personal_access_token(token: str) -> AbstractBaseUser | None:
         return None
 
 
-def get_user_and_token_record(token: str) -> tuple[AbstractBaseUser | None, AccessToken | None]:
+def get_user_and_token_record(
+    token: str, *, source_ip: str | None = None, attempted_action: str | None = None
+) -> tuple[AbstractBaseUser | None, AccessToken | None]:
     """Get user and AccessToken DB record from a personal access token.
 
     Rejection points, in evaluation order:
@@ -229,27 +290,53 @@ def get_user_and_token_record(token: str) -> tuple[AbstractBaseUser | None, Acce
     """
     from .models import AccessToken
 
+    def emit(
+        outcome: str, *, reason: str | None = None, record: AccessToken | None = None, user_id: str | None = None
+    ) -> None:
+        _emit_token_auth_event(
+            outcome,
+            token=token,
+            reason=reason,
+            record=record,
+            user_id=user_id,
+            source_ip=source_ip,
+            attempted_action=attempted_action,
+        )
+
     try:
         payload = decode_personal_access_token(token)
     except DecodeError as e:
+        # An OIDC JWT past its exp surfaces here as DecodeError raised from
+        # jwt.ExpiredSignatureError — classify it as an expiry (INFO), not a
+        # generic decode failure (WARNING), matching the DB-row expiry path.
+        if isinstance(e.__cause__, jwt.ExpiredSignatureError):
+            # decode_personal_access_token already logged the routine expiry; just
+            # record the audit event (also INFO) without duplicating that line.
+            emit("failure", reason="expired")
+            return None, None
         log.warning(f"Failed to decode token: {str(e)}")
+        emit("failure", reason="decode")
         return None, None
 
+    user_id = str(payload.get("sub", ""))
     try:
-        user_id = str(payload["sub"])
         # Filter on liveness too: a soft-deleted or deactivated user must
         # NOT be able to authenticate via a still-DB-persisted token. This
         # matters most for OIDC bot users — deleting the bot has to revoke
         # in-flight credentials immediately, not at TTL expiry — and for any
         # admin-driven user deactivation flow.
         user = get_user_model().objects.get(id=user_id, is_active=True, deleted_at__isnull=True)
-    except get_user_model().DoesNotExist as e:
+    except (get_user_model().DoesNotExist, ValueError, TypeError) as e:
+        # ValueError/TypeError: a missing or non-PK-shaped ``sub`` (e.g. ""/non-numeric
+        # against an integer PK) — fail cleanly with an audit event, never a 500.
         log.warning("No live user found for token (user_id=%s): %s", user_id, str(e))
+        emit("failure", reason="user_inactive_or_missing", user_id=user_id)
         return None, None
 
     access_token_record = AccessToken.objects.filter(user=user, encoded_token=token).select_related("team").first()
     if access_token_record is None:
         log.warning(f"No DB record found for token belonging to user {user_id}")
+        emit("failure", reason="no_token_record", user_id=user_id)
         return None, None
 
     if access_token_record.is_expired:
@@ -261,6 +348,41 @@ def get_user_and_token_record(token: str) -> tuple[AbstractBaseUser | None, Acce
             access_token_record.pk,
             access_token_record.expires_at,
         )
+        emit("failure", reason="expired", record=access_token_record, user_id=user_id)
         return None, None
 
+    # Stamp last-used for stale/leaked-token visibility (#1044). Only valid,
+    # non-expired tokens reach here. The SELECT value short-circuits the common
+    # case (no round-trip when it's genuinely fresh), but the throttle is ALSO
+    # enforced in the UPDATE's WHERE so a concurrent worker that already refreshed
+    # the row wins: the conditional update writes at most once per window and the
+    # in-memory record is refreshed only when this request actually wrote it.
+    now = timezone.now()
+    throttle = settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS
+    cutoff = now - timedelta(seconds=throttle)
+    far_future = now + _LAST_USED_FORWARD_SKEW
+    last_used = access_token_record.last_used_at
+    # "Fresh" = within [cutoff, far_future]: recently stamped, OR stamped slightly
+    # ahead by a concurrent worker whose clock leads ours (forward-skew tolerance,
+    # so we never write an EARLIER time back over a newer one). The skew bound is
+    # independent of the throttle window, so throttle=0 still tolerates skew.
+    # Refresh on NULL, stale (< cutoff), or genuinely-far-future (> now + skew,
+    # i.e. a broken clock / manual edit that would otherwise freeze the field).
+    is_fresh = last_used is not None and cutoff <= last_used <= far_future
+    if not is_fresh:
+        updated = (
+            AccessToken.objects.filter(pk=access_token_record.pk)
+            .filter(Q(last_used_at__isnull=True) | Q(last_used_at__lt=cutoff) | Q(last_used_at__gt=far_future))
+            .update(last_used_at=now)
+        )
+        if updated:
+            access_token_record.last_used_at = now  # we wrote it; mirror in memory
+        else:
+            # updated == 0 means a concurrent worker refreshed the row between our
+            # SELECT and this UPDATE. Mirror the persisted value so the returned
+            # record isn't stale. This extra read only happens in that rare race,
+            # never on the common (fresh or we-wrote-it) paths.
+            access_token_record.refresh_from_db(fields=["last_used_at"])
+
+    emit("success", record=access_token_record, user_id=user_id)
     return user, access_token_record

@@ -559,6 +559,14 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        # Token-auth audit trail (sbomify.audit.*). Pinned to INFO independent of
+        # LOG_LEVEL so the success/expired events stay in the forensic record even
+        # when the general log level is raised to WARNING.
+        "sbomify.audit": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "core": {
             "handlers": ["console"],
             "level": "DEBUG",
@@ -773,6 +781,16 @@ JWT_ISSUER = os.environ.get("JWT_ISSUER", "sbomify")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "sbomify")
 
+# Per-token API rate limit (#1060): a django-ninja "<count>/<period>" string applied
+# per AccessToken pk. Generous enough for CI bursts while capping a leaked/runaway
+# token; tighten via the env var. Effectively a no-op under DEBUG (DummyCache).
+API_TOKEN_RATE_LIMIT = os.environ.get("API_TOKEN_RATE_LIMIT", "1000/min")
+
+# Stricter per-token limit for expensive endpoints (artifact uploads), enforced
+# alongside the global one (#1070). Lower because each call does real work (parse,
+# S3 write, downstream scan/assessment enqueue).
+API_TOKEN_HEAVY_RATE_LIMIT = os.environ.get("API_TOKEN_HEAVY_RATE_LIMIT", "100/min")
+
 # OIDC Trusted Publishing — see sbomify.apps.oidc.
 # Action workflows request an ID token with this audience; the backend
 # enforces the ``aud`` claim against it during verification.
@@ -790,6 +808,14 @@ OIDC_JWKS_CACHE_SECONDS = int(os.environ.get("OIDC_JWKS_CACHE_SECONDS", "3600"))
 # future at verification time; with zero leeway PyJWT rejects it as "not yet
 # valid" and every exchange fails. 60s matches common JWT clock-skew guidance.
 OIDC_GITHUB_LEEWAY_SECONDS = int(os.environ.get("OIDC_GITHUB_LEEWAY_SECONDS", "60"))
+
+# How stale AccessToken.last_used_at may be before an authenticated request
+# refreshes it. Throttles the per-request write to one UPDATE per token per
+# window so a token hammered in a tight loop doesn't write on every call. The
+# field exists to spot stale/leaked tokens, so minute-level accuracy is enough.
+# Clamped to >= 0: a negative value would invert the freshness window and make
+# every request rewrite the field.
+ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = max(0, int(os.environ.get("ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS", "300")))
 
 # Localstack and AWS/S3 related settings
 AWS_REGION = os.environ.get("AWS_REGION", "")
@@ -837,9 +863,12 @@ else:
     CSRF_COOKIE_SAMESITE = "Strict"
 
     # Defense-in-depth behind Caddy's edge HTTP->HTTPS redirect. Exempt the internal
-    # health check, which is probed over plain HTTP without an X-Forwarded-Proto header.
+    # endpoints, which are probed over plain HTTP (container-to-container, no
+    # X-Forwarded-Proto header): the Django health check, and the on-demand-TLS "ask"
+    # endpoint Caddy hits to decide whether to issue a certificate for a custom/trust
+    # center domain. A 301 here makes Caddy refuse the redirect and deny the cert.
     SECURE_SSL_REDIRECT = True
-    SECURE_REDIRECT_EXEMPT = [r"^UuPha8mu/"]
+    SECURE_REDIRECT_EXEMPT = [r"^UuPha8mu/", r"^api/v1/internal/"]
 
     # HSTS (Caddy sets it at the edge too; harmless to assert at the app for direct hits).
     SECURE_HSTS_SECONDS = 31536000  # 1 year
