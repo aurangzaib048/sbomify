@@ -19,18 +19,16 @@
   },
   "components": [
     {
-      "bom-ref": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible",
+      "bom-ref": "pkg:golang/github.com/docker/docker",
       "type": "library",
       "name": "docker",
-      "purl": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible",
-      "version": "v28.5.2+incompatible"
+      "purl": "pkg:golang/github.com/docker/docker"
     },
     {
-      "bom-ref": "pkg:golang/stdlib@v1.26.3",
+      "bom-ref": "pkg:golang/stdlib",
       "type": "library",
       "name": "stdlib",
-      "purl": "pkg:golang/stdlib@v1.26.3",
-      "version": "v1.26.3"
+      "purl": "pkg:golang/stdlib"
     }
   ],
   "vulnerabilities": [
@@ -72,7 +70,7 @@
       },
       "affects": [
         {
-          "ref": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+          "ref": "pkg:golang/github.com/docker/docker"
         }
       ]
     },
@@ -108,7 +106,7 @@
       },
       "affects": [
         {
-          "ref": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+          "ref": "pkg:golang/github.com/docker/docker"
         }
       ]
     },
@@ -145,7 +143,7 @@
       },
       "affects": [
         {
-          "ref": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+          "ref": "pkg:golang/github.com/docker/docker"
         }
       ]
     },
@@ -179,7 +177,7 @@
       },
       "affects": [
         {
-          "ref": "pkg:golang/stdlib@v1.26.3"
+          "ref": "pkg:golang/stdlib"
         }
       ]
     }
