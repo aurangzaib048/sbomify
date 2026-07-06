@@ -68,7 +68,7 @@ For the first release cut in July 2026 (previous release was `26.3.0`):
 # Run pre-release checks
 uv run ruff check .
 uv run ruff format --check .
-bun markdownlint "**/*.md"
+bun markdownlint "**/*.md" --ignore node_modules
 uv run coverage run -m pytest
 uv run coverage report
 
