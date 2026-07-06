@@ -23,11 +23,7 @@ from ..models import Document
 def sample_document_component(sample_team, sample_user):
     """Create a sample document component for testing."""
     # Add sample_user as owner to the team for proper permissions
-    Member.objects.get_or_create(
-        user=sample_user,
-        team=sample_team,
-        defaults={"role": "owner"}
-    )
+    Member.objects.get_or_create(user=sample_user, team=sample_team, defaults={"role": "owner"})
 
     return Component.objects.create(
         name="Test Document Component",
@@ -88,9 +84,7 @@ def test_document_download_success(
 
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": sample_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": sample_document.id}))
 
     assert response.status_code == 200
     assert response.content == b"test document content"
@@ -107,9 +101,7 @@ def test_document_download_public_success(
     """Test successful public document download without authentication."""
     create_documents_views_mock(mocker, scenario="success")
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": public_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": public_document.id}))
 
     assert response.status_code == 200
     assert response.content == b"test document content"
@@ -125,9 +117,7 @@ def test_document_download_not_found(
     """Test downloading non-existent document."""
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": "non-existent"})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": "non-existent"}))
 
     assert response.status_code == 404
 
@@ -141,9 +131,7 @@ def test_document_download_forbidden(
     """Test that users without permission cannot download documents."""
     client.force_login(guest_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": sample_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": sample_document.id}))
 
     assert response.status_code == 403
 
@@ -154,9 +142,7 @@ def test_document_download_private_document_public_access_denied(
     sample_document,
 ):
     """Test that private documents cannot be downloaded without authentication."""
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": sample_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": sample_document.id}))
 
     assert response.status_code == 403
 
@@ -173,9 +159,7 @@ def test_document_download_s3_file_not_found(
 
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": sample_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": sample_document.id}))
 
     assert response.status_code == 404
 
@@ -192,9 +176,7 @@ def test_document_download_s3_error(
 
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": sample_document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": sample_document.id}))
 
     assert response.status_code == 500
 
@@ -222,9 +204,7 @@ def test_document_download_with_filename_fallback(
 
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": document.id}))
 
     assert response.status_code == 200
     assert response.content == b"test document content"
@@ -254,13 +234,12 @@ def test_document_download_default_content_type(
 
     client.force_login(sample_user)
 
-    response = client.get(
-        reverse("documents:document_download", kwargs={"document_id": document.id})
-    )
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": document.id}))
 
     assert response.status_code == 200
     assert response.content == b"test document content"
     assert response["Content-Type"] == "application/octet-stream"
+
 
 @pytest.mark.django_db
 def test_document_download_inline(
@@ -283,6 +262,38 @@ def test_document_download_inline(
     assert response["Content-Type"] == "application/pdf"
     assert f'inline; filename="{sample_document.name}"' in response["Content-Disposition"]
     assert response["X-Frame-Options"] == "SAMEORIGIN"
+    assert response["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.mark.django_db
+def test_document_download_html_never_served_inline(
+    mocker: MockerFixture,
+    client: Client,
+    sample_user: AbstractBaseUser,  # noqa: F811
+    sample_document_component,
+):
+    """A script-capable content type must be forced to attachment even when
+    inline is requested, to prevent stored XSS on the sbomify origin."""
+    create_documents_views_mock(mocker, scenario="success")
+
+    document = Document.objects.create(
+        name="evil",
+        version="1.0",
+        document_filename="evil.html",
+        component=sample_document_component,
+        source="manual_upload",
+        content_type="text/html",
+        file_size=64,
+    )
+
+    client.force_login(sample_user)
+
+    response = client.get(reverse("documents:document_download", kwargs={"document_id": document.id}) + "?view=inline")
+
+    assert response.status_code == 200
+    assert response["Content-Disposition"].startswith("attachment;")
+    assert "inline" not in response["Content-Disposition"]
+    assert response["X-Content-Type-Options"] == "nosniff"
 
 
 @pytest.mark.django_db
@@ -312,7 +323,7 @@ class TestDocumentsTableView:
     ):
         """Test that private view is accessible with auth."""
         setup_authenticated_client_session(authenticated_web_client, sample_document_component.team, sample_user)
-        
+
         url = reverse(
             "documents:documents_table",
             kwargs={"component_id": sample_document_component.id},
@@ -320,14 +331,12 @@ class TestDocumentsTableView:
         response = authenticated_web_client.get(url)
         assert response.status_code == 200
 
-    def test_documents_table_guest_restriction(
-        self, authenticated_web_client, sample_document_component, guest_user
-    ):
+    def test_documents_table_guest_restriction(self, authenticated_web_client, sample_document_component, guest_user):
         """Test that guest members are redirected from private view."""
         # Add guest member
         Member.objects.create(team=sample_document_component.team, user=guest_user, role="guest")
         setup_authenticated_client_session(authenticated_web_client, sample_document_component.team, guest_user)
-        
+
         url = reverse(
             "documents:documents_table",
             kwargs={"component_id": sample_document_component.id},
@@ -353,7 +362,7 @@ class TestDocumentsTableView:
         # Add guest member
         Member.objects.create(team=public_document_component.team, user=guest_user, role="guest")
         setup_authenticated_client_session(authenticated_web_client, public_document_component.team, guest_user)
-        
+
         url = reverse(
             "documents:documents_table_public",
             kwargs={"component_id": public_document_component.id},
@@ -369,15 +378,15 @@ class TestDocumentsTableView:
         """Test successful document deletion."""
         # Mock success result
         mock_delete.return_value = MagicMock(ok=True)
-        
+
         setup_authenticated_client_session(authenticated_web_client, sample_document_component.team, sample_user)
-        
+
         url = reverse(
             "documents:documents_table",
             kwargs={"component_id": sample_document_component.id},
         )
         response = authenticated_web_client.post(url, {"_method": "DELETE"})
-        
+
         assert response.status_code == 200
         # HTMX success response has message in HX-Trigger header
         hx_trigger = response.get("HX-Trigger", "")
