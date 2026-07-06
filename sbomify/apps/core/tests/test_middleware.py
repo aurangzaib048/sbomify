@@ -77,6 +77,21 @@ def test_csp_middleware_appends_report_uri_when_configured():
     )
 
 
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; report-uri https://policy.test/r;",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_does_not_duplicate_existing_report_uri():
+    """A report-uri already in the policy is not duplicated by CSP_REPORT_URI."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    policy = result["Content-Security-Policy-Report-Only"]
+    assert policy.count("report-uri") == 1
+    assert "https://policy.test/r" in policy
+
+
 def test_real_ip_middleware():
     """Test that RealIPMiddleware updates REMOTE_ADDR correctly."""
     middleware = RealIPMiddleware(get_response=lambda r: None)

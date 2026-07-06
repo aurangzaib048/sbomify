@@ -521,8 +521,11 @@ class ContentSecurityPolicyMiddleware(MiddlewareMixin):
             return response
 
         report_uri = getattr(settings, "CSP_REPORT_URI", "")
-        if report_uri:
-            policy = f"{policy}; report-uri {report_uri}"
+        # Only append when the policy doesn't already carry a report-uri (it may
+        # come from the CONTENT_SECURITY_POLICY env var), and normalize any
+        # trailing separator so we don't emit "…; ; report-uri …".
+        if report_uri and "report-uri" not in policy:
+            policy = f"{policy.rstrip(' ;')}; report-uri {report_uri}"
 
         header = (
             "Content-Security-Policy"
