@@ -4,9 +4,107 @@ from django.http import HttpRequest, HttpResponse
 from django.test import override_settings
 
 from sbomify.apps.core.middleware import (
+    ContentSecurityPolicyMiddleware,
     GzipRequestDecompressionMiddleware,
     RealIPMiddleware,
 )
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; object-src 'none'",
+    CSP_ENFORCE=False,
+)
+def test_csp_middleware_report_only_by_default():
+    """The CSP is attached in Report-Only mode unless enforcement is enabled."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert response["Content-Security-Policy-Report-Only"] == "default-src 'self'; object-src 'none'"
+    assert "Content-Security-Policy" not in response
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; object-src 'none'",
+    CSP_ENFORCE=True,
+)
+def test_csp_middleware_enforced_when_enabled():
+    """CSP_ENFORCE=True emits the enforcing header instead of Report-Only."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert response["Content-Security-Policy"] == "default-src 'self'; object-src 'none'"
+    assert "Content-Security-Policy-Report-Only" not in response
+
+
+@override_settings(CONTENT_SECURITY_POLICY="default-src 'self'")
+def test_csp_middleware_preserves_existing_header():
+    """A CSP already set by a view is not overwritten."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = HttpResponse()
+    response["Content-Security-Policy"] = "default-src 'none'"
+
+    result = middleware.process_response(HttpRequest(), response)
+
+    assert result["Content-Security-Policy"] == "default-src 'none'"
+    assert "Content-Security-Policy-Report-Only" not in result
+
+
+@override_settings(CONTENT_SECURITY_POLICY="default-src 'self'", CSP_ENFORCE=False)
+def test_csp_middleware_preserves_existing_report_only_header():
+    """An existing Report-Only header set by a view is not overwritten."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = HttpResponse()
+    response["Content-Security-Policy-Report-Only"] = "default-src 'none'"
+
+    result = middleware.process_response(HttpRequest(), response)
+
+    assert result["Content-Security-Policy-Report-Only"] == "default-src 'none'"
+    assert "Content-Security-Policy" not in result
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_appends_report_uri_when_configured():
+    """A configured report endpoint is appended so violations are delivered."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert result["Content-Security-Policy-Report-Only"] == (
+        "default-src 'self'; report-uri https://example.test/csp-report"
+    )
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; report-uri https://policy.test/r;",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_does_not_duplicate_existing_report_uri():
+    """A report-uri already in the policy is not duplicated by CSP_REPORT_URI."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    policy = result["Content-Security-Policy-Report-Only"]
+    assert policy.count("report-uri") == 1
+    assert "https://policy.test/r" in policy
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; Report-URI https://policy.test/r",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_report_uri_check_is_case_insensitive():
+    """An existing report-uri directive with different casing is still detected."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    policy = result["Content-Security-Policy-Report-Only"].lower()
+    assert policy.count("report-uri") == 1
+    assert "https://example.test/csp-report" not in policy
 
 
 def test_real_ip_middleware():
