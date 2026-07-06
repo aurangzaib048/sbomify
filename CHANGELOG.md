@@ -3,9 +3,12 @@
 All notable changes to sbomify will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and this project adheres to [Semantic Versioning](https://semver.org/).
+and this project uses [CalVer](https://calver.org/) in the `YY.MM.MICRO` format,
+per [ADR-0002](https://github.com/sbomify/adr/blob/master/0002-adopt-calver-versioning.md).
 
 ## [Unreleased]
+
+## [26.7.0] - 2026-07-06
 
 ### Breaking changes — data model
 
