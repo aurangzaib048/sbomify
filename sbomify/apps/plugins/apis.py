@@ -1,14 +1,16 @@
 """API endpoints for the plugins framework."""
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from django.db.models import OuterRef, Subquery
 from django.http import HttpRequest
 from ninja import Router
+from ninja.decorators import decorate_view
 from pydantic import BaseModel
 
-from sbomify.apps.core.models import User
+from sbomify.apps.access_tokens.auth import optional_auth
+from sbomify.apps.core.authz import can
 from sbomify.apps.sboms.models import SBOM
 from sbomify.apps.teams.models import Member, Team
 
@@ -22,6 +24,14 @@ from .schemas import (
 from .sdk.enums import RunStatus
 
 router = Router(tags=["plugins"])
+
+
+def _readable_sbom(request: HttpRequest, sbom_id: str) -> SBOM | None:
+    """Return the SBOM when the caller may read its component (public or authorized), else None."""
+    sbom = SBOM.objects.select_related("component").filter(id=sbom_id).first()
+    if sbom is None or not can(request, "component:access", sbom.component):
+        return None
+    return sbom
 
 
 def _is_run_skipped(run: AssessmentRun) -> bool:
@@ -71,6 +81,10 @@ def _is_run_failing(run: AssessmentRun) -> bool:
         return False
 
     if run.category == "security":
+        # An operational scan error (error_count > 0, no by_severity) must not read as a clean
+        # pass — the scanner produced no verdict, so the posture is unknown, not good.
+        if summary.get("error_count", 0) > 0:
+            return True
         by_severity = summary.get("by_severity") or {}
         total_from_severity: int = sum(
             by_severity.get(sev, 0) for sev in ("critical", "high", "medium", "low", "info", "unknown")
@@ -217,14 +231,17 @@ def _compute_status_summary(runs: list[AssessmentRun]) -> AssessmentStatusSummar
     )
 
 
-@router.get("/assessments/{sbom_id}", response=SBOMAssessmentsResponse)
+@router.get("/assessments/{sbom_id}", response=SBOMAssessmentsResponse, auth=None)
+@decorate_view(optional_auth)
 def get_sbom_assessments(request: HttpRequest, sbom_id: str) -> SBOMAssessmentsResponse:
     """Get all assessment runs for an SBOM.
 
     Returns both the latest run per plugin and the full history.
     """
-    # Verify SBOM exists
-    if not SBOM.objects.filter(id=sbom_id).exists():
+    # Only expose results for an SBOM whose component the caller may read (public, or an
+    # authorized member/token). Otherwise return the empty "no assessments" shape so neither
+    # the findings nor the SBOM's existence leak.
+    if _readable_sbom(request, sbom_id) is None:
         return SBOMAssessmentsResponse(
             sbom_id=sbom_id,
             status_summary=AssessmentStatusSummary(overall_status="no_assessments"),
@@ -262,12 +279,25 @@ def get_sbom_assessments(request: HttpRequest, sbom_id: str) -> SBOMAssessmentsR
     )
 
 
-@router.get("/assessments/{sbom_id}/badge", response=AssessmentBadgeData)
+@router.get("/assessments/{sbom_id}/badge", response=AssessmentBadgeData, auth=None)
+@decorate_view(optional_auth)
 def get_sbom_assessment_badge(request: HttpRequest, sbom_id: str) -> AssessmentBadgeData:
     """Get minimal assessment data for badge display.
 
     Returns only what's needed for the assessment badge component.
     """
+    if _readable_sbom(request, sbom_id) is None:
+        empty = _compute_status_summary([])
+        return AssessmentBadgeData(
+            sbom_id=sbom_id,
+            overall_status=empty.overall_status,
+            total_assessments=0,
+            passing_count=0,
+            failing_count=0,
+            pending_count=0,
+            skipped_count=0,
+            plugins=[],
+        )
     # Fetch only the latest run per plugin_name via Subquery/OuterRef —
     # bounded to ``enabled plugins per SBOM`` rather than the full run
     # history. Under the scan-once-per-SBOM model there's one run per
@@ -481,7 +511,9 @@ def get_team_plugin_settings(request: HttpRequest, team_key: str) -> tuple[int, 
 
     # Authorize against the URL team (see update_team_plugin_settings) rather than trusting the
     # caller's session-scoped guard.
-    if not Member.objects.filter(user=cast(User, request.user), team=team, role__in=("owner", "admin")).exists():
+    if not request.user.is_authenticated:
+        return 403, {"detail": "You don't have permission to view this workspace's plugins"}
+    if not Member.objects.filter(user=request.user, team=team, role__in=("owner", "admin")).exists():
         return 403, {"detail": "You don't have permission to view this workspace's plugins"}
 
     # Get or create team plugin settings
@@ -536,7 +568,9 @@ def update_team_plugin_settings(
     # Authorize against the URL team. The calling view's TeamRoleRequiredMixin only checks the
     # actor's role in their SESSION workspace, so without this an owner/admin of workspace A
     # could rewrite an unrelated workspace B's plugin settings (cross-workspace IDOR).
-    if not Member.objects.filter(user=cast(User, request.user), team=team, role__in=("owner", "admin")).exists():
+    if not request.user.is_authenticated:
+        return 403, {"detail": "You don't have permission to manage this workspace's plugins"}
+    if not Member.objects.filter(user=request.user, team=team, role__in=("owner", "admin")).exists():
         return 403, {"detail": "You don't have permission to manage this workspace's plugins"}
 
     # Validate that all enabled plugins are registered and enabled
