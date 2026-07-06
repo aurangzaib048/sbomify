@@ -117,7 +117,12 @@ SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 # Alpine.js expressions (needs 'unsafe-inline'/'unsafe-eval'), Stripe.js and
 # websockets, so the policy stays permissive on scripts while locking down
 # object-src, base-uri and plugin embedding.
+#
+# Report-Only violations are only delivered somewhere if CSP_REPORT_URI points
+# at a collector endpoint (e.g. Sentry's CSP ingest URL); without it, browsers
+# just log violations to their console. Set it to make the rollout actionable.
 CSP_ENFORCE = _env_bool(os.environ.get("CSP_ENFORCE"), default=False)
+CSP_REPORT_URI = os.environ.get("CSP_REPORT_URI", "")
 CONTENT_SECURITY_POLICY = os.environ.get(
     "CONTENT_SECURITY_POLICY",
     "; ".join(

@@ -49,6 +49,34 @@ def test_csp_middleware_preserves_existing_header():
     assert "Content-Security-Policy-Report-Only" not in result
 
 
+@override_settings(CONTENT_SECURITY_POLICY="default-src 'self'", CSP_ENFORCE=False)
+def test_csp_middleware_preserves_existing_report_only_header():
+    """An existing Report-Only header set by a view is not overwritten."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = HttpResponse()
+    response["Content-Security-Policy-Report-Only"] = "default-src 'none'"
+
+    result = middleware.process_response(HttpRequest(), response)
+
+    assert result["Content-Security-Policy-Report-Only"] == "default-src 'none'"
+    assert "Content-Security-Policy" not in result
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_appends_report_uri_when_configured():
+    """A configured report endpoint is appended so violations are delivered."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert result["Content-Security-Policy-Report-Only"] == (
+        "default-src 'self'; report-uri https://example.test/csp-report"
+    )
+
+
 def test_real_ip_middleware():
     """Test that RealIPMiddleware updates REMOTE_ADDR correctly."""
     middleware = RealIPMiddleware(get_response=lambda r: None)

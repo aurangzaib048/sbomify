@@ -505,8 +505,10 @@ class ContentSecurityPolicyMiddleware(MiddlewareMixin):
 
     Ships in Report-Only mode by default (``settings.CSP_ENFORCE`` is False) so
     violations can be collected before the policy is enforced. The policy string
-    itself comes from ``settings.CONTENT_SECURITY_POLICY``. Responses that already
-    carry a CSP header are left untouched.
+    itself comes from ``settings.CONTENT_SECURITY_POLICY``, with a ``report-uri``
+    directive appended when ``settings.CSP_REPORT_URI`` is set (otherwise
+    Report-Only violations only surface in the browser console). Responses that
+    already carry a CSP header are left untouched.
     """
 
     def process_response(self, request: Any, response: HttpResponse) -> HttpResponse:
@@ -514,13 +516,20 @@ class ContentSecurityPolicyMiddleware(MiddlewareMixin):
         if not policy:
             return response
 
+        already_present = "Content-Security-Policy" in response or "Content-Security-Policy-Report-Only" in response
+        if already_present:
+            return response
+
+        report_uri = getattr(settings, "CSP_REPORT_URI", "")
+        if report_uri:
+            policy = f"{policy}; report-uri {report_uri}"
+
         header = (
             "Content-Security-Policy"
             if getattr(settings, "CSP_ENFORCE", False)
             else "Content-Security-Policy-Report-Only"
         )
-        if "Content-Security-Policy" not in response and "Content-Security-Policy-Report-Only" not in response:
-            response[header] = policy
+        response[header] = policy
         return response
 
 
