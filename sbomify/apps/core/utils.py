@@ -220,11 +220,12 @@ def _trusted_proxy_networks(
 ) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     """Compile the configured trusted-proxy CIDRs, skipping invalid entries."""
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-    for cidr in cidrs:
+    for index, cidr in enumerate(cidrs):
         try:
             networks.append(ipaddress.ip_network(cidr, strict=False))
         except ValueError:
-            logger.warning("Ignoring invalid TRUSTED_PROXIES entry: %r", cidr)
+            # Log the position, not the raw value, to avoid echoing config data.
+            logger.warning("Ignoring invalid TRUSTED_PROXIES entry at index %d; check the CIDR syntax.", index)
     return tuple(networks)
 
 
@@ -253,7 +254,15 @@ def get_client_ip(request: HttpRequest) -> str | None:
     remote_addr = request.META.get("REMOTE_ADDR")
     real_ip = request.META.get("HTTP_X_REAL_IP")
     if real_ip and _is_trusted_proxy(remote_addr):
-        return real_ip.split(",")[0].strip()
+        candidate = real_ip.split(",")[0].strip()
+        # A trusted proxy shouldn't forward garbage, but validate anyway so a
+        # misconfigured proxy can't propagate non-IP strings into rate limiting
+        # or audit fields; fall back to the (trusted) peer address on failure.
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            return remote_addr
+        return candidate
     return remote_addr
 
 

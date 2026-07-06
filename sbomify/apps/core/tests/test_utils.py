@@ -117,6 +117,14 @@ def test_get_client_ip_ignores_spoofed_x_real_ip_from_untrusted_peer():
     assert get_client_ip(request) == "203.0.113.7"
 
 
+def test_get_client_ip_rejects_non_ip_x_real_ip_from_trusted_proxy():
+    """A trusted proxy forwarding a non-IP value falls back to REMOTE_ADDR."""
+    request = HttpRequest()
+
+    request.META = {"HTTP_X_REAL_IP": "not-an-ip", "REMOTE_ADDR": "10.0.0.1"}
+    assert get_client_ip(request) == "10.0.0.1"
+
+
 @pytest.mark.django_db
 class TestAddArtifactToReleaseCrossTeamCheck:
     """Regression tests for the defense-in-depth cross-team check in add_artifact_to_release.

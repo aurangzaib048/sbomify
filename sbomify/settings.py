@@ -106,8 +106,14 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # Networks whose requests are allowed to set the client IP via the X-Real-IP
 # header (see core.utils.get_client_ip). Only honour that header when the direct
 # peer (REMOTE_ADDR) is a trusted reverse proxy; otherwise a client reaching
-# Django directly could spoof its IP and defeat per-IP rate limiting. Defaults
-# to loopback + RFC1918 ranges, which cover the Caddy sidecar in Docker.
+# Django directly could spoof its IP and defeat per-IP rate limiting.
+#
+# The default trusts loopback + RFC1918 ranges, which cover the Caddy sidecar in
+# the default Docker topology (where the app is NOT directly reachable — the
+# backend port is unpublished). If Django can be reached directly from any other
+# private segment (shared cluster, corp VPN), narrow this to the actual
+# reverse-proxy address(es) via the TRUSTED_PROXIES env var so those clients
+# cannot spoof X-Real-IP.
 TRUSTED_PROXIES = [
     cidr.strip()
     for cidr in os.environ.get(
