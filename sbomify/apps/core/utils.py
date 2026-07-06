@@ -508,114 +508,68 @@ def add_artifact_to_release(
             "error": "Artifact already exists in this release",
         }
 
-    # Handle duplicate formats based on allow_replacement setting
-    if sbom:
-        # For SBOMs: check for existing SBOM of same format from same component
-        existing_sbom_artifact = ReleaseArtifact.objects.filter(
-            release=release, sbom__component=sbom.component, sbom__format=sbom.format
-        ).first()
+    # Handle same-format/type duplicates entirely under a release row lock, so the existence
+    # check, the allow_replacement decision, the replaced_info snapshot, the delete and the
+    # create all observe one consistent state. Concurrent adds/replacements of the same
+    # (component, format/type) on this release serialize here: last writer wins when replacement
+    # is allowed, and a race can neither leave a duplicate nor a gap.
+    with transaction.atomic():
+        Release.objects.select_for_update().get(pk=release.pk)
 
-        if existing_sbom_artifact:
-            if not allow_replacement:
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains an SBOM of format {sbom.format} from component {sbom.component.name}"
-                    ),
-                }
-            else:
-                # Replace the existing artifact
+        if sbom:
+            same = ReleaseArtifact.objects.filter(
+                release=release, sbom__component=sbom.component, sbom__format=sbom.format
+            )
+            existing_same = same.first()
+            if existing_same:
+                if not allow_replacement:
+                    return {
+                        "created": False,
+                        "replaced": False,
+                        "artifact": None,
+                        "error": (
+                            f"Release already contains an SBOM of format {sbom.format} "
+                            f"from component {sbom.component.name}"
+                        ),
+                    }
+                # Snapshot the row we actually hold under the lock, then replace all matching.
                 replaced_info = {
-                    "replaced_sbom": existing_sbom_artifact.sbom.name,  # type: ignore[union-attr]
-                    "replaced_format": existing_sbom_artifact.sbom.format,  # type: ignore[union-attr]
+                    "replaced_sbom": existing_same.sbom.name,  # type: ignore[union-attr]
+                    "replaced_format": existing_same.sbom.format,  # type: ignore[union-attr]
                     "new_sbom": sbom.name,
                     "component": sbom.component.name,
                 }
-                # Serialize concurrent replacements on this release with a row lock, then
-                # re-delete ALL matching artifacts INSIDE the lock (the row selected above may
-                # be stale if a concurrent replacement committed) before creating — so a failed
-                # create can't leave a gap, and a race can't leave a duplicate.
-                with transaction.atomic():
-                    Release.objects.select_for_update().get(pk=release.pk)
-                    ReleaseArtifact.objects.filter(
-                        release=release, sbom__component=sbom.component, sbom__format=sbom.format
-                    ).delete()
-                    new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
+                same.delete()
+                new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
                 return {"created": False, "replaced": True, "artifact": new_artifact, "replaced_info": replaced_info}
-
-    else:  # document
-        # For Documents: check for existing document of same type from same component
-        existing_doc_artifact = ReleaseArtifact.objects.filter(
-            release=release, document__component=document.component, document__document_type=document.document_type
-        ).first()
-
-        if existing_doc_artifact:
-            if not allow_replacement:
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains {document.document_type} document "
-                        f"from component {document.component.name}"
-                    ),
-                }
-            else:
-                # Replace the existing artifact
-                replaced_info = {
-                    "replaced_document": existing_doc_artifact.document.name,  # type: ignore[union-attr]
-                    "replaced_type": existing_doc_artifact.document.document_type,  # type: ignore[union-attr]
-                    "new_document": document.name,
-                    "component": document.component.name,
-                }
-                # Serialize concurrent replacements on this release with a row lock, then
-                # re-delete ALL matching artifacts INSIDE the lock (the row selected above may
-                # be stale if a concurrent replacement committed) before creating.
-                with transaction.atomic():
-                    Release.objects.select_for_update().get(pk=release.pk)
-                    ReleaseArtifact.objects.filter(
-                        release=release,
-                        document__component=document.component,
-                        document__document_type=document.document_type,
-                    ).delete()
-                    new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
-                return {"created": False, "replaced": True, "artifact": new_artifact, "replaced_info": replaced_info}
-
-    # Create the new artifact under the release lock, re-checking for a same-format/type artifact
-    # INSIDE the lock so two concurrent first-adds can't both create a duplicate (the outer check
-    # above is unlocked and can race).
-    with transaction.atomic():
-        Release.objects.select_for_update().get(pk=release.pk)
-        if sbom:
-            if ReleaseArtifact.objects.filter(
-                release=release, sbom__component=sbom.component, sbom__format=sbom.format
-            ).exists():
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains an SBOM of format {sbom.format} from component {sbom.component.name}"
-                    ),
-                }
             new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
         else:
-            if ReleaseArtifact.objects.filter(
+            same = ReleaseArtifact.objects.filter(
                 release=release,
                 document__component=document.component,
                 document__document_type=document.document_type,
-            ).exists():
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains a document of type {document.document_type} "
-                        f"from component {document.component.name}"
-                    ),
+            )
+            existing_same = same.first()
+            if existing_same:
+                if not allow_replacement:
+                    return {
+                        "created": False,
+                        "replaced": False,
+                        "artifact": None,
+                        "error": (
+                            f"Release already contains {document.document_type} document "
+                            f"from component {document.component.name}"
+                        ),
+                    }
+                replaced_info = {
+                    "replaced_document": existing_same.document.name,  # type: ignore[union-attr]
+                    "replaced_type": existing_same.document.document_type,  # type: ignore[union-attr]
+                    "new_document": document.name,
+                    "component": document.component.name,
                 }
+                same.delete()
+                new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
+                return {"created": False, "replaced": True, "artifact": new_artifact, "replaced_info": replaced_info}
             new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
 
     return {"created": True, "replaced": False, "artifact": new_artifact, "replaced_info": None}
