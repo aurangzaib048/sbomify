@@ -500,6 +500,16 @@ class RealIPMiddleware(MiddlewareMixin):
             request.META["REMOTE_ADDR"] = client_ip
 
 
+def _policy_has_report_uri(policy: str) -> bool:
+    """True if any ``;``-separated directive in ``policy`` is a report-uri.
+
+    Directive names are case-insensitive per the CSP spec; matching the directive
+    at the start of each segment avoids false positives from a URL value in
+    another directive that happens to contain the substring "report-uri".
+    """
+    return any(directive.strip().lower().startswith("report-uri") for directive in policy.split(";"))
+
+
 class ContentSecurityPolicyMiddleware(MiddlewareMixin):
     """Attach a Content-Security-Policy header to responses.
 
@@ -521,10 +531,12 @@ class ContentSecurityPolicyMiddleware(MiddlewareMixin):
             return response
 
         report_uri = getattr(settings, "CSP_REPORT_URI", "")
-        # Only append when the policy doesn't already carry a report-uri (it may
-        # come from the CONTENT_SECURITY_POLICY env var), and normalize any
-        # trailing separator so we don't emit "…; ; report-uri …".
-        if report_uri and "report-uri" not in policy:
+        # Only append when the policy doesn't already carry a report-uri directive
+        # (it may come from the CONTENT_SECURITY_POLICY env var), and normalize any
+        # trailing separator so we don't emit "…; ; report-uri …". The check is
+        # directive-bound and case-insensitive so it won't false-match a URL that
+        # happens to contain "report-uri" inside another directive's value.
+        if report_uri and not _policy_has_report_uri(policy):
             policy = f"{policy.rstrip(' ;')}; report-uri {report_uri}"
 
         header = (

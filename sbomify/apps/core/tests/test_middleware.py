@@ -92,6 +92,21 @@ def test_csp_middleware_does_not_duplicate_existing_report_uri():
     assert "https://policy.test/r" in policy
 
 
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; Report-URI https://policy.test/r",
+    CSP_ENFORCE=False,
+    CSP_REPORT_URI="https://example.test/csp-report",
+)
+def test_csp_middleware_report_uri_check_is_case_insensitive():
+    """An existing report-uri directive with different casing is still detected."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    result = middleware.process_response(HttpRequest(), HttpResponse())
+
+    policy = result["Content-Security-Policy-Report-Only"].lower()
+    assert policy.count("report-uri") == 1
+    assert "https://example.test/csp-report" not in policy
+
+
 def test_real_ip_middleware():
     """Test that RealIPMiddleware updates REMOTE_ADDR correctly."""
     middleware = RealIPMiddleware(get_response=lambda r: None)
