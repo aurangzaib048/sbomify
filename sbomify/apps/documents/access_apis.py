@@ -380,7 +380,9 @@ def get_nda_for_signing(request: HttpRequest, team_key: str, request_id: str) ->
                 response = HttpResponse(document_data)
                 apply_safe_download_headers(
                     response,
-                    content_type=company_nda.content_type,
+                    # NDA content_type may be blank for legacy records; fall back
+                    # to PDF so the inline preview/signing flow keeps working.
+                    content_type=company_nda.content_type or "application/pdf",
                     filename=f"{company_nda.name}.pdf",
                     inline=True,
                 )

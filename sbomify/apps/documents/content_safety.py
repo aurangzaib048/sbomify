@@ -63,9 +63,16 @@ def apply_safe_download_headers(
         # Allow same-origin iframe embedding (e.g. NDA preview) for inline views.
         response["X-Frame-Options"] = "SAMEORIGIN"
         disposition = "inline"
+    elif inline:
+        # Inline was requested but denied because the type is not inert. Don't
+        # echo the (attacker-controlled) type back — force an inert one so a
+        # client/proxy that mishandles Content-Disposition can't render it.
+        response["Content-Type"] = _ATTACHMENT_CONTENT_TYPE
+        disposition = "attachment"
     else:
-        # As an attachment the browser downloads rather than renders the bytes, so
-        # even a script-capable type is inert here; nosniff (below) blocks sniffing.
+        # Plain download: as an attachment the browser downloads rather than
+        # renders the bytes, so even a script-capable type is inert here and
+        # nosniff (below) blocks sniffing. Preserve the declared type.
         response["Content-Type"] = normalized or _ATTACHMENT_CONTENT_TYPE
         disposition = "attachment"
 

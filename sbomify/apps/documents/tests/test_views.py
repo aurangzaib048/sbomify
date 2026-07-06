@@ -293,6 +293,8 @@ def test_document_download_html_never_served_inline(
     assert response.status_code == 200
     assert response["Content-Disposition"].startswith("attachment;")
     assert "inline" not in response["Content-Disposition"]
+    # Inline was denied, so the attacker-controlled type must not be echoed back.
+    assert response["Content-Type"] == "application/octet-stream"
     assert response["X-Content-Type-Options"] == "nosniff"
 
 
