@@ -500,6 +500,30 @@ class RealIPMiddleware(MiddlewareMixin):
             request.META["REMOTE_ADDR"] = client_ip
 
 
+class ContentSecurityPolicyMiddleware(MiddlewareMixin):
+    """Attach a Content-Security-Policy header to responses.
+
+    Ships in Report-Only mode by default (``settings.CSP_ENFORCE`` is False) so
+    violations can be collected before the policy is enforced. The policy string
+    itself comes from ``settings.CONTENT_SECURITY_POLICY``. Responses that already
+    carry a CSP header are left untouched.
+    """
+
+    def process_response(self, request: Any, response: HttpResponse) -> HttpResponse:
+        policy = getattr(settings, "CONTENT_SECURITY_POLICY", "")
+        if not policy:
+            return response
+
+        header = (
+            "Content-Security-Policy"
+            if getattr(settings, "CSP_ENFORCE", False)
+            else "Content-Security-Policy-Report-Only"
+        )
+        if "Content-Security-Policy" not in response and "Content-Security-Policy-Report-Only" not in response:
+            response[header] = policy
+        return response
+
+
 class HtmxMessagesMiddleware:
     """Convert Django session messages to HX-Trigger for HTMX requests.
 

@@ -106,6 +106,37 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # Allow larger request bodies for OSCAL catalog imports (default is 2.5 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB
 
+# Prevent browsers from MIME-sniffing responses away from their declared
+# Content-Type — defense-in-depth for user-uploaded artifact downloads.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
+# Content-Security-Policy (see ContentSecurityPolicyMiddleware). Shipped in
+# Report-Only mode by default so violations can be observed before enforcement;
+# set CSP_ENFORCE=True once the reports are clean. The app relies on inline
+# Alpine.js expressions (needs 'unsafe-inline'/'unsafe-eval'), Stripe.js and
+# websockets, so the policy stays permissive on scripts while locking down
+# object-src, base-uri and plugin embedding.
+CSP_ENFORCE = _env_bool(os.environ.get("CSP_ENFORCE"), default=False)
+CONTENT_SECURITY_POLICY = os.environ.get(
+    "CONTENT_SECURITY_POLICY",
+    "; ".join(
+        [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' data:",
+            "connect-src 'self' https: wss: ws:",
+            "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+            "frame-ancestors 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "worker-src 'self' blob:",
+        ]
+    ),
+)
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -171,6 +202,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "sbomify.apps.core.middleware.HtmxMessagesMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "sbomify.apps.core.middleware.ContentSecurityPolicyMiddleware",
     "allauth.account.middleware.AccountMiddleware",
 ]
 

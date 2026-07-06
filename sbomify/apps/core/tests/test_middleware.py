@@ -4,9 +4,49 @@ from django.http import HttpRequest, HttpResponse
 from django.test import override_settings
 
 from sbomify.apps.core.middleware import (
+    ContentSecurityPolicyMiddleware,
     GzipRequestDecompressionMiddleware,
     RealIPMiddleware,
 )
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; object-src 'none'",
+    CSP_ENFORCE=False,
+)
+def test_csp_middleware_report_only_by_default():
+    """The CSP is attached in Report-Only mode unless enforcement is enabled."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert response["Content-Security-Policy-Report-Only"] == "default-src 'self'; object-src 'none'"
+    assert "Content-Security-Policy" not in response
+
+
+@override_settings(
+    CONTENT_SECURITY_POLICY="default-src 'self'; object-src 'none'",
+    CSP_ENFORCE=True,
+)
+def test_csp_middleware_enforced_when_enabled():
+    """CSP_ENFORCE=True emits the enforcing header instead of Report-Only."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = middleware.process_response(HttpRequest(), HttpResponse())
+
+    assert response["Content-Security-Policy"] == "default-src 'self'; object-src 'none'"
+    assert "Content-Security-Policy-Report-Only" not in response
+
+
+@override_settings(CONTENT_SECURITY_POLICY="default-src 'self'")
+def test_csp_middleware_preserves_existing_header():
+    """A CSP already set by a view is not overwritten."""
+    middleware = ContentSecurityPolicyMiddleware(get_response=lambda r: HttpResponse())
+    response = HttpResponse()
+    response["Content-Security-Policy"] = "default-src 'none'"
+
+    result = middleware.process_response(HttpRequest(), response)
+
+    assert result["Content-Security-Policy"] == "default-src 'none'"
+    assert "Content-Security-Policy-Report-Only" not in result
 
 
 def test_real_ip_middleware():
