@@ -492,29 +492,28 @@ def add_artifact_to_release(
     if document is not None and document.component.team_id != release_team_id:
         raise PermissionDeniedError("Document component team does not match release product team")
 
-    # Check if artifact already exists in this release
-    if sbom:
-        existing = ReleaseArtifact.objects.filter(release=release, sbom=sbom).first()
-    else:
-        existing = ReleaseArtifact.objects.filter(release=release, document=document).first()
-
-    if existing:
-        # Artifact already exists - no action needed
-        return {
-            "created": False,
-            "replaced": False,
-            "already_exists": True,
-            "artifact": existing,
-            "error": "Artifact already exists in this release",
-        }
-
-    # Handle same-format/type duplicates entirely under a release row lock, so the existence
-    # check, the allow_replacement decision, the replaced_info snapshot, the delete and the
-    # create all observe one consistent state. Concurrent adds/replacements of the same
-    # (component, format/type) on this release serialize here: last writer wins when replacement
-    # is allowed, and a race can neither leave a duplicate nor a gap.
+    # Everything that reads or writes this release's artifacts runs under a release row lock, so
+    # the exact-duplicate check, the same-format existence check, the allow_replacement decision,
+    # the replaced_info snapshot, the delete and the create all observe one consistent state.
+    # Concurrent adds/replacements of the same artifact (or same component+format/type) on this
+    # release serialize here: an exact re-add is idempotent, last writer wins when replacement is
+    # allowed, and a race can neither leave a duplicate nor a gap.
     with transaction.atomic():
         Release.objects.select_for_update().get(pk=release.pk)
+
+        # Exact same artifact already in this release -> idempotent no-op.
+        if sbom:
+            existing = ReleaseArtifact.objects.filter(release=release, sbom=sbom).first()
+        else:
+            existing = ReleaseArtifact.objects.filter(release=release, document=document).first()
+        if existing:
+            return {
+                "created": False,
+                "replaced": False,
+                "already_exists": True,
+                "artifact": existing,
+                "error": "Artifact already exists in this release",
+            }
 
         if sbom:
             same = ReleaseArtifact.objects.filter(
