@@ -351,8 +351,8 @@ def test_release_artifact_replaced_info_reflects_the_replaced_row(sample_team_wi
 
 @pytest.mark.django_db
 def test_release_artifact_replaces_preexisting_same_format_when_allowed(sample_team_with_owner_member):
-    """With allow_replacement=True, a same-format artifact already present (the concurrent-add
-    case, where the outer check would have missed it) is replaced, not rejected as an error."""
+    """With allow_replacement=True, a same-format artifact already present under the lock (the
+    concurrent-add case) is replaced, not rejected as an error."""
     from sbomify.apps.core.models import Component, Product, Release, ReleaseArtifact
     from sbomify.apps.core.utils import add_artifact_to_release
     from sbomify.apps.sboms.models import SBOM

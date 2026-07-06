@@ -492,12 +492,12 @@ def add_artifact_to_release(
     if document is not None and document.component.team_id != release_team_id:
         raise PermissionDeniedError("Document component team does not match release product team")
 
-    # Everything that reads or writes this release's artifacts runs under a release row lock, so
-    # the exact-duplicate check, the same-format existence check, the allow_replacement decision,
-    # the replaced_info snapshot, the delete and the create all observe one consistent state.
-    # Concurrent adds/replacements of the same artifact (or same component+format/type) on this
-    # release serialize here: an exact re-add is idempotent, last writer wins when replacement is
-    # allowed, and a race can neither leave a duplicate nor a gap.
+    # Run this function's reads and writes under a release row lock, so its own exact-duplicate
+    # check, same-format existence check, allow_replacement decision, replaced_info snapshot,
+    # delete and create observe one consistent state. This serializes concurrent calls to this
+    # function for the same release: an exact re-add is idempotent, last writer wins when
+    # replacement is allowed, and a race between these calls can neither leave a duplicate nor a
+    # gap. (It does not lock out other code paths that touch ReleaseArtifact directly.)
     with transaction.atomic():
         Release.objects.select_for_update().get(pk=release.pk)
 
