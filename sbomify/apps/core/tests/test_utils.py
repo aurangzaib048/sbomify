@@ -95,20 +95,26 @@ def test_schema_org_metadata_tag(mocker):
         assert "billingIncrement" in ps
 
 
-def test_get_client_ip_simplified():
-    """
-    Test get_client_ip simply returns X-Real-IP if present, otherwise REMOTE_ADDR.
-    The application trusts the upstream proxy (Caddy) to sanitize these headers.
-    """
+def test_get_client_ip_honours_x_real_ip_from_trusted_proxy():
+    """X-Real-IP is honoured when the direct peer is a trusted proxy."""
     request = HttpRequest()
 
-    # 1. X-Real-IP present (from Caddy)
+    # Direct peer (REMOTE_ADDR) is a private/loopback proxy → header trusted.
     request.META = {"HTTP_X_REAL_IP": "1.2.3.4", "REMOTE_ADDR": "10.0.0.1"}
     assert get_client_ip(request) == "1.2.3.4"
 
-    # 2. X-Real-IP missing, fallback to REMOTE_ADDR
+    # X-Real-IP missing → fall back to REMOTE_ADDR.
     request.META = {"REMOTE_ADDR": "10.0.0.1"}
     assert get_client_ip(request) == "10.0.0.1"
+
+
+def test_get_client_ip_ignores_spoofed_x_real_ip_from_untrusted_peer():
+    """A client reaching Django directly cannot spoof its IP via X-Real-IP."""
+    request = HttpRequest()
+
+    # Direct peer is a public, untrusted address → X-Real-IP is ignored.
+    request.META = {"HTTP_X_REAL_IP": "1.2.3.4", "REMOTE_ADDR": "203.0.113.7"}
+    assert get_client_ip(request) == "203.0.113.7"
 
 
 @pytest.mark.django_db

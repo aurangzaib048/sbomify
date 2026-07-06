@@ -103,6 +103,20 @@ AUTH_USER_MODEL = "core.User"
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Networks whose requests are allowed to set the client IP via the X-Real-IP
+# header (see core.utils.get_client_ip). Only honour that header when the direct
+# peer (REMOTE_ADDR) is a trusted reverse proxy; otherwise a client reaching
+# Django directly could spoof its IP and defeat per-IP rate limiting. Defaults
+# to loopback + RFC1918 ranges, which cover the Caddy sidecar in Docker.
+TRUSTED_PROXIES = [
+    cidr.strip()
+    for cidr in os.environ.get(
+        "TRUSTED_PROXIES",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    ).split(",")
+    if cidr.strip()
+]
+
 # Allow larger request bodies for OSCAL catalog imports (default is 2.5 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB
 

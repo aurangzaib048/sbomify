@@ -5,15 +5,18 @@ Utility code used by multiple apps.
 from __future__ import annotations
 
 import collections.abc
+import ipaddress
 import logging
 import string
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from secrets import token_urlsafe
 from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import models, transaction
 from django.http import HttpRequest
@@ -211,15 +214,47 @@ def get_current_team_id(request: HttpRequest) -> int | None:
     return token_to_number(team_key)
 
 
+@lru_cache(maxsize=1)
+def _trusted_proxy_networks(
+    cidrs: tuple[str, ...],
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Compile the configured trusted-proxy CIDRs, skipping invalid entries."""
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for cidr in cidrs:
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid TRUSTED_PROXIES entry: %r", cidr)
+    return tuple(networks)
+
+
+def _is_trusted_proxy(ip: str | None) -> bool:
+    """Return True if ``ip`` is within a configured trusted-proxy network."""
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    cidrs = tuple(getattr(settings, "TRUSTED_PROXIES", ()) or ())
+    return any(addr in net for net in _trusted_proxy_networks(cidrs))
+
+
 def get_client_ip(request: HttpRequest) -> str | None:
     """
     Get the client IP address from the request.
 
-    We assume the application is running behind a trusted reverse proxy (Caddy)
-    which validates the source and sets the X-Real-IP header to the correct
-    client IP (handling Cloudflare, etc.).
+    The application runs behind a trusted reverse proxy (Caddy) that sets the
+    X-Real-IP header to the real client IP. That header is only honoured when the
+    direct peer (REMOTE_ADDR) is a trusted proxy (settings.TRUSTED_PROXIES);
+    otherwise a client reaching Django directly could spoof X-Real-IP and defeat
+    per-IP rate limiting.
     """
-    return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
+    remote_addr = request.META.get("REMOTE_ADDR")
+    real_ip = request.META.get("HTTP_X_REAL_IP")
+    if real_ip and _is_trusted_proxy(remote_addr):
+        return real_ip.split(",")[0].strip()
+    return remote_addr
 
 
 def get_by_uuid_or_pk(
