@@ -46,9 +46,6 @@ Ensure all tests pass, coverage is at least 80%, and there are no linting errors
 uv lock                       # updates the sbomify entry in uv.lock
 ```
 
-1. Update `CHANGELOG.md`: move the `[Unreleased]` entries under a new
-   `## [YY.MM.MICRO] - <date>` heading.
-
 1. Get the new version number:
 
 ```bash
@@ -90,5 +87,4 @@ git push origin v${VERSION}
 
 - Always ensure all tests pass before cutting a release
 - Keep `pyproject.toml` and `package.json` versions in sync
-- Update the changelog if one exists
-- Consider creating a GitHub release with release notes
+- Record notable changes in the GitHub release notes (this repo does not keep a `CHANGELOG.md`)
