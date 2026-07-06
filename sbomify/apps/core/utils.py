@@ -251,8 +251,8 @@ def get_client_ip(request: HttpRequest) -> str | None:
     otherwise a client reaching Django directly could spoof X-Real-IP and defeat
     per-IP rate limiting.
     """
-    remote_addr = request.META.get("REMOTE_ADDR")
-    real_ip = request.META.get("HTTP_X_REAL_IP")
+    remote_addr: str | None = request.META.get("REMOTE_ADDR")
+    real_ip: str | None = request.META.get("HTTP_X_REAL_IP")
     if real_ip and _is_trusted_proxy(remote_addr):
         candidate = real_ip.split(",")[0].strip()
         # A trusted proxy shouldn't forward garbage, but validate anyway so a
