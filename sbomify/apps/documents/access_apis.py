@@ -32,6 +32,7 @@ from .access_schemas import (
     NDASignatureResponse,
     NDASignRequest,
 )
+from .content_safety import apply_safe_download_headers
 
 User = get_user_model()
 log = logging.getLogger(__name__)
@@ -376,8 +377,15 @@ def get_nda_for_signing(request: HttpRequest, team_key: str, request_id: str) ->
             document_data = s3.get_document_data(company_nda.document_filename)
 
             if document_data:
-                response = HttpResponse(document_data, content_type=company_nda.content_type or "application/pdf")
-                response["Content-Disposition"] = f'inline; filename="{company_nda.name}.pdf"'
+                response = HttpResponse(document_data)
+                apply_safe_download_headers(
+                    response,
+                    # NDA content_type may be blank for legacy records; fall back
+                    # to PDF so the inline preview/signing flow keeps working.
+                    content_type=company_nda.content_type or "application/pdf",
+                    filename=f"{company_nda.name}.pdf",
+                    inline=True,
+                )
                 return response
             else:
                 return 404, {"detail": "NDA document file not found"}
