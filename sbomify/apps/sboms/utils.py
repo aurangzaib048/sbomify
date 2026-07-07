@@ -13,7 +13,6 @@ from uuid import uuid4
 from django.conf import settings
 from django.core import signing
 from django.db import DatabaseError, IntegrityError, OperationalError
-from django.http import HttpRequest
 from django.utils import timezone
 
 from sbomify.apps.core.models import Component, Product
@@ -21,7 +20,7 @@ from sbomify.apps.core.models import Component, Product
 # S3Client import moved to function level to support test mocking
 from sbomify.apps.sboms.models import SBOM
 from sbomify.apps.sboms.sbom_format_schemas import cyclonedx_1_6 as cdx16
-from sbomify.apps.teams.models import ContactProfile, Member, Team
+from sbomify.apps.teams.models import ContactProfile
 
 log = logging.getLogger(__name__)
 
@@ -437,51 +436,6 @@ def _get_cyclonedx_model() -> Any:
     except ImportError:
         log.warning("CycloneDX library not available. Some SBOM features may be limited.")
         return None
-
-
-def verify_item_access(
-    request: HttpRequest,
-    item: Team | Product | Component | SBOM,
-    allowed_roles: list[str] | None,
-) -> bool:
-    """
-    Verify if the user has access to the item based on the allowed roles.
-    """
-    if not request.user.is_authenticated:
-        return False
-
-    team_id = None
-    team_key = None
-
-    if isinstance(item, Team):
-        team_id = item.id
-        team_key = item.key
-    elif isinstance(item, (Product, Component)):
-        team_id = item.team_id
-        team_key = item.team.key
-    elif isinstance(item, SBOM):
-        team_id = item.component.team_id
-        team_key = item.component.team.key
-
-    # Check session data first
-    if team_key and "user_teams" in request.session:
-        team_data = request.session["user_teams"].get(team_key)
-        if team_data and "role" in team_data:
-            # If no roles are specified, any role is allowed
-            if allowed_roles is None:
-                return True
-            return team_data["role"] in allowed_roles
-
-    # Fall back to database check
-    if team_id:
-        member = Member.objects.filter(user=request.user, team_id=team_id).first()
-        if member:
-            # If no roles are specified, any role is allowed
-            if allowed_roles is None:
-                return True
-            return member.role in allowed_roles
-
-    return False
 
 
 @contextmanager
@@ -935,17 +889,17 @@ def create_product_external_references(product: Product, user: Any = None) -> li
 
     # Add documents as external references (for document components that are part of this product)
     # Get document components that are part of this product
-    # Authorization is handled at the API level, so we don't filter by is_public here
+    # A public product's aggregate is cached in S3 and served to anyone, so it must embed
+    # only PUBLIC documents (plain, non-expiring URLs). Non-public documents render with
+    # per-user signed URLs that would otherwise leak to everyone via the shared cache; for
+    # private products the download is authenticated and per-user, so all documents are fine.
     from sbomify.apps.core.models import Component
 
-    document_components = (
-        Component.objects.filter(
-            component_type="document",
-            products=product,
-        )
-        .distinct()
-        .prefetch_related("document_set")
-    )
+    document_filter: dict[str, Any] = {"component_type": "document", "products": product}
+    if getattr(product, "is_public", False):
+        document_filter["visibility"] = Component.Visibility.PUBLIC
+
+    document_components = Component.objects.filter(**document_filter).distinct().prefetch_related("document_set")
 
     for component in document_components:
         for document in component.document_set.all():
@@ -982,17 +936,17 @@ def create_product_spdx_external_references(product: Product, user: Any = None) 
 
     # Add documents as external references (for document components that are part of this product)
     # Get document components that are part of this product
-    # Authorization is handled at the API level, so we don't filter by is_public here
+    # A public product's aggregate is cached in S3 and served to anyone, so it must embed
+    # only PUBLIC documents (plain, non-expiring URLs). Non-public documents render with
+    # per-user signed URLs that would otherwise leak to everyone via the shared cache; for
+    # private products the download is authenticated and per-user, so all documents are fine.
     from sbomify.apps.core.models import Component
 
-    document_components = (
-        Component.objects.filter(
-            component_type="document",
-            products=product,
-        )
-        .distinct()
-        .prefetch_related("document_set")
-    )
+    document_filter: dict[str, Any] = {"component_type": "document", "products": product}
+    if getattr(product, "is_public", False):
+        document_filter["visibility"] = Component.Visibility.PUBLIC
+
+    document_components = Component.objects.filter(**document_filter).distinct().prefetch_related("document_set")
 
     for component in document_components:
         for document in component.document_set.all():
@@ -1827,14 +1781,18 @@ def compute_release_aggregate_fingerprint(release: Any) -> str:
     * the release/product METADATA the builder embeds: the product + release
       names (the aggregate's top-level component name) and the product external
       references it renders from product links + identifiers. So a rename or a
-      link/identifier edit also triggers a rebuild.
+      link/identifier edit also triggers a rebuild; and
+    * the PUBLIC documents embedded as external references (each document's
+      content_hash + metadata), so a document add/remove/rename/retype/rehash
+      also triggers a rebuild. Only PUBLIC documents are fed — exactly the set a
+      public aggregate embeds.
 
     Rows are ordered, and every field is length-prefixed (netstring-style) before
     hashing so user-controlled values cannot collide regardless of content — no
     reliance on a delimiter byte that a name/URL could itself contain. (ADR-004:
     member artifacts are immutable, so the filename is a faithful fingerprint.)
     """
-    digest = hashlib.sha256(b"v4")
+    digest = hashlib.sha256(b"v5")
 
     def feed(*parts: Any) -> None:
         for part in parts:
@@ -1859,6 +1817,23 @@ def compute_release_aggregate_fingerprint(release: Any) -> str:
         product.links.order_by("id").values_list("link_type", "title", "url", "description").iterator()
     ):
         feed("ln", lt, title, url, desc)
+
+    # Public documents embedded in the aggregate (only PUBLIC document components are rendered
+    # for a public product). Feed content_hash + metadata so an add/remove/rename/retype/rehash
+    # busts the cache key — the fingerprint previously omitted documents entirely.
+    from sbomify.apps.documents.models import Document
+
+    documents = (
+        Document.objects.filter(
+            component__products=product,
+            component__component_type="document",
+            component__visibility=Component.Visibility.PUBLIC,
+        )
+        .order_by("id")
+        .values_list("id", "content_hash", "document_type", "name", "description")
+    )
+    for did, chash, dtype, dname, ddesc in documents.iterator():
+        feed("doc", did, chash, dtype, dname, ddesc)
 
     return digest.hexdigest()
 

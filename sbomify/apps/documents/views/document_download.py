@@ -6,6 +6,7 @@ from django.views import View
 from sbomify.apps.core.errors import error_response
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.core.services.access_control import check_component_access
+from sbomify.apps.documents.content_safety import apply_safe_download_headers
 from sbomify.apps.documents.models import Document
 
 logger = logging.getLogger(__name__)
@@ -28,20 +29,16 @@ class DocumentDownloadView(View):
                 document_data = s3.get_document_data(document.document_filename)
 
                 if document_data:
-                    response = HttpResponse(
-                        document_data, content_type=document.content_type or "application/octet-stream"
-                    )
                     # Use original filename if available, otherwise use document name
                     filename = document.name if document.name else f"document_{document.id}"
 
-                    # Check if inline view is requested
-                    disposition_type = "inline" if request.GET.get("view") == "inline" else "attachment"
-                    response["Content-Disposition"] = f'{disposition_type}; filename="{filename}"'
-
-                    # Allow embedding in iframe if inline view
-                    if disposition_type == "inline":
-                        response["X-Frame-Options"] = "SAMEORIGIN"
-
+                    response = HttpResponse(document_data)
+                    apply_safe_download_headers(
+                        response,
+                        content_type=document.content_type,
+                        filename=filename,
+                        inline=request.GET.get("view") == "inline",
+                    )
                     return response
                 else:
                     return error_response(request, HttpResponseNotFound("Document file not found"))
