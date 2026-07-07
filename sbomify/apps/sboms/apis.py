@@ -180,6 +180,24 @@ def _build_component_metadata_from_native_fields(component: Component) -> Compon
     )
 
 
+def _schedule_vex_reapply(component_id: str) -> None:
+    """Enqueue the VEX re-apply to run after the current transaction commits (async, best-effort).
+
+    ``transaction.on_commit`` guarantees the new VEX row is visible to the worker; enqueuing (a
+    Redis push) is cheap, and any broker error is swallowed so a VEX upload still succeeds.
+    """
+
+    def _send() -> None:
+        try:
+            from sbomify.apps.vulnerability_scanning.tasks import reapply_vex_to_component_scans
+
+            reapply_vex_to_component_scans.send(component_id)
+        except Exception:
+            log.warning("Failed to enqueue VEX re-apply for component %s", component_id, exc_info=True)
+
+    transaction.on_commit(_send)
+
+
 def _extract_cdx_purl(payload: Any) -> str | None:
     """Extract PURL from a CycloneDX payload's metadata.component.purl."""
     try:
@@ -450,16 +468,12 @@ def sbom_upload_cyclonedx(
         except Exception:
             log.warning("Failed to broadcast SBOM upload notification", exc_info=True)
 
-        # A new VEX changes which findings are suppressed; re-apply it to the
-        # component's existing security scans so the dashboard reflects it without
-        # waiting for a re-scan. Best-effort.
+        # A new VEX changes which findings are suppressed; re-apply it to the component's existing
+        # security scans so the dashboard reflects it without a re-scan. Run it in the background,
+        # after this upload commits, so the request stays fast (the app serves on ASGI/uvicorn,
+        # where a synchronous re-apply would block a worker) and the task can see the new VEX row.
         if bom_type == SBOM.BomType.VEX.value:
-            try:
-                from sbomify.apps.vulnerability_scanning.vex import reannotate_component_runs
-
-                reannotate_component_runs(component.id)
-            except Exception:
-                log.warning("Failed to re-apply VEX to existing scans", exc_info=True)
+            _schedule_vex_reapply(component.id)
 
         return 201, {"id": sbom.id}
 

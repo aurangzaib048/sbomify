@@ -182,6 +182,57 @@ def test_vex_reupload_same_release_keys_on_serial_number(
 
 
 @pytest.mark.django_db
+def test_vex_upload_enqueues_async_reapply_sbom_does_not(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+    django_capture_on_commit_callbacks,
+):
+    """A VEX upload enqueues the re-apply task after commit (async, not sync in the request); a
+    plain SBOM upload does not."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+    SBOM.objects.all().delete()
+    send = mocker.patch("sbomify.apps.vulnerability_scanning.tasks.reapply_vex_to_component_scans.send")
+
+    client = Client()
+    headers = get_api_headers(sample_access_token)
+    base = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id})
+    vex_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "serialNumber": "urn:uuid:cccccccc-0000-0000-0000-000000000003",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
+            "vulnerabilities": [
+                {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
+            ],
+        }
+    )
+    sbom_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "2.0.0"}},
+            "components": [],
+        }
+    )
+
+    with django_capture_on_commit_callbacks(execute=True):
+        rv = client.post(base + "?bom_type=vex", data=vex_doc, content_type="application/json", **headers)
+    assert rv.status_code == 201, rv.content
+    send.assert_called_once_with(sample_component.id)
+
+    send.reset_mock()
+    with django_capture_on_commit_callbacks(execute=True):
+        rs = client.post(base, data=sbom_doc, content_type="application/json", **headers)
+    assert rs.status_code == 201, rs.content
+    send.assert_not_called()  # a plain SBOM does not trigger a VEX re-apply
+
+
+@pytest.mark.django_db
 def test_sbom_upload_api_cyclonedx_1_6_with_manufacturer(
     sample_access_token: AccessToken,  # noqa: F811
     sample_component: Component,  # noqa: F811
