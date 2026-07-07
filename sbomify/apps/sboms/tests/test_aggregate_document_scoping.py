@@ -73,6 +73,34 @@ def test_fingerprint_reacts_to_public_document_changes(team_with_business_plan):
 
 
 @pytest.mark.django_db
+def test_aggregate_members_exclude_cbom_of_same_component(team_with_business_plan):
+    """A CBOM (same cyclonedx format, different bom_type) in the release must not enter the SBOM
+    aggregate: the fingerprint over SBOM members is unchanged when a CBOM is added."""
+    team = team_with_business_plan
+    product = Product.objects.create(name="P-cbom", team=team, is_public=True)
+    release = Release.objects.create(product=product, name="v1")
+    member = Component.objects.create(
+        name="m", team=team, visibility=Component.Visibility.PUBLIC, component_type=Component.ComponentType.BOM
+    )
+    sbom = SBOM.objects.create(name="m", component=member, format="cyclonedx", version="1", sbom_filename="m.json")
+    ReleaseArtifact.objects.create(release=release, sbom=sbom)
+
+    fp_before = compute_release_aggregate_fingerprint(release)
+
+    cbom = SBOM.objects.create(
+        name="m-cbom",
+        component=member,
+        format="cyclonedx",
+        version="1",
+        sbom_filename="m-cbom.json",
+        bom_type=SBOM.BomType.CBOM,
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=cbom)
+
+    assert compute_release_aggregate_fingerprint(release) == fp_before  # CBOM is not an SBOM member
+
+
+@pytest.mark.django_db
 def test_public_product_spdx_aggregate_excludes_nonpublic_documents(team_with_business_plan):
     """The SPDX external-reference builder scopes documents the same way as the CycloneDX one."""
     from sbomify.apps.sboms.utils import create_product_spdx_external_references

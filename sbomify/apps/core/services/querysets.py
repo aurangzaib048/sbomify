@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from django.db.models import Count, Prefetch, QuerySet
+from django.db.models import Count, Prefetch, Q, QuerySet
 
 from sbomify.apps.core.models import Component, Product
-from sbomify.apps.sboms.models import ProductIdentifier, ProductLink
+from sbomify.apps.sboms.models import SBOM, ProductIdentifier, ProductLink
 
 
 def optimize_product_queryset(queryset: QuerySet[Product]) -> QuerySet[Product]:
@@ -33,6 +33,7 @@ def optimize_product_queryset(queryset: QuerySet[Product]) -> QuerySet[Product]:
 
 def optimize_component_queryset(queryset: QuerySet[Component]) -> QuerySet[Component]:
     return queryset.select_related("team").annotate(
-        sbom_count=Count("sbom", distinct=True),
+        # Count only real SBOMs — CBOM/VEX rows live in the same table and must not inflate the badge.
+        sbom_count=Count("sbom", filter=Q(sbom__bom_type=SBOM.BomType.SBOM), distinct=True),
         document_count=Count("document", distinct=True),
     )

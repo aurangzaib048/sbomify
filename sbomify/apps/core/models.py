@@ -76,28 +76,34 @@ class Component(SbomComponent):
         proxy = True
         app_label = "core"
 
-    def get_latest_sboms_by_format(self) -> dict[str, Any]:
-        """Get the latest SBOM for each format (CycloneDX, SPDX, etc.).
+    def get_latest_sboms_by_format(self) -> dict[Any, Any]:
+        """Get the latest artifact for each (format, bom_type).
+
+        Keyed on (format, bom_type) rather than format alone so a CBOM or VEX (which share the
+        cyclonedx format) each keep their own latest slot instead of one displacing the other.
 
         Returns:
-            Dict mapping format names to their latest SBOM objects.
-            Example: {'cyclonedx': <SBOM>, 'spdx': <SBOM>}
+            Dict mapping (format, bom_type) tuples to their latest SBOM-table objects.
+            Example: {('cyclonedx', 'sbom'): <SBOM>, ('cyclonedx', 'cbom'): <CBOM>, ('spdx', 'sbom'): <SBOM>}
         """
         from django.db.models import Max
 
-        # Get the latest created_at for each format
-        latest_by_format = self.sbom_set.values("format").annotate(latest_created=Max("created_at"))
+        # Latest artifact per (format, bom_type). Keying on bom_type as well as format keeps a
+        # newer CBOM or VEX (same cyclonedx format, different bom_type) from displacing the latest
+        # real SBOM in the single cyclonedx slot. The key is a (format, bom_type) tuple.
+        latest_by_format = self.sbom_set.values("format", "bom_type").annotate(latest_created=Max("created_at"))
 
         latest_sboms = {}
         for format_info in latest_by_format:
             format_name = format_info["format"]
+            bom_type = format_info["bom_type"]
             latest_created = format_info["latest_created"]
 
-            # Get the actual SBOM object for this format and creation time
-            sbom = self.sbom_set.filter(format=format_name, created_at=latest_created).first()
+            # Get the actual SBOM object for this (format, bom_type) and creation time
+            sbom = self.sbom_set.filter(format=format_name, bom_type=bom_type, created_at=latest_created).first()
 
             if sbom:
-                latest_sboms[format_name] = sbom
+                latest_sboms[(format_name, bom_type)] = sbom
 
         return latest_sboms
 
@@ -406,9 +412,13 @@ class Release(models.Model):
         try:
             # Determine if this is an SBOM or Document
             if hasattr(artifact, "format"):  # SBOM
-                # Remove any existing SBOM of the same format from the same component
+                # Remove any existing artifact of the same format AND bom_type from the same
+                # component. Keying on bom_type keeps a CBOM/VEX (same cyclonedx format) from
+                # evicting the component's real SBOM: each bom_type replaces only its own slot.
                 deleted, _ = self.artifacts.filter(
-                    sbom__component=artifact.component, sbom__format=artifact.format
+                    sbom__component=artifact.component,
+                    sbom__format=artifact.format,
+                    sbom__bom_type=artifact.bom_type,
                 ).delete()
                 replaced = deleted > 0
 

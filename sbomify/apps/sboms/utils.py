@@ -1354,7 +1354,7 @@ class ReleaseSBOMBuilder:
 
             # Get all SBOM artifacts in this release with optimized query
             sbom_artifacts = (
-                release.artifacts.filter(sbom__isnull=False)
+                release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM)
                 .select_related("sbom__component", "sbom__component__team")
                 .prefetch_related("sbom__component__team")
             )
@@ -1801,7 +1801,11 @@ def compute_release_aggregate_fingerprint(release: Any) -> str:
             digest.update(b)
 
     members = (
-        release.artifacts.filter(sbom__isnull=False, sbom__component__visibility=Component.Visibility.PUBLIC)
+        release.artifacts.filter(
+            sbom__isnull=False,
+            sbom__bom_type=SBOM.BomType.SBOM,
+            sbom__component__visibility=Component.Visibility.PUBLIC,
+        )
         .order_by("sbom__id")
         .values_list("sbom__id", "sbom__sbom_filename")
     )
