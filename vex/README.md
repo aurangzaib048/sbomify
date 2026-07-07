@@ -56,14 +56,19 @@ step with each release. The schema validation also runs in CI through the test s
 
 ## Consumption
 
-Uploading a `bom_type=vex` artifact to a component suppresses its `not_affected`
-findings from the vulnerability dashboard. Suppression is applied at read time
-(`vulnerability_scanning/vex.py`), provider-agnostic (OSV and Dependency-Track),
-and never mutates the stored scan result (ADR-004). A finding matches a statement
-when their vulnerability ids (or aliases) intersect and they name the same package —
-version-agnostic when the statement's purl carries no version, so the suppression
-survives a release that bumps the dependency; a different package hit by the same CVE is
-not over-suppressed.
+Uploading a `bom_type=vex` artifact to a component suppresses its findings from the
+vulnerability dashboard. A statement suppresses when its analysis `state` is
+`not_affected` or `false_positive`; `resolved` does not suppress (it means remediated,
+so the next scan should confirm the fix, not have a VEX mask it). Suppression is applied
+server-side in `vulnerability_scanning/vex.py`, provider-agnostic (OSV and
+Dependency-Track): `annotate_findings_with_vex` runs at scan time and
+`reannotate_component_runs` re-applies to stored runs when a VEX is uploaded after a
+scan. Raw findings are kept (ADR-004); only their `analysis_*` fields and the summary
+counts change, and the finding records the actual analysis state that cleared it. A
+finding matches a statement when their vulnerability ids (or aliases) intersect and they
+name the same package — version-agnostic when the statement's purl carries no version, so
+the suppression survives a release that bumps the dependency; a different package hit by
+the same CVE is not over-suppressed.
 
 ## Publishing
 
