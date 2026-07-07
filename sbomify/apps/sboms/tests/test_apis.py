@@ -135,6 +135,53 @@ def test_sbom_upload_api_cyclonedx(
 
 
 @pytest.mark.django_db
+def test_vex_reupload_same_release_keys_on_serial_number(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """Two VEX exports for the same release share a fixed metadata.component.version but carry a
+    fresh serialNumber each (as Dependency-Track emits), so both upload — the row keys on the
+    serialNumber. Re-uploading the identical document (same serialNumber) is a 409."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+    SBOM.objects.all().delete()
+
+    client = Client()
+    url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id}) + "?bom_type=vex"
+
+    def vex(serial: str) -> str:
+        return json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "serialNumber": serial,
+                "version": 1,
+                "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
+                "vulnerabilities": [
+                    {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
+                ],
+            }
+        )
+
+    headers = get_api_headers(sample_access_token)
+    s1 = "urn:uuid:aaaaaaaa-0000-0000-0000-000000000001"
+    s2 = "urn:uuid:bbbbbbbb-0000-0000-0000-000000000002"
+    r1 = client.post(url, data=vex(s1), content_type="application/json", **headers)
+    r2 = client.post(url, data=vex(s2), content_type="application/json", **headers)
+    assert r1.status_code == 201, r1.content
+    assert r2.status_code == 201, r2.content  # fresh serialNumber, no 409 despite same component version
+
+    vex_rows = SBOM.objects.filter(bom_type="vex")
+    assert vex_rows.count() == 2
+    assert set(vex_rows.values_list("version", flat=True)) == {s1, s2}
+
+    # Re-uploading the identical document (same serialNumber) is rejected as a duplicate.
+    r3 = client.post(url, data=vex(s1), content_type="application/json", **headers)
+    assert r3.status_code == 409
+
+
+@pytest.mark.django_db
 def test_sbom_upload_api_cyclonedx_1_6_with_manufacturer(
     sample_access_token: AccessToken,  # noqa: F811
     sample_component: Component,  # noqa: F811

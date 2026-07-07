@@ -31,7 +31,12 @@ from sbomify.apps.core.utils import (
     obj_extract,
 )
 from sbomify.apps.oidc.permissions import is_authorised_for_component
-from sbomify.apps.sboms.utils import _is_cbom, _is_duplicate_integrity_error, verify_download_token
+from sbomify.apps.sboms.utils import (
+    _is_cbom,
+    _is_duplicate_integrity_error,
+    verify_download_token,
+    vex_row_version,
+)
 from sbomify.apps.teams.models import ContactProfile
 
 from .models import SBOM, Component, Product
@@ -392,6 +397,13 @@ def sbom_upload_cyclonedx(
         # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
         if "bom_type" not in request.GET and _is_cbom(sbom_data):
             bom_type = "cbom"
+
+        # A VEX is re-issued daily against the same release, so key its row on the document's
+        # serialNumber (fresh per Dependency-Track export) instead of the fixed component version,
+        # which would otherwise 409 every re-upload.
+        if bom_type == SBOM.BomType.VEX:
+            sbom_version = vex_row_version(sbom_data, sha256_hash)
+            sbom_dict["version"] = sbom_version
 
         # Extract PURL qualifiers from metadata.component.purl
         cdx_purl = _extract_cdx_purl(payload)
