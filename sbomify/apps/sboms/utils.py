@@ -2237,22 +2237,6 @@ def _is_cbom(sbom_data: dict[str, Any]) -> bool:
     return isinstance(metadata, dict) and _is_crypto_component(metadata.get("component"))
 
 
-def vex_row_version(sbom_data: dict[str, Any], sha256_hash: str) -> str:
-    """The stored `version` for a VEX row.
-
-    A VEX is re-issued continuously against the same release, but its ``metadata.component.version``
-    is fixed per release (a Dependency-Track export leaves it at the project version, often empty),
-    so keying the row on that version would reject every re-upload as a duplicate. DT sets a fresh
-    ``serialNumber`` on each export, so key the row on the document's ``serialNumber`` instead — each
-    re-issue is a distinct row, and a re-upload of the exact same document (same serialNumber) still
-    dedupes. Fall back to the content hash for a hand-authored VEX that carries no serialNumber.
-    """
-    serial = sbom_data.get("serialNumber")
-    if isinstance(serial, str) and serial.strip():
-        return serial.strip()
-    return f"sha256:{sha256_hash}"
-
-
 def _is_duplicate_integrity_error(exc: IntegrityError) -> bool:
     """Check if an IntegrityError is for the SBOM uniqueness constraint.
 

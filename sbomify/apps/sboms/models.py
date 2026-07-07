@@ -959,6 +959,10 @@ class SBOM(models.Model):
             models.UniqueConstraint(
                 fields=["component", "version", "format", "qualifiers", "bom_type"],
                 name="sboms_sbom_unique_component_version_format_qualifiers_bom_type",
+                # VEX is re-issued continuously against the same release and carries no meaningful
+                # version (Dependency-Track does not persist BOMs, so it cannot version its exports).
+                # Exempt it from uniqueness: multiple VEX rows coexist and the latest is by created_at.
+                condition=~models.Q(bom_type="vex"),
             ),
         ]
 

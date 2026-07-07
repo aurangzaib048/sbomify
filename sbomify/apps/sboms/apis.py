@@ -31,12 +31,7 @@ from sbomify.apps.core.utils import (
     obj_extract,
 )
 from sbomify.apps.oidc.permissions import is_authorised_for_component
-from sbomify.apps.sboms.utils import (
-    _is_cbom,
-    _is_duplicate_integrity_error,
-    verify_download_token,
-    vex_row_version,
-)
+from sbomify.apps.sboms.utils import _is_cbom, _is_duplicate_integrity_error, verify_download_token
 from sbomify.apps.teams.models import ContactProfile
 
 from .models import SBOM, Component, Product
@@ -416,21 +411,23 @@ def sbom_upload_cyclonedx(
         if "bom_type" not in request.GET and _is_cbom(sbom_data):
             bom_type = "cbom"
 
-        # A VEX is re-issued daily against the same release, so key its row on the document's
-        # serialNumber (fresh per Dependency-Track export) instead of the fixed component version,
-        # which would otherwise 409 every re-upload.
-        if bom_type == SBOM.BomType.VEX:
-            sbom_version = vex_row_version(sbom_data, sha256_hash)
-            sbom_dict["version"] = sbom_version
-
         # Extract PURL qualifiers from metadata.component.purl
         cdx_purl = _extract_cdx_purl(payload)
         sbom_qualifiers = extract_purl_qualifiers(cdx_purl) if cdx_purl else {}
 
-        # Check for duplicate (same component + version + format + qualifiers + bom_type)
-        if SBOM.objects.filter(
-            component=component, version=sbom_version, format=sbom_format, qualifiers=sbom_qualifiers, bom_type=bom_type
-        ).exists():
+        # VEX is re-issued continuously against the same release with no meaningful version, so it is
+        # exempt from the duplicate guard (multiple rows coexist, the latest is by created_at). SBOM
+        # and CBOM keep the guard so a re-uploaded static artifact stays a 409.
+        if (
+            bom_type != SBOM.BomType.VEX
+            and SBOM.objects.filter(
+                component=component,
+                version=sbom_version,
+                format=sbom_format,
+                qualifiers=sbom_qualifiers,
+                bom_type=bom_type,
+            ).exists()
+        ):
             return 409, {
                 "detail": f"{bom_type.upper()} artifact with version '{sbom_version}' and format '{sbom_format}' "
                 "already exists for this component",

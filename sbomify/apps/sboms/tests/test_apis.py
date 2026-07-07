@@ -135,50 +135,43 @@ def test_sbom_upload_api_cyclonedx(
 
 
 @pytest.mark.django_db
-def test_vex_reupload_same_release_keys_on_serial_number(
+def test_vex_reissues_coexist_latest_by_created_at(
     sample_access_token: AccessToken,  # noqa: F811
     sample_component: Component,  # noqa: F811
     mocker: MockerFixture,  # noqa: F811
 ):
-    """Two VEX exports for the same release share a fixed metadata.component.version but carry a
-    fresh serialNumber each (as Dependency-Track emits), so both upload — the row keys on the
-    serialNumber. Re-uploading the identical document (same serialNumber) is a 409."""
+    """VEX is re-issued against the same release with no meaningful version, so repeated uploads
+    (even byte-identical ones) all succeed and coexist as separate rows; the latest is by
+    created_at. SBOM/CBOM keep the duplicate guard (covered elsewhere)."""
     mocker.patch("boto3.resource")
     mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
     SBOM.objects.all().delete()
 
     client = Client()
     url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id}) + "?bom_type=vex"
-
-    def vex(serial: str) -> str:
-        return json.dumps(
-            {
-                "bomFormat": "CycloneDX",
-                "specVersion": "1.6",
-                "serialNumber": serial,
-                "version": 1,
-                "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
-                "vulnerabilities": [
-                    {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
-                ],
-            }
-        )
-
+    vex_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
+            "vulnerabilities": [
+                {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
+            ],
+        }
+    )
     headers = get_api_headers(sample_access_token)
-    s1 = "urn:uuid:aaaaaaaa-0000-0000-0000-000000000001"
-    s2 = "urn:uuid:bbbbbbbb-0000-0000-0000-000000000002"
-    r1 = client.post(url, data=vex(s1), content_type="application/json", **headers)
-    r2 = client.post(url, data=vex(s2), content_type="application/json", **headers)
-    assert r1.status_code == 201, r1.content
-    assert r2.status_code == 201, r2.content  # fresh serialNumber, no 409 despite same component version
+
+    # Three uploads of the same release's VEX (same component version), all accepted.
+    for _ in range(3):
+        r = client.post(url, data=vex_doc, content_type="application/json", **headers)
+        assert r.status_code == 201, r.content
 
     vex_rows = SBOM.objects.filter(bom_type="vex")
-    assert vex_rows.count() == 2
-    assert set(vex_rows.values_list("version", flat=True)) == {s1, s2}
-
-    # Re-uploading the identical document (same serialNumber) is rejected as a duplicate.
-    r3 = client.post(url, data=vex(s1), content_type="application/json", **headers)
-    assert r3.status_code == 409
+    assert vex_rows.count() == 3
+    # The latest is the newest by created_at (how the VEX loader resolves it).
+    latest = vex_rows.order_by("-created_at").first()
+    assert latest is not None
 
 
 @pytest.mark.django_db
