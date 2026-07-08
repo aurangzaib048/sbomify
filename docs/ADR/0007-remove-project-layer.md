@@ -142,8 +142,8 @@ Eight phases, all in one PR:
 
 - **One-way migration.** Migration `0062`'s visibility demotion is
   `RunPython.noop` on reverse — the rollback path is database restore
-  from a pre-deploy snapshot. The PR description and `CHANGELOG.md`
-  document this.
+  from a pre-deploy snapshot. The PR description and the GitHub release
+  notes document this.
 - **Lost organisational dimension.** Customers who genuinely used
   Projects as a grouping primitive lose that handle. The mitigation is
   that Components remain attachable to multiple Products (the new M2M
@@ -169,4 +169,4 @@ Eight phases, all in one PR:
   — preamble documents the visibility-demotion precedence rule
 - `sbomify/apps/sboms/tests/test_product_component_tenancy.py` —
   three-layer cross-tenant invariant tests
-- `CHANGELOG.md` — operator-facing breaking-change record
+- GitHub release notes — operator-facing breaking-change record
