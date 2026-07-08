@@ -323,11 +323,17 @@ def _build_component_response(
     has_crud_permissions: bool | None = None,
 ) -> dict[str, Any]:
     """Build the API response for a single Component."""
+    from sbomify.apps.sboms.models import SBOM
+
     response = _build_item_base(request, component, has_crud_permissions)
     response["visibility"] = component.visibility
     response["gating_mode"] = component.gating_mode
     response["nda_document_id"] = str(component.nda_document.id) if component.nda_document_id else None
-    response["sbom_count"] = component.sbom_count if hasattr(component, "sbom_count") else component.sbom_set.count()
+    response["sbom_count"] = (
+        component.sbom_count
+        if hasattr(component, "sbom_count")
+        else component.sbom_set.filter(bom_type=SBOM.BomType.SBOM).count()
+    )
     response["document_count"] = (
         component.document_count if hasattr(component, "document_count") else component.document_set.count()
     )
@@ -2321,7 +2327,7 @@ def list_component_releases(
             artifact_count = release.artifacts.count()
 
             # Check if release has SBOMs for download capability
-            has_sboms = release.artifacts.filter(sbom__isnull=False).exists()
+            has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
 
             response_data.append(
                 {
@@ -2562,6 +2568,7 @@ def list_all_releases(
     page_size: int = Query(15),  # type: ignore[type-arg]
 ) -> Any:
     """List all releases across all products for the current user's team, optionally filtered by product and version."""
+    from sbomify.apps.sboms.models import SBOM
 
     try:
         # Special handling for public product access
@@ -2648,7 +2655,7 @@ def list_all_releases(
                 artifact_count = release.artifacts.count()
 
                 # Check if release has SBOMs for download capability
-                has_sboms = release.artifacts.filter(sbom__isnull=False).exists()
+                has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
 
                 # Ensure the product exists
                 if not release.product:
@@ -2689,11 +2696,13 @@ def list_all_releases(
 
 def _build_release_response(request: HttpRequest, release: Release, include_artifacts: bool = False) -> dict[str, Any]:
     """Build a standardized response for releases."""
+    from sbomify.apps.sboms.models import SBOM
+
     # Count artifacts for this release
     artifact_count = release.artifacts.count()
 
     # Check if release has SBOMs for download capability
-    has_sboms = release.artifacts.filter(sbom__isnull=False).exists()
+    has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
     has_crud_permissions = can(request, "release:manage", release.product).allowed
 
     response = {
@@ -3135,7 +3144,11 @@ def download_release(
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     # Get all SBOM artifacts in the release
-    sbom_artifacts = release.artifacts.filter(sbom__isnull=False).select_related("sbom")
+    from sbomify.apps.sboms.models import SBOM
+
+    sbom_artifacts = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).select_related(
+        "sbom"
+    )
 
     if not sbom_artifacts.exists():
         return HttpResponse(
@@ -4003,7 +4016,9 @@ def list_component_sboms(
         from sbomify.apps.sboms.models import SBOM
 
         try:
-            sboms_queryset = SBOM.objects.filter(component_id=component_id).order_by("-created_at")
+            sboms_queryset = SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM).order_by(
+                "-created_at"
+            )
             # Apply pagination
             paginated_sboms, pagination_meta = _paginate_queryset(sboms_queryset, page, page_size)
         except (DatabaseError, OperationalError) as db_err:

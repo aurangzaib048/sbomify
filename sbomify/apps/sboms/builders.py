@@ -215,9 +215,10 @@ class BaseSBOMBuilder(ABC):
         ``(members, {str(sbom.id): (path, id) | None})``.
         """
         from sbomify.apps.core.models import Component
+        from sbomify.apps.sboms.models import SBOM
 
         sbom_artifacts = (
-            release.artifacts.filter(sbom__isnull=False)
+            release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM)
             # select_related joins the whole sbom -> component -> team FK chain in
             # one query; a prefetch_related on the same path would just add a
             # redundant query.

@@ -256,7 +256,7 @@ def _build_product_release_response(
         # Map component_id -> ComponentRelease.uuid via junction table (public components only)
         artifact_sboms = [
             artifact.sbom
-            for artifact in release.artifacts.all()
+            for artifact in release.artifacts.filter(sbom__bom_type=SBOM.BomType.SBOM)
             if artifact.sbom
             and artifact.sbom.component_id
             and artifact.sbom.component.visibility == Component.Visibility.PUBLIC
