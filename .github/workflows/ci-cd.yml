@@ -561,7 +561,7 @@ jobs:
           UPLOAD: true
           # Also generate a CBOM (cdxgen --include-crypto) for this component, cross-linked
           # with the SBOM and uploaded as bom_type=cbom. Skipped for SPDX. cdxgen detects
-          # JS/TS + Java crypto, not Python yet, so the Python Stack CBOM is currently sparse.
+          # JS/TS + Java crypto, not Python yet, so the action-generated Python Stack CBOM is empty.
           GENERATE_CBOM: true
           OUTPUT_FILE: ${{ matrix.output_file }}
 
@@ -810,7 +810,7 @@ jobs:
           UPLOAD: true
           # Also generate a CBOM (cdxgen --include-crypto) for this component, cross-linked
           # with the SBOM and uploaded as bom_type=cbom. Skipped for SPDX. cdxgen detects
-          # JS/TS + Java crypto, not Python yet, so the Python Stack CBOM is currently sparse.
+          # JS/TS + Java crypto, not Python yet, so the action-generated Python Stack CBOM is empty.
           GENERATE_CBOM: true
           OUTPUT_FILE: ${{ matrix.output_file }}
 
