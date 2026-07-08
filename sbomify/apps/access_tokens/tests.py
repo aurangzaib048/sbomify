@@ -1,4 +1,6 @@
+import contextlib
 import json
+import logging
 from time import time
 
 import jwt
@@ -763,7 +765,8 @@ def test_create_token_form_maps_scope_presets():
 
     f = CreateAccessTokenForm({"description": "x", "scope": "publish"})
     assert f.is_valid(), f.errors
-    assert f.scopes() == ["artifact:publish"]
+    assert f.scopes() == SCOPE_PRESETS["publish"]
+    assert "release:create" in f.scopes()  # the publish preset covers cutting a release
 
     f = CreateAccessTokenForm({"description": "x", "scope": "read_only"})
     assert f.is_valid(), f.errors
@@ -773,3 +776,485 @@ def test_create_token_form_maps_scope_presets():
     f = CreateAccessTokenForm({"description": "x"})
     assert f.is_valid(), f.errors
     assert f.scopes() is None
+
+
+@contextlib.contextmanager
+def _capture_audit(caplog):
+    """Capture the non-propagating sbomify.audit.token_auth logger via caplog's handler."""
+    logger = logging.getLogger("sbomify.audit.token_auth")
+    logger.addHandler(caplog.handler)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        logger.removeHandler(caplog.handler)
+        logger.setLevel(old_level)
+
+
+def _token_auth_events(caplog):
+    return [r for r in caplog.records if getattr(r, "event", None) == "token_auth"]
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_success_event(
+    sample_user,  # noqa: F811
+    sample_team_with_owner_member,  # noqa: F811
+    caplog,
+):
+    """#1058: a successful PAT auth emits a structured success event with IP + action."""
+    token_str = create_personal_access_token(sample_user)
+    rec = AccessToken.objects.create(
+        user=sample_user,
+        encoded_token=token_str,
+        description="t",
+        team=sample_team_with_owner_member.team,
+    )
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(token_str, source_ip="1.2.3.4", attempted_action="GET /api/x")
+    assert user == sample_user
+    events = _token_auth_events(caplog)
+    assert len(events) == 1
+    e = events[0]
+    assert e.outcome == "success" and e.reason is None
+    assert e.token_id == str(rec.pk)
+    assert e.user_id == str(sample_user.id)
+    assert e.team_id == str(sample_team_with_owner_member.team.id)
+    assert e.source_ip == "1.2.3.4"
+    assert e.attempted_action == "GET /api/x"
+    assert e.token_fingerprint and token_str not in caplog.text
+    # The fields must survive the default console formatter (in the message, not just extra).
+    assert "1.2.3.4" in caplog.text and "GET /api/x" in caplog.text
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_decode_failure(caplog):
+    """#1058: an undecodable bearer emits failure(reason=decode) with a fingerprint, no token id."""
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record("not-a-jwt", source_ip="9.9.9.9")
+    assert user is None and record is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "decode"
+    assert e.token_id is None and e.token_fingerprint and e.source_ip == "9.9.9.9"
+    assert "not-a-jwt" not in caplog.text
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_inactive_user(sample_user, caplog):  # noqa: F811
+    """#1058: a token whose user is inactive emits failure(reason=user_inactive_or_missing)."""
+    token_str = create_personal_access_token(sample_user)
+    sample_user.is_active = False
+    sample_user.save()
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(token_str)
+    assert user is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "user_inactive_or_missing"
+    assert e.user_id == str(sample_user.id)
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_no_token_record(sample_user, caplog):  # noqa: F811
+    """#1058: a valid token with no DB row emits failure(reason=no_token_record)."""
+    token_str = create_personal_access_token(sample_user)
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(token_str)
+    assert user is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "no_token_record"
+    assert e.user_id == str(sample_user.id)
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_expired_row(sample_user, caplog):  # noqa: F811
+    """#1058: an expired DB row emits failure(reason=expired)."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    token_str = create_personal_access_token(sample_user)
+    AccessToken.objects.create(
+        user=sample_user,
+        encoded_token=token_str,
+        description="e",
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(token_str)
+    assert user is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "expired"
+
+
+@pytest.mark.django_db
+def test_token_auth_malformed_sub_is_clean_failure(caplog):
+    """#1058/#1065: a token whose sub cannot be a user PK fails cleanly (no 500) and audits."""
+    bad = jwt.encode(
+        {"sub": "not-a-valid-pk", "token_type": "pat"}, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM
+    )
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(bad)
+    assert user is None and record is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "user_inactive_or_missing"
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_team_id_null_for_teamless_token(sample_user, caplog):  # noqa: F811
+    """#1058: a token with no team emits team_id as None (JSON null), not the string 'None'."""
+    token_str = create_personal_access_token(sample_user)
+    AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="no-team")
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(token_str)
+    assert user == sample_user
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "success"
+    assert e.team_id is None
+
+
+@pytest.mark.django_db
+def test_token_auth_audit_oidc_jwt_expiry_is_expired_not_decode(sample_user, caplog):  # noqa: F811
+    """#1058: an OIDC token past its JWT exp audits as reason=expired (INFO), not decode."""
+    from sbomify.apps.access_tokens.utils import TOKEN_TYPE_OIDC
+
+    expired_oidc = create_personal_access_token(sample_user, expires_at=time() - 100, token_type=TOKEN_TYPE_OIDC)
+    with _capture_audit(caplog):
+        user, record = get_user_and_token_record(expired_oidc)
+    assert user is None and record is None
+    e = _token_auth_events(caplog)[0]
+    assert e.outcome == "failure" and e.reason == "expired"
+
+
+# ---------------------------------------------------------------------------
+# #1044: AccessToken.last_used_at usage tracking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_last_used_at_stamped_on_use(sample_user):  # noqa: F811
+    """A valid authenticated request stamps last_used_at on the token row."""
+    token_str = create_personal_access_token(sample_user)
+    record = AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="t")
+    assert record.last_used_at is None
+
+    user, returned = get_user_and_token_record(token_str)
+
+    assert user == sample_user
+    record.refresh_from_db()
+    assert record.last_used_at is not None
+    # The in-memory record handed to the caller is also fresh (not stale).
+    assert returned.last_used_at is not None
+
+
+@pytest.mark.django_db
+def test_last_used_at_throttled_within_window(sample_user, settings):  # noqa: F811
+    """A second use inside the throttle window does NOT write again."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
+    token_str = create_personal_access_token(sample_user)
+    recent = timezone.now() - timedelta(seconds=30)  # well inside the 300s window
+    record = AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="t", last_used_at=recent)
+
+    _, returned = get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at == recent  # unchanged — throttled (no DB write)
+    # The in-memory record is only refreshed when this request actually wrote it.
+    assert returned.last_used_at == recent
+
+
+@pytest.mark.django_db
+def test_last_used_at_refreshed_after_window(sample_user, settings):  # noqa: F811
+    """Once last_used_at is older than the window, the next use refreshes it."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
+    token_str = create_personal_access_token(sample_user)
+    stale = timezone.now() - timedelta(seconds=400)  # older than the 300s window
+    record = AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="t", last_used_at=stale)
+
+    get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at > stale
+
+
+@pytest.mark.django_db
+def test_last_used_at_not_stamped_for_expired_token(sample_user):  # noqa: F811
+    """An expired token is rejected and must NOT be stamped."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    token_str = create_personal_access_token(sample_user)
+    record = AccessToken.objects.create(
+        user=sample_user,
+        encoded_token=token_str,
+        description="expired",
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    user, returned = get_user_and_token_record(token_str)
+
+    assert user is None and returned is None
+    record.refresh_from_db()
+    assert record.last_used_at is None
+
+
+@pytest.mark.django_db
+def test_last_used_at_stamped_for_oidc_token(sample_user):  # noqa: F811
+    """OIDC short-lived tokens flow through the same chokepoint and get stamped."""
+    from sbomify.apps.access_tokens.utils import TOKEN_TYPE_OIDC
+
+    token_str = create_personal_access_token(sample_user, expires_at=time() + 900, token_type=TOKEN_TYPE_OIDC)
+    record = AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="oidc")
+
+    get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at is not None
+
+
+@pytest.mark.django_db
+def test_last_used_at_refreshed_when_future_dated(sample_user, settings):  # noqa: F811
+    """A future-dated last_used_at (clock skew / manual edit) is treated as stale
+    and refreshed, not frozen forever."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
+    token_str = create_personal_access_token(sample_user)
+    future = timezone.now() + timedelta(days=1)
+    record = AccessToken.objects.create(user=sample_user, encoded_token=token_str, description="t", last_used_at=future)
+
+    get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at < future  # refreshed to ~now, not stuck in the future
+
+
+@pytest.mark.django_db
+def test_last_used_at_not_clobbered_by_slight_future(sample_user, settings):  # noqa: F811
+    """A value slightly ahead of now (a concurrent worker's lead clock, within the
+    throttle window) is left alone — we must never write an earlier time back."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = 300
+    token_str = create_personal_access_token(sample_user)
+    slightly_ahead = timezone.now() + timedelta(seconds=10)  # within the 300s window
+    record = AccessToken.objects.create(
+        user=sample_user, encoded_token=token_str, description="t", last_used_at=slightly_ahead
+    )
+
+    get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at == slightly_ahead  # not clobbered with an earlier time
+
+
+@pytest.mark.django_db
+def test_last_used_at_skew_tolerated_even_at_zero_throttle(sample_user, settings):  # noqa: F811
+    """Forward-skew tolerance is independent of the throttle window: even with
+    throttle=0 (write-every-request), a slightly-ahead concurrent timestamp is
+    not clobbered with an earlier now."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    settings.ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = 0
+    token_str = create_personal_access_token(sample_user)
+    slightly_ahead = timezone.now() + timedelta(seconds=10)  # within the fixed skew tolerance
+    record = AccessToken.objects.create(
+        user=sample_user, encoded_token=token_str, description="t", last_used_at=slightly_ahead
+    )
+
+    get_user_and_token_record(token_str)
+
+    record.refresh_from_db()
+    assert record.last_used_at == slightly_ahead  # not clobbered despite throttle=0
+
+
+def test_access_token_rate_throttle_per_token():
+    """#1060: a token is limited per its rate, and two tokens have independent budgets."""
+    from types import SimpleNamespace
+
+    from django.core.cache import cache
+
+    from sbomify.apps.access_tokens.throttling import AccessTokenRateThrottle
+
+    cache.clear()
+    rf = RequestFactory()
+    throttle = AccessTokenRateThrottle(rate="2/min")
+
+    def req(pk):
+        r = rf.get("/api/v1/x")
+        r.access_token_record = SimpleNamespace(pk=pk)
+        return r
+
+    assert throttle.allow_request(req(101)) is True
+    assert throttle.allow_request(req(101)) is True
+    assert throttle.allow_request(req(101)) is False  # third request over the 2/min limit
+    assert throttle.allow_request(req(202)) is True  # a different token keeps its own budget
+
+
+def test_access_token_rate_throttle_skips_anonymous():
+    """#1060: requests with no resolved token record (session/anonymous) are not throttled."""
+    from sbomify.apps.access_tokens.throttling import AccessTokenRateThrottle
+
+    rf = RequestFactory()
+    throttle = AccessTokenRateThrottle(rate="1/min")
+    r = rf.get("/api/v1/x")
+    assert throttle.get_cache_key(r) is None
+    assert throttle.allow_request(r) is True
+    assert throttle.allow_request(r) is True
+
+
+def test_throttled_handler_sets_retry_after():
+    """#1060: the 429 response carries Retry-After from the Throttled wait, and omits it when None."""
+    from ninja.errors import Throttled
+
+    from sbomify.apis import _on_throttled
+
+    req = RequestFactory().get("/api/v1/x")
+    resp = _on_throttled(req, Throttled(wait=42))
+    assert resp.status_code == 429
+    assert resp["Retry-After"] == "42"
+
+    # Fractional waits round UP (never truncate to 0), so clients don't retry too early.
+    assert _on_throttled(req, Throttled(wait=0.4))["Retry-After"] == "1"
+    assert _on_throttled(req, Throttled(wait=5.1))["Retry-After"] == "6"
+
+    resp_no_wait = _on_throttled(req, Throttled(wait=None))
+    assert resp_no_wait.status_code == 429
+    assert "Retry-After" not in resp_no_wait
+
+
+def test_heavy_throttle_independent_budget_and_distinct_key():
+    """#1070: the heavy throttle limits independently and never shares the global window."""
+    from types import SimpleNamespace
+
+    from django.core.cache import cache
+
+    from sbomify.apps.access_tokens.throttling import AccessTokenHeavyRateThrottle, AccessTokenRateThrottle
+
+    cache.clear()
+    rf = RequestFactory()
+
+    def req(pk):
+        r = rf.get("/api/v1/x")
+        r.access_token_record = SimpleNamespace(pk=pk)
+        return r
+
+    heavy = AccessTokenHeavyRateThrottle(rate="2/min")
+    global_throttle = AccessTokenRateThrottle(rate="2/min")
+    # Distinct cache key is the central gotcha — a shared key would corrupt both windows.
+    assert global_throttle.get_cache_key(req(7)) != heavy.get_cache_key(req(7))
+    assert heavy.allow_request(req(7)) is True
+    assert heavy.allow_request(req(7)) is True
+    assert heavy.allow_request(req(7)) is False  # heavy limit hit
+    # The global window for the SAME token is untouched by the heavy throttle.
+    assert global_throttle.allow_request(req(7)) is True
+    assert global_throttle.allow_request(req(7)) is True
+
+
+def test_heavy_throttle_skips_anonymous():
+    """#1070: a request with no token record (session/anonymous) is not throttled."""
+    from sbomify.apps.access_tokens.throttling import AccessTokenHeavyRateThrottle
+
+    r = RequestFactory().get("/api/v1/x")
+    assert AccessTokenHeavyRateThrottle(rate="1/min").get_cache_key(r) is None
+
+
+def test_upload_endpoints_carry_global_and_heavy_throttles():
+    """#1070: the PAT upload endpoints carry BOTH throttles (per-op replaces the global)."""
+    from sbomify.apis import api
+
+    found = {}
+    for _prefix, router in api._routers:
+        for path, pv in router.path_operations.items():
+            if path in ("/artifact/cyclonedx/{component_id}", "/artifact/spdx/{component_id}"):
+                for op in pv.operations:
+                    found[path] = [type(t).__name__ for t in op.throttle_objects]
+    assert found["/artifact/cyclonedx/{component_id}"] == ["AccessTokenRateThrottle", "AccessTokenHeavyRateThrottle"]
+    assert found["/artifact/spdx/{component_id}"] == ["AccessTokenRateThrottle", "AccessTokenHeavyRateThrottle"]
+
+
+def test_throttle_stashes_ratelimit_on_request():
+    """#1076: allow_request records the token's limit/remaining/reset on the request."""
+    from types import SimpleNamespace
+
+    from django.core.cache import cache
+
+    from sbomify.apps.access_tokens.throttling import AccessTokenRateThrottle
+
+    cache.clear()
+    throttle = AccessTokenRateThrottle(rate="5/min")
+    req = RequestFactory().get("/api/v1/x")
+    req.access_token_record = SimpleNamespace(pk=4242)
+
+    assert throttle.allow_request(req) is True
+    limit, remaining, reset = req._access_token_ratelimit
+    assert limit == 5
+    assert remaining == 4  # one request consumed
+    assert reset > 0
+
+
+def test_throttle_no_ratelimit_for_anonymous():
+    """#1076: session/anonymous requests carry no token, so no headers are stashed."""
+    from sbomify.apps.access_tokens.throttling import AccessTokenRateThrottle
+
+    throttle = AccessTokenRateThrottle(rate="5/min")
+    req = RequestFactory().get("/api/v1/x")  # no access_token_record
+
+    assert throttle.allow_request(req) is True
+    assert getattr(req, "_access_token_ratelimit", None) is None
+
+
+def test_ratelimit_headers_middleware_sets_headers():
+    """#1076: the middleware surfaces the stashed budget as X-RateLimit-* headers."""
+    from django.http import HttpResponse
+
+    from sbomify.apps.access_tokens.throttling import RateLimitHeadersMiddleware
+
+    req = RequestFactory().get("/api/v1/x")
+    req._access_token_ratelimit = (100, 97, 1234567890)
+    resp = RateLimitHeadersMiddleware(lambda r: HttpResponse("ok"))(req)
+
+    assert resp["X-RateLimit-Limit"] == "100"
+    assert resp["X-RateLimit-Remaining"] == "97"
+    assert resp["X-RateLimit-Reset"] == "1234567890"
+
+
+def test_ratelimit_headers_middleware_noop_without_stash():
+    """#1076: no stashed budget (web/anonymous) -> no rate-limit headers added."""
+    from django.http import HttpResponse
+
+    from sbomify.apps.access_tokens.throttling import RateLimitHeadersMiddleware
+
+    resp = RateLimitHeadersMiddleware(lambda r: HttpResponse("ok"))(RequestFactory().get("/"))
+    assert "X-RateLimit-Limit" not in resp
+
+
+@pytest.mark.django_db
+def test_api_response_carries_ratelimit_headers(sample_product, sample_access_token):  # noqa: F811
+    """#1076: a real PAT-authenticated API request carries the X-RateLimit-* headers end to end."""
+    from django.core.cache import cache
+    from django.urls import reverse
+
+    from sbomify.apps.core.tests.shared_fixtures import get_api_headers
+
+    cache.clear()
+    resp = Client().get(reverse("api-1:list_products"), **get_api_headers(sample_access_token))
+
+    assert resp.status_code == 200
+    assert int(resp["X-RateLimit-Limit"]) > 0
+    assert int(resp["X-RateLimit-Remaining"]) >= 0
+    assert int(resp["X-RateLimit-Reset"]) > 0

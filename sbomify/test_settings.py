@@ -147,6 +147,7 @@ DJANGO_VITE = {
 # Ensure WhiteNoise is configured
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "sbomify.apps.access_tokens.throttling.RateLimitHeadersMiddleware",
     "sbomify.apps.core.middleware.DynamicHostValidationMiddleware",
     "sbomify.apps.core.middleware.CustomDomainContextMiddleware",
     "sbomify.apps.core.middleware.RealIPMiddleware",
@@ -180,6 +181,11 @@ CACHES = {
         "LOCATION": "unique-snowflake",
     }
 }
+
+# Effectively unlimited so the per-token throttle (#1060) doesn't trip existing API
+# tests under the per-process LocMemCache; throttle behavior is tested explicitly.
+API_TOKEN_RATE_LIMIT = "1000000/min"
+API_TOKEN_HEAVY_RATE_LIMIT = "1000000/min"
 
 # Disable TEA response caching during tests. LocMemCache lacks
 # ``delete_pattern``, so workspace-scoped cache invalidation is a no-op

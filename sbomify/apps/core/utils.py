@@ -5,17 +5,20 @@ Utility code used by multiple apps.
 from __future__ import annotations
 
 import collections.abc
+import ipaddress
 import logging
 import string
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from secrets import token_urlsafe
 from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import models
+from django.db import models, transaction
 from django.http import HttpRequest
 
 logger = logging.getLogger(__name__)
@@ -211,15 +214,56 @@ def get_current_team_id(request: HttpRequest) -> int | None:
     return token_to_number(team_key)
 
 
+@lru_cache(maxsize=1)
+def _trusted_proxy_networks(
+    cidrs: tuple[str, ...],
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Compile the configured trusted-proxy CIDRs, skipping invalid entries."""
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for index, cidr in enumerate(cidrs):
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            # Log the position, not the raw value, to avoid echoing config data.
+            logger.warning("Ignoring invalid TRUSTED_PROXIES entry at index %d; check the CIDR syntax.", index)
+    return tuple(networks)
+
+
+def _is_trusted_proxy(ip: str | None) -> bool:
+    """Return True if ``ip`` is within a configured trusted-proxy network."""
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    cidrs = tuple(getattr(settings, "TRUSTED_PROXIES", ()) or ())
+    return any(addr in net for net in _trusted_proxy_networks(cidrs))
+
+
 def get_client_ip(request: HttpRequest) -> str | None:
     """
     Get the client IP address from the request.
 
-    We assume the application is running behind a trusted reverse proxy (Caddy)
-    which validates the source and sets the X-Real-IP header to the correct
-    client IP (handling Cloudflare, etc.).
+    The application runs behind a trusted reverse proxy (Caddy) that sets the
+    X-Real-IP header to the real client IP. That header is only honoured when the
+    direct peer (REMOTE_ADDR) is a trusted proxy (settings.TRUSTED_PROXIES);
+    otherwise a client reaching Django directly could spoof X-Real-IP and defeat
+    per-IP rate limiting.
     """
-    return request.META.get("HTTP_X_REAL_IP") or request.META.get("REMOTE_ADDR")
+    remote_addr: str | None = request.META.get("REMOTE_ADDR")
+    real_ip: str | None = request.META.get("HTTP_X_REAL_IP")
+    if real_ip and _is_trusted_proxy(remote_addr):
+        candidate = real_ip.split(",")[0].strip()
+        # A trusted proxy shouldn't forward garbage, but validate anyway so a
+        # misconfigured proxy can't propagate non-IP strings into rate limiting
+        # or audit fields; fall back to the (trusted) peer address on failure.
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            return remote_addr
+        return candidate
+    return remote_addr
 
 
 def get_by_uuid_or_pk(
@@ -476,7 +520,7 @@ def add_artifact_to_release(
         ValueError: If neither or both of sbom and document are provided.
     """
     from sbomify.apps.core.domain.exceptions import PermissionDeniedError
-    from sbomify.apps.core.models import ReleaseArtifact
+    from sbomify.apps.core.models import Release, ReleaseArtifact
 
     if not sbom and not document:
         raise ValueError("Either sbom or document must be provided")
@@ -492,85 +536,84 @@ def add_artifact_to_release(
     if document is not None and document.component.team_id != release_team_id:
         raise PermissionDeniedError("Document component team does not match release product team")
 
-    # Check if artifact already exists in this release
-    if sbom:
-        existing = ReleaseArtifact.objects.filter(release=release, sbom=sbom).first()
-    else:
-        existing = ReleaseArtifact.objects.filter(release=release, document=document).first()
+    # Run this function's reads and writes under a release row lock, so its own exact-duplicate
+    # check, same-format existence check, allow_replacement decision, replaced_info snapshot,
+    # delete and create observe one consistent state. This serializes concurrent calls to this
+    # function for the same release: an exact re-add is idempotent, last writer wins when
+    # replacement is allowed, and a race between these calls can neither leave a duplicate nor a
+    # gap. (It does not lock out other code paths that touch ReleaseArtifact directly.)
+    with transaction.atomic():
+        Release.objects.select_for_update().get(pk=release.pk)
 
-    if existing:
-        # Artifact already exists - no action needed
-        return {
-            "created": False,
-            "replaced": False,
-            "already_exists": True,
-            "artifact": existing,
-            "error": "Artifact already exists in this release",
-        }
+        # Exact same artifact already in this release -> idempotent no-op.
+        if sbom:
+            existing = ReleaseArtifact.objects.filter(release=release, sbom=sbom).first()
+        else:
+            existing = ReleaseArtifact.objects.filter(release=release, document=document).first()
+        if existing:
+            return {
+                "created": False,
+                "replaced": False,
+                "already_exists": True,
+                "artifact": existing,
+                "error": "Artifact already exists in this release",
+            }
 
-    # Handle duplicate formats based on allow_replacement setting
-    if sbom:
-        # For SBOMs: check for existing SBOM of same format from same component
-        existing_sbom_artifact = ReleaseArtifact.objects.filter(
-            release=release, sbom__component=sbom.component, sbom__format=sbom.format
-        ).first()
-
-        if existing_sbom_artifact:
-            if not allow_replacement:
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains an SBOM of format {sbom.format} from component {sbom.component.name}"
-                    ),
-                }
-            else:
-                # Replace the existing artifact
+        if sbom:
+            same = ReleaseArtifact.objects.filter(
+                release=release, sbom__component=sbom.component, sbom__format=sbom.format
+            )
+            existing_same = same.first()
+            if existing_same:
+                if not allow_replacement:
+                    return {
+                        "created": False,
+                        "replaced": False,
+                        "artifact": None,
+                        "error": (
+                            f"Release already contains an SBOM of format {sbom.format} "
+                            f"from component {sbom.component.name}"
+                        ),
+                    }
+                # Snapshot the row we actually hold under the lock, then replace all matching.
                 replaced_info = {
-                    "replaced_sbom": existing_sbom_artifact.sbom.name,  # type: ignore[union-attr]
-                    "replaced_format": existing_sbom_artifact.sbom.format,  # type: ignore[union-attr]
+                    "replaced_sbom": existing_same.sbom.name,  # type: ignore[union-attr]
+                    "replaced_format": existing_same.sbom.format,  # type: ignore[union-attr]
                     "new_sbom": sbom.name,
                     "component": sbom.component.name,
                 }
-                existing_sbom_artifact.delete()
+                same.delete()
                 new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
                 return {"created": False, "replaced": True, "artifact": new_artifact, "replaced_info": replaced_info}
-
-    else:  # document
-        # For Documents: check for existing document of same type from same component
-        existing_doc_artifact = ReleaseArtifact.objects.filter(
-            release=release, document__component=document.component, document__document_type=document.document_type
-        ).first()
-
-        if existing_doc_artifact:
-            if not allow_replacement:
-                return {
-                    "created": False,
-                    "replaced": False,
-                    "artifact": None,
-                    "error": (
-                        f"Release already contains {document.document_type} document "
-                        f"from component {document.component.name}"
-                    ),
-                }
-            else:
-                # Replace the existing artifact
+            new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
+        else:
+            same = ReleaseArtifact.objects.filter(
+                release=release,
+                document__component=document.component,
+                document__document_type=document.document_type,
+            )
+            existing_same = same.first()
+            if existing_same:
+                if not allow_replacement:
+                    return {
+                        "created": False,
+                        "replaced": False,
+                        "artifact": None,
+                        "error": (
+                            f"Release already contains {document.document_type} document "
+                            f"from component {document.component.name}"
+                        ),
+                    }
                 replaced_info = {
-                    "replaced_document": existing_doc_artifact.document.name,  # type: ignore[union-attr]
-                    "replaced_type": existing_doc_artifact.document.document_type,  # type: ignore[union-attr]
+                    "replaced_document": existing_same.document.name,  # type: ignore[union-attr]
+                    "replaced_type": existing_same.document.document_type,  # type: ignore[union-attr]
                     "new_document": document.name,
                     "component": document.component.name,
                 }
-                existing_doc_artifact.delete()
+                same.delete()
                 new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
                 return {"created": False, "replaced": True, "artifact": new_artifact, "replaced_info": replaced_info}
-
-    # Create the new artifact (no duplicates found)
-    if sbom:
-        new_artifact = ReleaseArtifact.objects.create(release=release, sbom=sbom)
-    else:
-        new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
+            new_artifact = ReleaseArtifact.objects.create(release=release, document=document)
 
     return {"created": True, "replaced": False, "artifact": new_artifact, "replaced_info": None}
 
@@ -613,48 +656,3 @@ def build_entity_info_dict(entity: Any) -> dict[str, Any]:
         result["contacts"].append(contact_dict)
 
     return result
-
-
-def create_release_download_response(release: Any) -> Any:
-    """
-    Create an HTTP response for downloading a release's SBOM content.
-
-    Args:
-        release: The Release object to create download response for
-
-    Returns:
-        HttpResponse: Response with the release SBOM content for download
-    """
-    import tempfile
-    from pathlib import Path
-
-    from django.http import HttpResponse, JsonResponse
-
-    # Get all SBOM artifacts in the release
-    sbom_artifacts = release.artifacts.filter(sbom__isnull=False).select_related("sbom")
-
-    if not sbom_artifacts.exists():
-        return JsonResponse({"detail": "Error generating release SBOM"}, status=500)
-
-    try:
-        # Use the proper SBOM package generator
-        from sbomify.apps.sboms.utils import get_release_sbom_package
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            # Note: In this context, we don't have access to the requesting user,
-            # so we pass None. This function is mainly for internal use.
-            sbom_file_path = get_release_sbom_package(release, temp_path, user=None)
-
-            # Read the generated SBOM file
-            with open(sbom_file_path, "r") as f:
-                sbom_content = f.read()
-
-            response = HttpResponse(sbom_content, content_type="application/json")
-            response["Content-Disposition"] = f"attachment; filename={release.product.name}-{release.name}.cdx.json"
-
-            return response
-
-    except Exception as e:
-        logger.exception(f"Error generating release SBOM: {str(e)}")
-        return JsonResponse({"detail": "Error generating release SBOM"}, status=500)

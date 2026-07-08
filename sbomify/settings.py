@@ -103,8 +103,64 @@ AUTH_USER_MODEL = "core.User"
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Networks whose requests are allowed to set the client IP via the X-Real-IP
+# header (see core.utils.get_client_ip). Only honour that header when the direct
+# peer (REMOTE_ADDR) is a trusted reverse proxy; otherwise a client reaching
+# Django directly could spoof its IP and defeat per-IP rate limiting.
+#
+# The default trusts loopback + RFC1918 ranges, which cover the Caddy sidecar in
+# the default Docker topology (where the app is NOT directly reachable — the
+# backend port is unpublished). If Django can be reached directly from any other
+# private segment (shared cluster, corp VPN), narrow this to the actual
+# reverse-proxy address(es) via the TRUSTED_PROXIES env var so those clients
+# cannot spoof X-Real-IP.
+TRUSTED_PROXIES = [
+    cidr.strip()
+    for cidr in os.environ.get(
+        "TRUSTED_PROXIES",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    ).split(",")
+    if cidr.strip()
+]
+
 # Allow larger request bodies for OSCAL catalog imports (default is 2.5 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB
+
+# Prevent browsers from MIME-sniffing responses away from their declared
+# Content-Type — defense-in-depth for user-uploaded artifact downloads.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
+# Content-Security-Policy (see ContentSecurityPolicyMiddleware). Shipped in
+# Report-Only mode by default so violations can be observed before enforcement;
+# set CSP_ENFORCE=True once the reports are clean. The app relies on inline
+# Alpine.js expressions (needs 'unsafe-inline'/'unsafe-eval'), Stripe.js and
+# websockets, so the policy stays permissive on scripts while locking down
+# object-src, base-uri and plugin embedding.
+#
+# Report-Only violations are only delivered somewhere if CSP_REPORT_URI points
+# at a collector endpoint (e.g. Sentry's CSP ingest URL); without it, browsers
+# just log violations to their console. Set it to make the rollout actionable.
+CSP_ENFORCE = _env_bool(os.environ.get("CSP_ENFORCE"), default=False)
+CSP_REPORT_URI = os.environ.get("CSP_REPORT_URI", "")
+CONTENT_SECURITY_POLICY = os.environ.get(
+    "CONTENT_SECURITY_POLICY",
+    "; ".join(
+        [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' data:",
+            "connect-src 'self' https: wss: ws:",
+            "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+            "frame-ancestors 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "worker-src 'self' blob:",
+        ]
+    ),
+)
 
 # Application definition
 
@@ -152,6 +208,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Outer enough to see the final API response; copies the per-token throttle budget
+    # stashed on the request onto X-RateLimit-* headers.
+    "sbomify.apps.access_tokens.throttling.RateLimitHeadersMiddleware",
     "sbomify.apps.core.middleware.DynamicHostValidationMiddleware",
     "sbomify.apps.core.middleware.CustomDomainContextMiddleware",
     "sbomify.apps.core.middleware.RealIPMiddleware",
@@ -168,6 +227,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "sbomify.apps.core.middleware.HtmxMessagesMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "sbomify.apps.core.middleware.ContentSecurityPolicyMiddleware",
     "allauth.account.middleware.AccountMiddleware",
 ]
 
@@ -559,6 +619,14 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        # Token-auth audit trail (sbomify.audit.*). Pinned to INFO independent of
+        # LOG_LEVEL so the success/expired events stay in the forensic record even
+        # when the general log level is raised to WARNING.
+        "sbomify.audit": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "core": {
             "handlers": ["console"],
             "level": "DEBUG",
@@ -773,6 +841,16 @@ JWT_ISSUER = os.environ.get("JWT_ISSUER", "sbomify")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "sbomify")
 
+# Per-token API rate limit (#1060): a django-ninja "<count>/<period>" string applied
+# per AccessToken pk. Generous enough for CI bursts while capping a leaked/runaway
+# token; tighten via the env var. Effectively a no-op under DEBUG (DummyCache).
+API_TOKEN_RATE_LIMIT = os.environ.get("API_TOKEN_RATE_LIMIT", "1000/min")
+
+# Stricter per-token limit for expensive endpoints (artifact uploads), enforced
+# alongside the global one (#1070). Lower because each call does real work (parse,
+# S3 write, downstream scan/assessment enqueue).
+API_TOKEN_HEAVY_RATE_LIMIT = os.environ.get("API_TOKEN_HEAVY_RATE_LIMIT", "100/min")
+
 # OIDC Trusted Publishing — see sbomify.apps.oidc.
 # Action workflows request an ID token with this audience; the backend
 # enforces the ``aud`` claim against it during verification.
@@ -790,6 +868,14 @@ OIDC_JWKS_CACHE_SECONDS = int(os.environ.get("OIDC_JWKS_CACHE_SECONDS", "3600"))
 # future at verification time; with zero leeway PyJWT rejects it as "not yet
 # valid" and every exchange fails. 60s matches common JWT clock-skew guidance.
 OIDC_GITHUB_LEEWAY_SECONDS = int(os.environ.get("OIDC_GITHUB_LEEWAY_SECONDS", "60"))
+
+# How stale AccessToken.last_used_at may be before an authenticated request
+# refreshes it. Throttles the per-request write to one UPDATE per token per
+# window so a token hammered in a tight loop doesn't write on every call. The
+# field exists to spot stale/leaked tokens, so minute-level accuracy is enough.
+# Clamped to >= 0: a negative value would invert the freshness window and make
+# every request rewrite the field.
+ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = max(0, int(os.environ.get("ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS", "300")))
 
 # Localstack and AWS/S3 related settings
 AWS_REGION = os.environ.get("AWS_REGION", "")
@@ -837,9 +923,12 @@ else:
     CSRF_COOKIE_SAMESITE = "Strict"
 
     # Defense-in-depth behind Caddy's edge HTTP->HTTPS redirect. Exempt the internal
-    # health check, which is probed over plain HTTP without an X-Forwarded-Proto header.
+    # endpoints, which are probed over plain HTTP (container-to-container, no
+    # X-Forwarded-Proto header): the Django health check, and the on-demand-TLS "ask"
+    # endpoint Caddy hits to decide whether to issue a certificate for a custom/trust
+    # center domain. A 301 here makes Caddy refuse the redirect and deny the cert.
     SECURE_SSL_REDIRECT = True
-    SECURE_REDIRECT_EXEMPT = [r"^UuPha8mu/"]
+    SECURE_REDIRECT_EXEMPT = [r"^UuPha8mu/", r"^api/v1/internal/"]
 
     # HSTS (Caddy sets it at the edge too; harmless to assert at the app for direct hits).
     SECURE_HSTS_SECONDS = 31536000  # 1 year
