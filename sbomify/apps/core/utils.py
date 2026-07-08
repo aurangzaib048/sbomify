@@ -560,8 +560,13 @@ def add_artifact_to_release(
             }
 
         if sbom:
+            # Match on bom_type as well as format so a CBOM/VEX (same cyclonedx format) only
+            # replaces its own kind and never evicts the component's real SBOM from the release.
             same = ReleaseArtifact.objects.filter(
-                release=release, sbom__component=sbom.component, sbom__format=sbom.format
+                release=release,
+                sbom__component=sbom.component,
+                sbom__format=sbom.format,
+                sbom__bom_type=sbom.bom_type,
             )
             existing_same = same.first()
             if existing_same:

@@ -569,6 +569,44 @@ def test_latest_release_auto_management_integration(
     assert document in documents
 
 
+@pytest.mark.django_db
+@pytest.mark.parametrize("other_bom_type", [SBOM.BomType.CBOM, SBOM.BomType.VEX])
+def test_non_sbom_upload_does_not_evict_sbom_from_latest_release(
+    other_bom_type,
+    sample_product: Product,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+):
+    """A CBOM/VEX (same cyclonedx format) uploaded after an SBOM must not evict the SBOM from
+    the latest release — it takes its own slot. Regression for the live bug shipped with CBOM
+    auto-detection."""
+    sample_component.team = sample_product.team
+    sample_component.save()
+    latest_release = Release.objects.get(product=sample_product, is_latest=True)
+
+    sbom = SBOM.objects.create(
+        component=sample_component, format="cyclonedx", format_version="1.6", name="Real SBOM", version="1.0.0"
+    )
+    latest_release.refresh_from_db()
+    assert sbom in latest_release.get_sboms()
+
+    # Upload a same-format non-SBOM artifact (CBOM or VEX).
+    other = SBOM.objects.create(
+        component=sample_component,
+        format="cyclonedx",
+        format_version="1.6",
+        name=f"{other_bom_type} artifact",
+        version="1.0.0",
+        bom_type=other_bom_type,
+    )
+
+    latest_release.refresh_from_db()
+    artifacts = latest_release.get_sboms()
+    assert sbom in artifacts  # the real SBOM survived
+    assert other in artifacts  # the non-SBOM has its own slot
+    # The release keeps exactly one artifact per (component, format, bom_type).
+    assert latest_release.artifacts.filter(sbom__component=sample_component).count() == 2
+
+
 # =============================================================================
 # COMPONENT MODEL ARTIFACT METHODS TESTS
 # =============================================================================
@@ -606,14 +644,42 @@ def test_component_get_latest_sboms_by_format(
 
     latest_sboms = sample_component.get_latest_sboms_by_format()
 
-    # Should return latest SBOM for each format
+    # Keyed on (format, bom_type); should return the latest SBOM for each format
     assert len(latest_sboms) == 2
-    assert "cyclonedx" in latest_sboms
-    assert "spdx" in latest_sboms
+    assert ("cyclonedx", SBOM.BomType.SBOM) in latest_sboms
+    assert ("spdx", SBOM.BomType.SBOM) in latest_sboms
 
     # Check that we got the latest SBOMs for each format
-    assert latest_sboms["cyclonedx"] == sbom_cyclone_new  # Latest by created_at
-    assert latest_sboms["spdx"] == sbom_spdx
+    assert latest_sboms[("cyclonedx", SBOM.BomType.SBOM)] == sbom_cyclone_new  # Latest by created_at
+    assert latest_sboms[("spdx", SBOM.BomType.SBOM)] == sbom_spdx
+
+
+@pytest.mark.django_db
+def test_get_latest_sboms_by_format_separates_bom_type(
+    sample_component: Component,  # noqa: F811
+):
+    """A same-format CBOM must not displace the SBOM slot: each (format, bom_type) is its own key."""
+    sbom = SBOM.objects.create(
+        component=sample_component,
+        format="cyclonedx",
+        format_version="1.6",
+        name="Real SBOM",
+        version="1.0.0",
+        bom_type=SBOM.BomType.SBOM,
+    )
+    cbom = SBOM.objects.create(
+        component=sample_component,
+        format="cyclonedx",
+        format_version="1.6",
+        name="CBOM",
+        version="1.0.0",
+        bom_type=SBOM.BomType.CBOM,
+    )
+
+    latest = sample_component.get_latest_sboms_by_format()
+
+    assert latest[("cyclonedx", SBOM.BomType.SBOM)] == sbom
+    assert latest[("cyclonedx", SBOM.BomType.CBOM)] == cbom
 
 
 @pytest.mark.django_db
