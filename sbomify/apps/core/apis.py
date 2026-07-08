@@ -19,13 +19,16 @@ from sbomify.apps.access_tokens.auth import PersonalAccessTokenAuth, optional_au
 from sbomify.apps.billing.config import is_billing_enabled
 from sbomify.apps.billing.models import BillingPlan
 from sbomify.apps.billing.stripe_cache import get_subscription_cancel_at_period_end, invalidate_subscription_cache
+from sbomify.apps.core.authz import can
 from sbomify.apps.core.object_store import S3Client
+from sbomify.apps.core.posthog_service import capture_for_request
 from sbomify.apps.core.queries import (
     get_team_asset_count,
     optimize_component_queryset,
     optimize_product_queryset,
 )
-from sbomify.apps.core.utils import broadcast_to_workspace, build_entity_info_dict, verify_item_access
+from sbomify.apps.core.services.validation_response import validation_error_response
+from sbomify.apps.core.utils import broadcast_to_workspace, build_entity_info_dict
 from sbomify.apps.sboms.schemas import ComponentMetaData, ComponentMetaDataPatch, SupplierSchema
 from sbomify.apps.sboms.utils import get_product_sbom_package, get_release_sbom_package
 from sbomify.apps.teams.apis import serialize_contact_profile
@@ -239,6 +242,9 @@ def _build_item_base(
     has_crud_permissions: bool | None,
 ) -> dict[str, Any]:
     """Fields common to every item-type response."""
+    # ``item`` is a Product or a Component; use the resource-specific manage
+    # action so the catalog stays meaningful (both map to the same MANAGE tier).
+    manage_action = "product:manage" if isinstance(item, Product) else "component:manage"
     return {
         "id": item.id,
         "name": item.name,
@@ -246,9 +252,7 @@ def _build_item_base(
         "team_id": str(item.team_id),
         "created_at": item.created_at.isoformat(),
         "has_crud_permissions": (
-            has_crud_permissions
-            if has_crud_permissions is not None
-            else verify_item_access(request, item, ["owner", "admin"])
+            has_crud_permissions if has_crud_permissions is not None else can(request, manage_action, item).allowed
         ),
     }
 
@@ -357,12 +361,31 @@ def _paginate_queryset(queryset: Any, page: int = 1, page_size: int = 15) -> Any
     Paginate a Django queryset and return items with pagination metadata.
 
     Args:
-        queryset: Django queryset to paginate
-        page: Page number (1-based)
-        page_size: Number of items per page. Use -1 to get all items without pagination.
+        queryset: Django queryset to paginate. The caller is responsible for
+            applying a deterministic `.order_by(...)` — without it, the
+            paginator produces an `UnorderedObjectListWarning` and adjacent
+            pages may contain overlapping rows under concurrent writes.
+        page: Page number (1-based). Values < 1 are clamped to 1.
+            Page numbers ABOVE ``total_pages`` return an empty `items`
+            list with ``has_next=False`` — they do NOT silently fall back
+            to page 1. Clients walking pages should stop when ``items``
+            is empty (or when ``has_next`` is False).
+        page_size: Number of items per page. Use -1 to get all items without
+            pagination. Other values are clamped to the range [1, 100].
 
     Returns:
         tuple: (paginated_items, pagination_meta)
+
+    Note on out-of-range pages: a previous implementation silently re-served
+    page 1 when the requested page was beyond `total_pages`. That meant
+    a naive `while True: GET ?page=N; N += 1` walker would loop forever
+    returning duplicates (see issue #949). The current behaviour treats
+    pages > total_pages as empty, mirroring how every well-behaved REST
+    paginator (DRF, Ninja's built-in, etc.) handles it. Note that page < 1
+    is clamped to 1 (not returned as empty), so `PageNotAnInteger` from
+    Django's `Paginator` is effectively unreachable from this code path —
+    the `try/except` below is defense-in-depth for any future caller that
+    bypasses the `max(1, page)` clamp.
     """
     from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
 
@@ -387,21 +410,35 @@ def _paginate_queryset(queryset: Any, page: int = 1, page_size: int = 15) -> Any
 
     try:
         paginated_items = paginator.page(page)
+        items_list = list(paginated_items.object_list)
+        has_previous = paginated_items.has_previous()
+        has_next = paginated_items.has_next()
     except (EmptyPage, PageNotAnInteger):
-        # If page is out of range or invalid, return first page
-        paginated_items = paginator.page(1)
-        page = 1
+        # Out-of-range page (> total_pages): return an empty slice with
+        # `has_next=False` so naive page-walkers terminate. Do NOT fall
+        # back to page 1 — that caused issue #949. Note: page < 1 was
+        # clamped to 1 above so it never reaches this branch — Django's
+        # `PageNotAnInteger` is only raised for `page=NaN` / non-numeric
+        # input, which Django Ninja already rejects at the Query layer.
+        # We keep both exception classes in the `except` tuple as defence
+        # in depth.
+        items_list = []
+        # The requested page may legitimately be > total_pages; report
+        # has_previous as True iff at least one item exists in the
+        # collection (so a client that overshoots can step back).
+        has_previous = paginator.count > 0
+        has_next = False
 
     pagination_meta = PaginationMeta(
         total=paginator.count,
         page=page,
         page_size=page_size,
         total_pages=paginator.num_pages,
-        has_previous=paginated_items.has_previous(),
-        has_next=paginated_items.has_next(),
+        has_previous=has_previous,
+        has_next=has_next,
     )
 
-    return paginated_items.object_list, pagination_meta
+    return items_list, pagination_meta
 
 
 def _check_billing_limits(team_id: str, resource_type: str) -> tuple[bool, str, ErrorCode | None]:
@@ -577,7 +614,7 @@ def create_product(request: HttpRequest, payload: ProductCreateSchema) -> Any:
     try:
         # Check if user has permission to create products in this team
         team = Team.objects.get(id=team_id)
-        if not verify_item_access(request, team, ["owner", "admin"]):
+        if not can(request, "workspace:manage", team):
             return 403, {"detail": "Only owners and admins can create products", "error_code": ErrorCode.FORBIDDEN}
 
         allow_private = _private_items_allowed(team)
@@ -593,6 +630,23 @@ def create_product(request: HttpRequest, payload: ProductCreateSchema) -> Any:
         # Broadcast to workspace for real-time UI updates (after transaction commits)
         assert team.key is not None
         schedule_broadcast(team.key, "product_created", {"product_id": str(product.id), "name": product.name})
+
+        # Deferred via ``on_commit`` for the same reason as
+        # ``schedule_broadcast`` above: if the create transaction rolls
+        # back (or the view runs inside an outer atomic that rolls
+        # back), no ghost ``product:created`` event ships for a product
+        # that was never persisted.
+        captured_team_key = team.key
+        captured_product_id = str(product.id)
+        captured_is_public = product.is_public
+        transaction.on_commit(
+            lambda: capture_for_request(
+                request,
+                "product:created",
+                {"product_id": captured_product_id, "is_public": captured_is_public},
+                team_key=captured_team_key,
+            )
+        )
 
         return 201, _build_item_response(request, product, "product")
 
@@ -611,25 +665,32 @@ def create_product(request: HttpRequest, payload: ProductCreateSchema) -> Any:
 @router.get(
     "/products",
     response={200: PaginatedProductsResponse, 403: ErrorResponse},
-    auth=None,
 )
-@decorate_view(optional_token_auth)
 def list_products(request: HttpRequest, page: int = Query(1), page_size: int = Query(15)) -> Any:  # type: ignore[type-arg]
-    """List all products - public products for unauthenticated users, team products for authenticated users."""
+    """List products for the authenticated user's workspace."""
     try:
-        is_internal_member = _is_internal_member(request)
-        # For authenticated non-guest users, show their team's products
-        if is_internal_member:
-            team_id = _get_user_team_id(request)
-            if not team_id:
-                return 403, {"detail": "No current team selected", "error_code": ErrorCode.NO_CURRENT_TEAM}
+        if _is_guest_member(request):
+            return 403, {
+                "detail": "Guest members can only access public pages",
+                "error_code": ErrorCode.FORBIDDEN,
+            }
 
-            products_queryset = optimize_product_queryset(Product.objects.filter(team_id=team_id))
-            has_crud_permissions = _get_team_crud_permission(request, team_id)
-        else:
-            # For unauthenticated or guest users, show only public products
-            products_queryset = optimize_product_queryset(Product.objects.filter(is_public=True))
-            has_crud_permissions = False
+        team_id = _get_user_team_id(request)
+        if not team_id:
+            return 403, {"detail": "No current team selected", "error_code": ErrorCode.NO_CURRENT_TEAM}
+
+        # Route this internal read through can() so a narrow-scoped API token
+        # (e.g. a publish-only CI token) honours its scope: listing products
+        # exposes private workspace data, which a non-read token scope must not
+        # reach. No behaviour change for sessions or full/unscoped tokens —
+        # product:read is the READ_MEMBER tier every current member already
+        # satisfies; it only adds the token action-scope gate.
+        team = Team.objects.filter(id=team_id).first()
+        if team is not None and not can(request, "product:read", team):
+            return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
+        products_queryset = optimize_product_queryset(Product.objects.filter(team_id=team_id))
+        has_crud_permissions = _get_team_crud_permission(request, team_id)
 
         # Apply pagination
         paginated_products, pagination_meta = _paginate_queryset(products_queryset, page, page_size)
@@ -670,7 +731,7 @@ def _get_product_with_instance(
                 "error_code": ErrorCode.UNAUTHORIZED,
             }
 
-        if not verify_item_access(request, product, ["owner", "admin"]):
+        if not can(request, "product:manage", product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     response_payload = _build_item_response(request, product, "product")
@@ -708,7 +769,7 @@ def update_product(request: HttpRequest, product_id: str, payload: ProductUpdate
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can update products", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -754,7 +815,7 @@ def patch_product(request: HttpRequest, product_id: str, payload: ProductPatchSc
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can update products", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -777,7 +838,7 @@ def patch_product(request: HttpRequest, product_id: str, payload: ProductPatchSc
                     return 400, {"detail": "Some components were not found or inaccessible"}
 
                 for component in components_qs:
-                    if not verify_item_access(request, component, ["owner", "admin"]):
+                    if not can(request, "component:manage", component):
                         return 403, {"detail": f"No permission to modify component {component.name}"}
 
                 # Workspace-scoped (``is_global=True``) components are
@@ -827,8 +888,8 @@ def delete_product(request: HttpRequest, product_id: str) -> Any:
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
-        return 403, {"detail": "Only owners and admins can delete products", "error_code": ErrorCode.FORBIDDEN}
+    if not can(request, "product:delete", product):
+        return 403, {"detail": "Only owners can delete products", "error_code": ErrorCode.FORBIDDEN}
 
     # Capture data for broadcast before deletion
     workspace_key = product.team.key
@@ -867,7 +928,7 @@ def create_product_identifier(request: HttpRequest, product_id: str, payload: Pr
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {
             "detail": "Only owners and admins can manage product identifiers",
             "error_code": ErrorCode.FORBIDDEN,
@@ -942,7 +1003,7 @@ def list_product_identifiers(
         if not request.user or not request.user.is_authenticated:
             return 403, {"detail": "Authentication required for private items", "error_code": ErrorCode.UNAUTHORIZED}
 
-        if not verify_item_access(request, product, ["owner", "admin"]):
+        if not can(request, "product:manage", product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -984,7 +1045,7 @@ def update_product_identifier(
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {
             "detail": "Only owners and admins can manage product identifiers",
             "error_code": ErrorCode.FORBIDDEN,
@@ -1050,7 +1111,7 @@ def delete_product_identifier(request: HttpRequest, product_id: str, identifier_
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {
             "detail": "Only owners and admins can manage product identifiers",
             "error_code": ErrorCode.FORBIDDEN,
@@ -1101,7 +1162,7 @@ def bulk_update_product_identifiers(
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {
             "detail": "Only owners and admins can manage product identifiers",
             "error_code": ErrorCode.FORBIDDEN,
@@ -1175,7 +1236,7 @@ def create_product_link(request: HttpRequest, product_id: str, payload: ProductL
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can manage product links", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1232,7 +1293,7 @@ def list_product_links(request: HttpRequest, product_id: str, page: int = Query(
         if not request.user or not request.user.is_authenticated:
             return 403, {"detail": "Authentication required for private items", "error_code": ErrorCode.UNAUTHORIZED}
 
-        if not verify_item_access(request, product, ["owner", "admin"]):
+        if not can(request, "product:manage", product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1274,7 +1335,7 @@ def update_product_link(request: HttpRequest, product_id: str, link_id: str, pay
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can manage product links", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1328,7 +1389,7 @@ def delete_product_link(request: HttpRequest, product_id: str, link_id: str) -> 
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can manage product links", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1362,7 +1423,7 @@ def bulk_update_product_links(request: HttpRequest, product_id: str, payload: Pr
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
+    if not can(request, "product:manage", product):
         return 403, {"detail": "Only owners and admins can manage product links", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1437,7 +1498,7 @@ def create_component(request: HttpRequest, payload: ComponentCreateSchema) -> An
     try:
         # Check if user has permission to create components in this team
         team = Team.objects.get(id=team_id)
-        if not verify_item_access(request, team, ["owner", "admin"]):
+        if not can(request, "workspace:manage", team):
             return 403, {"detail": "Only owners and admins can create components", "error_code": ErrorCode.FORBIDDEN}
 
         if payload.is_global and payload.component_type != Component.ComponentType.DOCUMENT:  # type: ignore[comparison-overlap]
@@ -1465,11 +1526,7 @@ def create_component(request: HttpRequest, payload: ComponentCreateSchema) -> An
             try:
                 component.full_clean()
             except DjangoValidationError as ve:
-                return 400, {
-                    "detail": "Validation error",
-                    "errors": ve.message_dict,
-                    "error_code": ErrorCode.INVALID_DATA,
-                }
+                return validation_error_response(ve, "component")
 
             # Assign default contact profile after validation passes
             default_profile = ContactProfile.objects.filter(team_id=team_id, is_default=True).first()
@@ -1481,6 +1538,28 @@ def create_component(request: HttpRequest, payload: ComponentCreateSchema) -> An
         # Broadcast to workspace for real-time UI updates (after transaction commits)
         assert team.key is not None
         schedule_broadcast(team.key, "component_created", {"component_id": str(component.id), "name": component.name})
+
+        # ``component.visibility`` is a ``ComponentVisibility`` enum; PostHog's
+        # JSON serializer doesn't handle Django enums, so ship the ``.value``
+        # string. ``getattr`` fallback keeps this defensive against the field
+        # ever becoming a plain string. Deferred via ``on_commit`` so the
+        # event only ships if the create transaction commits.
+        captured_team_key = team.key
+        captured_component_id = str(component.id)
+        captured_component_type = component.component_type or ""
+        captured_visibility = getattr(component.visibility, "value", component.visibility)
+        transaction.on_commit(
+            lambda: capture_for_request(
+                request,
+                "component:created",
+                {
+                    "component_id": captured_component_id,
+                    "component_type": captured_component_type,
+                    "visibility": captured_visibility,
+                },
+                team_key=captured_team_key,
+            )
+        )
 
         return 201, _build_item_response(request, component, "component")
 
@@ -1499,35 +1578,38 @@ def create_component(request: HttpRequest, payload: ComponentCreateSchema) -> An
 @router.get(
     "/components",
     response={200: PaginatedComponentsResponse, 400: ErrorResponse, 403: ErrorResponse},
-    auth=None,
     tags=["Components"],
 )
-@decorate_view(optional_token_auth)
 def list_components(
     request: HttpRequest,
     page: int = Query(1),  # type: ignore[type-arg]
     page_size: int = Query(15),  # type: ignore[type-arg]
     is_global: str | None = Query(None),  # type: ignore[type-arg]
 ) -> Any:
-    """List all components - public components for unauthenticated users, team components for authenticated users."""
+    """List components for the authenticated user's workspace."""
     try:
-        is_internal_member = _is_internal_member(request)
-        # For authenticated non-guest users, show their team's components
-        if is_internal_member:
-            team_id = _get_user_team_id(request)
-            if not team_id:
-                return 403, {"detail": "No current team selected", "error_code": ErrorCode.NO_CURRENT_TEAM}
+        if _is_guest_member(request):
+            return 403, {
+                "detail": "Guest members can only access public pages",
+                "error_code": ErrorCode.FORBIDDEN,
+            }
 
-            # Include ALL components for internal members (public, private, and gated)
-            # No visibility filter - internal members see all components in their team
-            components_queryset = optimize_component_queryset(Component.objects.filter(team_id=team_id))
-            has_crud_permissions = _get_team_crud_permission(request, team_id)
-        else:
-            # For unauthenticated or guest users, show only public components
-            components_queryset = optimize_component_queryset(
-                Component.objects.filter(visibility=Component.Visibility.PUBLIC)
-            )
-            has_crud_permissions = False
+        team_id = _get_user_team_id(request)
+        if not team_id:
+            return 403, {"detail": "No current team selected", "error_code": ErrorCode.NO_CURRENT_TEAM}
+
+        # Route this internal read through can() so a narrow-scoped API token
+        # (e.g. a publish-only CI token) honours its scope: listing components
+        # exposes private workspace data, which a non-read token scope must not
+        # reach. No behaviour change for sessions or full/unscoped tokens —
+        # component:read_internal is the READ_MEMBER tier every current member
+        # already satisfies; it only adds the token action-scope gate.
+        team = Team.objects.filter(id=team_id).first()
+        if team is not None and not can(request, "component:read_internal", team):
+            return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
+        components_queryset = optimize_component_queryset(Component.objects.filter(team_id=team_id))
+        has_crud_permissions = _get_team_crud_permission(request, team_id)
 
         if isinstance(is_global, str):
             normalized = is_global.lower()
@@ -1577,7 +1659,7 @@ def get_component(request: HttpRequest, component_id: str, return_instance: bool
     if not request.user or not request.user.is_authenticated:
         return 403, {"detail": "Authentication required for private items", "error_code": ErrorCode.UNAUTHORIZED}
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
+    if not can(request, "component:manage", component):
         return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     response = component if return_instance else _build_item_response(request, component, "component")
@@ -1600,7 +1682,7 @@ def update_component(request: HttpRequest, component_id: str, payload: Component
     except Component.DoesNotExist:
         return 404, {"detail": "Component not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
+    if not can(request, "component:manage", component):
         return 403, {"detail": "Only owners and admins can update components", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1672,11 +1754,7 @@ def update_component(request: HttpRequest, component_id: str, payload: Component
             try:
                 component.full_clean()
             except DjangoValidationError as ve:
-                return 400, {
-                    "detail": "Validation error",
-                    "errors": ve.message_dict,
-                    "error_code": ErrorCode.INVALID_DATA,
-                }
+                return validation_error_response(ve, "component")
 
             component.save()
 
@@ -1708,7 +1786,7 @@ def patch_component(request: HttpRequest, component_id: str, payload: ComponentP
     except Component.DoesNotExist:
         return 404, {"detail": "Component not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
+    if not can(request, "component:manage", component):
         return 403, {"detail": "Only owners and admins can update components", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -1804,11 +1882,7 @@ def patch_component(request: HttpRequest, component_id: str, payload: ComponentP
             try:
                 component.full_clean()
             except DjangoValidationError as ve:
-                return 400, {
-                    "detail": "Validation error",
-                    "errors": ve.message_dict,
-                    "error_code": ErrorCode.INVALID_DATA,
-                }
+                return validation_error_response(ve, "component")
 
             component.save()
 
@@ -1840,8 +1914,8 @@ def delete_component(request: HttpRequest, component_id: str) -> Any:
     except Component.DoesNotExist:
         return 404, {"detail": "Component not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
-        return 403, {"detail": "Only owners and admins can delete components", "error_code": ErrorCode.FORBIDDEN}
+    if not can(request, "component:delete", component):
+        return 403, {"detail": "Only owners can delete components", "error_code": ErrorCode.FORBIDDEN}
 
     # Capture data for broadcast before deletion
     workspace_key = component.team.key
@@ -2029,7 +2103,7 @@ def patch_component_metadata(request: Any, component_id: str, metadata: Componen
     except Component.DoesNotExist:
         return 404, {"detail": "Component not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
+    if not can(request, "component:manage", component):
         return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -2200,7 +2274,7 @@ def list_component_releases(
                 "detail": "Authentication required for private components",
                 "error_code": ErrorCode.UNAUTHORIZED,
             }
-        if not verify_item_access(request, component, ["owner", "admin"]):
+        if not can(request, "component:manage", component):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -2337,6 +2411,23 @@ def get_dashboard_summary(
     if is_internal_member:
         current_user: Any = request.user
         user_teams_qs = Team.objects.filter(member__user=current_user)
+        # A workspace-scoped API token must only see its own workspace's data:
+        # without this, a token bound to workspace A would still aggregate the
+        # user's other workspaces (B, C, …) into the dashboard. Sessions (no
+        # token_team) keep the all-workspaces view.
+        token_team = getattr(request, "token_team", None)
+        if token_team is not None:
+            user_teams_qs = user_teams_qs.filter(id=token_team.id)
+        # Route this internal read through can() so a narrow-scoped API token
+        # (e.g. a publish-only CI token) honours its scope: the authenticated
+        # dashboard aggregates private workspace data, which a non-read token
+        # scope must not reach. No behaviour change for sessions or
+        # full/unscoped tokens — workspace:read is the READ_MEMBER tier every
+        # current member already satisfies; it only adds the token scope gate.
+        team_id = _get_user_team_id(request)
+        team = Team.objects.filter(id=team_id).first() if team_id else None
+        if team is not None and not can(request, "workspace:read", team):
+            return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
         # Base querysets for the user's teams
         products_qs = Product.objects.filter(team__in=user_teams_qs)
         components_qs = Component.objects.filter(team__in=user_teams_qs)
@@ -2420,7 +2511,7 @@ def download_product_sbom(
     if not product.is_public:
         if not request.user or not request.user.is_authenticated:
             return 403, {"detail": "Authentication required for private products", "error_code": ErrorCode.UNAUTHORIZED}
-        if not verify_item_access(request, product, ["owner", "admin"]):
+        if not can(request, "product:manage", product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     # Normalize format early
@@ -2491,6 +2582,17 @@ def list_all_releases(
                             "error_code": ErrorCode.FORBIDDEN,
                         }
 
+                    # Route this internal read through can() so a narrow-scoped
+                    # API token (e.g. a publish-only CI token) honours its scope:
+                    # listing releases of a private product exposes private
+                    # workspace data, which a non-read token scope must not
+                    # reach. No behaviour change for sessions or full/unscoped
+                    # tokens — release:read is the READ_MEMBER tier every current
+                    # member already satisfies; it only adds the token scope gate.
+                    team = Team.objects.filter(id=team_id).first()
+                    if team is not None and not can(request, "release:read", team):
+                        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
                     # Verify the product belongs to the user's team
                     if str(product.team.id) != team_id:
                         return 403, {"detail": "Product not found", "error_code": ErrorCode.PRODUCT_NOT_FOUND}
@@ -2509,6 +2611,16 @@ def list_all_releases(
                     "detail": "Guest members can only access public pages",
                     "error_code": ErrorCode.FORBIDDEN,
                 }
+
+            # Route this internal read through can() so a narrow-scoped API token
+            # (e.g. a publish-only CI token) honours its scope: listing all team
+            # releases exposes private workspace data, which a non-read token
+            # scope must not reach. No behaviour change for sessions or
+            # full/unscoped tokens — release:read is the READ_MEMBER tier every
+            # current member already satisfies; it only adds the token scope gate.
+            team = Team.objects.filter(id=team_id).first()
+            if team is not None and not can(request, "release:read", team):
+                return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
             # Build the base query for releases belonging to the user's team
             query = Release.objects.filter(product__team_id=team_id).select_related("product")
@@ -2581,7 +2693,7 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
 
     # Check if release has SBOMs for download capability
     has_sboms = release.artifacts.filter(sbom__isnull=False).exists()
-    has_crud_permissions = verify_item_access(request, release.product, ["owner", "admin"])
+    has_crud_permissions = can(request, "release:manage", release.product).allowed
 
     response = {
         "id": str(release.id),
@@ -2665,8 +2777,19 @@ def create_release(request: HttpRequest, payload: ReleaseCreateSchema) -> Any:
     except Product.DoesNotExist:
         return 404, {"detail": "Product not found", "error_code": ErrorCode.PRODUCT_NOT_FOUND}
 
-    if not verify_item_access(request, product, ["owner", "admin"]):
-        return 403, {"detail": "Only owners and admins can create releases", "error_code": ErrorCode.FORBIDDEN}
+    if not can(request, "release:create", product):
+        return 403, {"detail": "You do not have permission to create releases", "error_code": ErrorCode.FORBIDDEN}
+
+    # Confine an OIDC bot to products that contain its bound component. The bot's scopes are
+    # unset (full), so this is the only thing keeping it from creating releases on unrelated
+    # products. Fail closed for OIDC requests (an orphan bot with no binding must be denied,
+    # not treated as a no-op); a plain no-op only for non-OIDC (PAT/session) requests.
+    from sbomify.apps.oidc.permissions import bound_component_id_for_request, request_is_oidc_authed
+
+    if request_is_oidc_authed(request):
+        bound_component_id = bound_component_id_for_request(request)
+        if bound_component_id is None or not product.components.filter(id=bound_component_id).exists():
+            return 403, {"detail": "You do not have permission to create releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent creating releases with name "latest" manually
     if payload.name.lower() == LATEST_RELEASE_NAME.lower():
@@ -2700,6 +2823,25 @@ def create_release(request: HttpRequest, payload: ReleaseCreateSchema) -> Any:
                 "release_created",
                 {"release_id": str(release.id), "product_id": str(product.id), "name": release.name},
             )
+
+        # Deferred via ``on_commit`` so the event only ships if the
+        # release-create transaction commits.
+        captured_team_key = product.team.key
+        captured_release_id = str(release.id)
+        captured_product_id = str(product.id)
+        captured_is_prerelease = release.is_prerelease
+        transaction.on_commit(
+            lambda: capture_for_request(
+                request,
+                "release:created",
+                {
+                    "release_id": captured_release_id,
+                    "product_id": captured_product_id,
+                    "is_prerelease": captured_is_prerelease,
+                },
+                team_key=captured_team_key,
+            )
+        )
 
         return 201, _build_release_response(request, release, include_artifacts=True)
 
@@ -2735,7 +2877,7 @@ def get_release(request: HttpRequest, release_id: str) -> Any:
     if not release.product.is_public:
         if not request.user or not request.user.is_authenticated:
             return 403, {"detail": "Authentication required for private products", "error_code": ErrorCode.UNAUTHORIZED}
-        if not verify_item_access(request, release.product, ["owner", "admin"]):
+        if not can(request, "release:manage", release.product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     return 200, _build_release_response(request, release, include_artifacts=True)
@@ -2759,7 +2901,7 @@ def update_release(request: HttpRequest, release_id: str, payload: ReleaseUpdate
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, release.product, ["owner", "admin"]):
+    if not can(request, "release:manage", release.product):
         return 403, {"detail": "Only owners and admins can update releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent modifying latest releases
@@ -2833,7 +2975,7 @@ def patch_release(request: HttpRequest, release_id: str, payload: ReleasePatchSc
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, release.product, ["owner", "admin"]):
+    if not can(request, "release:manage", release.product):
         return 403, {"detail": "Only owners and admins can update releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent modifying latest releases
@@ -2915,8 +3057,8 @@ def delete_release(request: HttpRequest, release_id: str) -> Any:
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, release.product, ["owner", "admin"]):
-        return 403, {"detail": "Only owners and admins can delete releases", "error_code": ErrorCode.FORBIDDEN}
+    if not can(request, "release:delete", release.product):
+        return 403, {"detail": "Only owners can delete releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent deleting latest releases
     if release.is_latest:
@@ -2988,7 +3130,7 @@ def download_release(
             return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
 
         # Guest members can read release artifacts if they have access
-        if not verify_item_access(request, release.product, ["guest", "owner", "admin"]):
+        if not can(request, "release:read", release.product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     # Get all SBOM artifacts in the release
@@ -3069,7 +3211,7 @@ def list_release_artifacts(
         if not request.user or not request.user.is_authenticated:
             return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
 
-        if not verify_item_access(request, release.product, ["guest", "owner", "admin"]):
+        if not can(request, "release:read", release.product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     if mode == "existing":
@@ -3249,8 +3391,11 @@ def add_artifacts_to_release(request: HttpRequest, release_id: str, payload: Rel
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, release.product, ["owner", "admin"]):
-        return 403, {"detail": "Only owners and admins can manage release artifacts", "error_code": ErrorCode.FORBIDDEN}
+    if not can(request, "release:tag", release.product):
+        return 403, {
+            "detail": "You do not have permission to add artifacts to this release",
+            "error_code": ErrorCode.FORBIDDEN,
+        }
 
     # Prevent adding artifacts to latest releases
     if release.is_latest:
@@ -3268,6 +3413,11 @@ def add_artifacts_to_release(request: HttpRequest, release_id: str, payload: Rel
 
             sbom = SBOM.objects.get(pk=payload.sbom_id)
             if str(sbom.component.team_id) != str(release.product.team_id):
+                return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
+
+            from sbomify.apps.oidc.permissions import is_authorised_for_component
+
+            if not is_authorised_for_component(request, sbom.component):
                 return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
             result = add_artifact_to_release(release, sbom=sbom, allow_replacement=False)
@@ -3306,6 +3456,11 @@ def add_artifacts_to_release(request: HttpRequest, release_id: str, payload: Rel
 
             document = Document.objects.get(pk=payload.document_id)
             if str(document.component.team_id) != str(release.product.team_id):
+                return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
+
+            from sbomify.apps.oidc.permissions import is_authorised_for_component
+
+            if not is_authorised_for_component(request, document.component):
                 return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
             result = add_artifact_to_release(release, document=document, allow_replacement=False)
@@ -3358,7 +3513,7 @@ def remove_artifact_from_release(request: HttpRequest, release_id: str, artifact
     except ReleaseArtifact.DoesNotExist:
         return 404, {"detail": "Artifact not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, release.product, ["owner", "admin"]):
+    if not can(request, "release:manage", release.product):
         return 403, {"detail": "Only owners and admins can manage release artifacts", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent removing artifacts from latest releases
@@ -3404,7 +3559,7 @@ def list_document_releases(
             return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
 
         # Guest members can download documents if they have access
-        if not verify_item_access(request, document.component, ["guest", "owner", "admin"]):
+        if not can(request, "document:read", document.component):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     # Get all releases containing this document
@@ -3448,7 +3603,7 @@ def add_document_to_releases(request: HttpRequest, document_id: str, payload: Do
     except Document.DoesNotExist:
         return 404, {"detail": "Document not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, document.component, ["owner", "admin"]):
+    if not can(request, "document:manage", document.component):
         return 403, {"detail": "Only owners and admins can manage document releases", "error_code": ErrorCode.FORBIDDEN}
 
     from sbomify.apps.core.utils import add_artifact_to_release
@@ -3536,7 +3691,7 @@ def remove_document_from_release(request: HttpRequest, document_id: str, release
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, document.component, ["owner", "admin"]):
+    if not can(request, "document:manage", document.component):
         return 403, {"detail": "Only owners and admins can manage document releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Prevent removing from latest releases
@@ -3577,8 +3732,13 @@ def list_sbom_releases(request: HttpRequest, sbom_id: str, page: int = Query(1),
             return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
 
         # Guest members can download SBOMs if they have access
-        if not verify_item_access(request, sbom.component, ["guest", "owner", "admin"]):
+        if not can(request, "sbom:read", sbom.component):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
+
+    # Whether the requester is a member of the SBOM's workspace. Non-members may
+    # reach this endpoint when the component is public/gated, so private product
+    # names and IDs must be withheld from them to avoid leaking private products.
+    has_workspace_access = can(request, "sbom:read", sbom.component).allowed
 
     # Get all releases containing this SBOM
     release_artifacts_queryset = (
@@ -3590,19 +3750,22 @@ def list_sbom_releases(request: HttpRequest, sbom_id: str, page: int = Query(1),
     # Apply pagination
     paginated_artifacts, pagination_meta = _paginate_queryset(release_artifacts_queryset, page, page_size)
 
-    items = [
-        {
-            "id": str(artifact.release.id),
-            "name": artifact.release.name,
-            "description": artifact.release.description,
-            "is_prerelease": artifact.release.is_prerelease,
-            "is_latest": artifact.release.is_latest,
-            "product_id": str(artifact.release.product.id),
-            "product_name": artifact.release.product.name,
-            "is_public": artifact.release.product.is_public,
-        }
-        for artifact in paginated_artifacts
-    ]
+    items = []
+    for artifact in paginated_artifacts:
+        product = artifact.release.product
+        reveal_product = product.is_public or has_workspace_access
+        items.append(
+            {
+                "id": str(artifact.release.id),
+                "name": artifact.release.name,
+                "description": artifact.release.description,
+                "is_prerelease": artifact.release.is_prerelease,
+                "is_latest": artifact.release.is_latest,
+                "product_id": str(product.id) if reveal_product else "",
+                "product_name": product.name if reveal_product else "",
+                "is_public": product.is_public,
+            }
+        )
 
     return {"items": items, "pagination": pagination_meta}
 
@@ -3621,7 +3784,7 @@ def add_sbom_to_releases(request: HttpRequest, sbom_id: str, payload: SBOMReleas
     except SBOM.DoesNotExist:
         return 404, {"detail": "SBOM not found", "error_code": ErrorCode.NOT_FOUND}
 
-    if not verify_item_access(request, sbom.component, ["owner", "admin"]):
+    if not can(request, "sbom:manage", sbom.component):
         return 403, {"detail": "Only owners and admins can manage SBOM releases", "error_code": ErrorCode.FORBIDDEN}
 
     from sbomify.apps.core.utils import add_artifact_to_release
@@ -3707,7 +3870,7 @@ def remove_sbom_from_release(request: HttpRequest, sbom_id: str, release_id: str
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
-    if not verify_item_access(request, sbom.component, ["owner", "admin"]):
+    if not can(request, "sbom:manage", sbom.component):
         return 403, {"detail": "Only owners and admins can manage SBOM releases", "error_code": ErrorCode.FORBIDDEN}
 
     # Verify release belongs to same team as the SBOM's component
@@ -3789,7 +3952,7 @@ def list_component_sboms(
             return 403, {"detail": "Authentication required for private items", "error_code": ErrorCode.UNAUTHORIZED}
 
         # Guest members can download components if they have access
-        if not verify_item_access(request, component, ["guest", "owner", "admin"]):
+        if not can(request, "component:read_internal", component):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -4051,7 +4214,7 @@ def list_component_documents(
             return 403, {"detail": "Authentication required for private items", "error_code": ErrorCode.UNAUTHORIZED}
 
         # Guest members can download components if they have access
-        if not verify_item_access(request, component, ["guest", "owner", "admin"]):
+        if not can(request, "component:read_internal", component):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
     try:
@@ -4163,6 +4326,11 @@ def delete_account(request: HttpRequest, data: DeleteAccountRequest) -> Any:
     result = delete_user_account(user)
 
     if result.ok:
+        # Fired AFTER soft-delete; the user's other sessions have been invalidated
+        # (see delete_user_account), but this request's in-memory user object still
+        # resolves a stable distinct_id via request.user.pk.
+        capture_for_request(request, "user:account_deleted")
+
         return 200, {"success": True, "message": result.value}
     elif result.status_code == 403:
         return 403, {"detail": result.error, "error_code": ErrorCode.FORBIDDEN}

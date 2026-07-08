@@ -15,11 +15,13 @@ from ninja.security import django_auth
 from pydantic import ValidationError
 
 from sbomify.apps.access_tokens.auth import PersonalAccessTokenAuth, optional_auth
+from sbomify.apps.access_tokens.throttling import AccessTokenHeavyRateThrottle, AccessTokenRateThrottle
 from sbomify.apps.core.apis import get_component_metadata, patch_component_metadata
+from sbomify.apps.core.authz import can
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.core.purl import extract_purl_qualifiers
 from sbomify.apps.core.schemas import ErrorCode, ErrorResponse
-from sbomify.apps.core.services.access_control import check_component_access
+from sbomify.apps.core.services.access_control import check_component_access, check_component_access_for_user
 from sbomify.apps.core.utils import (
     ExtractSpec,
     broadcast_to_workspace,
@@ -27,14 +29,15 @@ from sbomify.apps.core.utils import (
     dict_update,
     get_by_uuid_or_pk,
     obj_extract,
-    verify_item_access,
 )
-from sbomify.apps.sboms.utils import verify_download_token
+from sbomify.apps.oidc.permissions import is_authorised_for_component
+from sbomify.apps.sboms.utils import _is_cbom, _is_duplicate_integrity_error, verify_download_token
 from sbomify.apps.teams.models import ContactProfile
 
 from .models import SBOM, Component, Product
 from .schemas import (
     ComponentMetaData,
+    CryptoInventorySchema,
     CycloneDXSupportedVersion,
     SBOMResponseSchema,
     SBOMUploadRequest,
@@ -51,7 +54,7 @@ from .schemas import (
     validate_cyclonedx_sbom,
     validate_spdx_sbom,
 )
-from .services.sboms import delete_sbom_record, get_sbom_detail
+from .services.sboms import delete_sbom_record, get_crypto_inventory, get_sbom_detail
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +62,6 @@ log = logging.getLogger(__name__)
 SBOM_MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 
 
-_SBOM_UNIQUE_CONSTRAINT = "sboms_sbom_unique_component_version_format_qualifiers_bom_type"
 _VALID_BOM_TYPES = {choice[0] for choice in SBOM.BomType.choices}
 
 
@@ -71,39 +73,6 @@ def _validate_bom_type(bom_type: str) -> tuple[int, dict[str, Any]] | None:
             "error_code": ErrorCode.VALIDATION_ERROR,
         }
     return None
-
-
-def _is_duplicate_integrity_error(exc: IntegrityError) -> bool:
-    """Check if an IntegrityError is for the SBOM uniqueness constraint.
-
-    Postgres path: checks diag.constraint_name, then SQLSTATE 23505 with
-    constraint name in the message.
-    SQLite path: checks for "UNIQUE constraint failed" with the relevant columns.
-    """
-    cause = exc.__cause__
-    if cause is not None:
-        # Try PostgreSQL diagnostics first (most precise)
-        diag = getattr(cause, "diag", None)
-        if diag is not None:
-            diag_constraint: str | None = getattr(diag, "constraint_name", None)
-            if diag_constraint == _SBOM_UNIQUE_CONSTRAINT:
-                return True
-
-        pgcode: str | None = getattr(cause, "pgcode", None)
-        if pgcode == "23505":
-            return _SBOM_UNIQUE_CONSTRAINT in str(exc).lower()
-
-    msg = str(exc).lower()
-
-    # Postgres fallback (no __cause__ or missing diag)
-    if _SBOM_UNIQUE_CONSTRAINT in msg:
-        return True
-
-    # SQLite: "UNIQUE constraint failed: sboms_sbom.component_id, ..."
-    if "unique constraint failed" in msg and "sboms_sbom.component_id" in msg and "sboms_sbom.version" in msg:
-        return True
-
-    return False
 
 
 def _cleanup_orphaned_s3_object(filename: str) -> None:
@@ -325,7 +294,7 @@ def _public_api_item_access_checks(
 
     rec: Component | Product = get_object_or_404(model_class, pk=item_id)  # type: ignore[assignment]
 
-    if not verify_item_access(request, rec, ["owner", "admin"]):
+    if not can(request, f"{item_type}:manage", rec):  # item_type is validated to product|component above
         return 403, {"detail": "Forbidden"}
 
     return rec
@@ -335,6 +304,9 @@ def _public_api_item_access_checks(
     "/artifact/cyclonedx/{component_id}",
     response={201: SBOMUploadRequest, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 409: ErrorResponse},
     auth=PersonalAccessTokenAuth(),
+    # Per-op throttle REPLACES the global, so pass both: keep the global per-token
+    # limit AND the stricter heavy-upload limit (#1070).
+    throttle=[AccessTokenRateThrottle(), AccessTokenHeavyRateThrottle()],
 )
 def sbom_upload_cyclonedx(
     request: HttpRequest,
@@ -366,7 +338,13 @@ def sbom_upload_cyclonedx(
         if component is None:
             return 404, {"detail": "Component not found"}
 
-        if not verify_item_access(request, component, ["owner", "admin"]):
+        # Allow OIDC bot tokens for trusted-publishing uploads. The second
+        # check enforces that the bot can only push to ITS bound component,
+        # not anywhere else in the workspace — see
+        # ``sbomify.apps.oidc.permissions.is_authorised_for_component``.
+        if not can(request, "artifact:publish", component):
+            return 403, {"detail": "Forbidden"}
+        if not is_authorised_for_component(request, component):
             return 403, {"detail": "Forbidden"}
 
         # Parse JSON from request body
@@ -408,6 +386,12 @@ def sbom_upload_cyclonedx(
 
         sbom_version = sbom_dict.get("version", "")
         sbom_format = "cyclonedx"
+
+        # Auto-detect CBOM content (#1042): an action-published CBOM arrives with the
+        # default bom_type; tag it cbom so the cbom-gated PQC plugin runs. Only when
+        # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
+        if "bom_type" not in request.GET and _is_cbom(sbom_data):
+            bom_type = "cbom"
 
         # Extract PURL qualifiers from metadata.component.purl
         cdx_purl = _extract_cdx_purl(payload)
@@ -465,6 +449,9 @@ def sbom_upload_cyclonedx(
     "/artifact/spdx/{component_id}",
     response={201: SBOMUploadRequest, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 409: ErrorResponse},
     auth=PersonalAccessTokenAuth(),
+    # Per-op throttle REPLACES the global, so pass both: keep the global per-token
+    # limit AND the stricter heavy-upload limit (#1070).
+    throttle=[AccessTokenRateThrottle(), AccessTokenHeavyRateThrottle()],
 )
 def sbom_upload_spdx(request: HttpRequest, component_id: str, bom_type: str = "sbom") -> tuple[int, dict[str, Any]]:
     """
@@ -497,7 +484,12 @@ def sbom_upload_spdx(request: HttpRequest, component_id: str, bom_type: str = "s
         if component is None:
             return 404, {"detail": "Component not found"}
 
-        if not verify_item_access(request, component, ["owner", "admin"]):
+        # Allow OIDC bot tokens for trusted-publishing uploads; restrict
+        # them to the bound component (see CycloneDX upload above for
+        # the rationale).
+        if not can(request, "artifact:publish", component):
+            return 403, {"detail": "Forbidden"}
+        if not is_authorised_for_component(request, component):
             return 403, {"detail": "Forbidden"}
 
         # Parse JSON from request body
@@ -722,6 +714,25 @@ def get_sbom(request: HttpRequest, sbom_id: str) -> tuple[int, dict[str, Any]]:
 
 
 @router.get(
+    "/{sbom_id}/crypto-inventory",
+    response={200: CryptoInventorySchema, 403: ErrorResponse, 404: ErrorResponse},
+    auth=None,  # Allow unauthenticated access for public SBOMs
+)
+@decorate_view(optional_auth)
+def get_sbom_crypto_inventory(request: HttpRequest, sbom_id: str) -> tuple[int, dict[str, Any]]:
+    """Return the derived cryptographic-asset (CBOM) inventory for an SBOM.
+
+    Projects the ``cryptographic-asset`` components of the stored CycloneDX
+    artifact. Non-crypto SBOMs return an empty inventory rather than an error.
+    """
+    result = get_crypto_inventory(request, sbom_id)
+    if not result.ok:
+        return result.status_code or 400, {"detail": result.error or "Invalid request"}
+
+    return 200, result.value or {}
+
+
+@router.get(
     "/{sbom_id}/download",
     response={200: None, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
     auth=None,  # Allow unauthenticated access for public SBOMs
@@ -832,21 +843,40 @@ def download_sbom_signed(
     if payload.get("sbom_id") != sbom_id:
         return 403, {"detail": "Token is not valid for this SBOM"}
 
-    # For private components, we need to ensure the token is valid
-    # The token itself provides the authorization
+    # Non-public components: the signed token only proves which artifact +
+    # user the URL was minted for. It is NOT standalone authorization — we
+    # re-check the token user's current access below (#997).
     if sbom.component.visibility != Component.Visibility.PUBLIC:
-        # Additional security: verify the user from the token exists
+        # Verify the user from the token exists (and is live)
         user_id = payload.get("user_id")
         if not user_id:
             return 403, {"detail": "Invalid token: missing user information"}
 
-        try:
-            from django.contrib.auth import get_user_model
+        from django.contrib.auth import get_user_model
 
-            User = get_user_model()
-            User.objects.get(id=user_id)
+        # Match PAT auth liveness filtering: a soft-deleted / deactivated
+        # account must not download via a signed URL during the purge grace
+        # window (sbomify.apps.access_tokens.utils.get_user_and_token_record).
+        User = get_user_model()
+        try:
+            token_user = User.objects.get(id=user_id, is_active=True, deleted_at__isnull=True)
         except User.DoesNotExist:
             return 403, {"detail": "Invalid token: user not found"}
+
+        # The signed token only delegates a download; it is NOT standalone
+        # authorization. Re-check the token user's CURRENT access against live
+        # DB state (no session role-cache) so that revoking their
+        # membership/NDA immediately invalidates a captured signed URL instead
+        # of leaving it valid for the token TTL (#997).
+        access_result = check_component_access_for_user(token_user, sbom.component)
+        if not access_result.has_access:
+            log.info(
+                "Signed URL access denied for SBOM %s, user %s: %s",
+                sbom_id,
+                user_id,
+                access_result.reason,
+            )
+            return 403, {"detail": "Access has been revoked or is no longer valid"}
 
         # Log the access for audit purposes
         log.info(f"Signed URL access to private SBOM {sbom_id} by user {user_id}")
@@ -900,7 +930,7 @@ def sbom_upload_file(
         if component is None:
             return 404, {"detail": "Component not found"}
 
-        if not verify_item_access(request, component, ["owner", "admin"]):
+        if not can(request, "component:manage", component):
             return 403, {"detail": "Forbidden"}
 
         # Validate file size before reading
@@ -1056,6 +1086,12 @@ def sbom_upload_file(
             sbom_version = sbom_dict.get("version", "")
             sbom_format = "cyclonedx"
 
+            # Auto-detect CBOM content (#1042): tag a crypto BOM uploaded with the
+            # default bom_type as cbom so the cbom-gated PQC plugin runs. Only when
+            # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
+            if "bom_type" not in request.GET and _is_cbom(sbom_data):
+                bom_type = "cbom"
+
             # Extract PURL qualifiers from metadata.component.purl
             cdx_purl = _extract_cdx_purl(cdx_payload)
             sbom_qualifiers = extract_purl_qualifiers(cdx_purl) if cdx_purl else {}
@@ -1170,18 +1206,19 @@ _MAX_PROVENANCE_SIZE = 10 * 1024 * 1024  # 10 MB
 def _get_sbom_or_error(request: HttpRequest, sbom_id: str, *, write: bool = False) -> SBOM | tuple[int, dict[str, Any]]:
     """Look up an SBOM and verify access. Returns SBOM or (status, error_dict).
 
-    For write=True (uploads), requires owner/admin via verify_item_access.
-    For write=False (downloads), uses check_component_access to support public SBOMs.
+    For write=True (uploads), requires owner/admin via can("sbom:manage", ...).
+    For write=False (downloads), uses can("component:access", ...): the same
+    visibility/NDA logic as check_component_access plus the API-token scope gate,
+    so public SBOMs stay downloadable while a non-read-scoped token is denied.
     """
     sbom = SBOM.objects.select_related("component", "component__team").filter(pk=sbom_id).first()
     if sbom is None:
         return 404, {"detail": "SBOM not found", "error_code": ErrorCode.NOT_FOUND}
     if write:
-        if not verify_item_access(request, sbom.component, ["owner", "admin"]):
+        if not can(request, "sbom:manage", sbom.component):
             return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
     else:
-        access = check_component_access(request, sbom.component)
-        if not access.has_access:
+        if not can(request, "component:access", sbom.component):
             return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
     return sbom
 

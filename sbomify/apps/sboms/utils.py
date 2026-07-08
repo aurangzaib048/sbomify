@@ -4,15 +4,15 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import re
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 from uuid import uuid4
 
 from django.conf import settings
 from django.core import signing
-from django.db import DatabaseError, OperationalError
-from django.http import HttpRequest
+from django.db import DatabaseError, IntegrityError, OperationalError
 from django.utils import timezone
 
 from sbomify.apps.core.models import Component, Product
@@ -20,7 +20,7 @@ from sbomify.apps.core.models import Component, Product
 # S3Client import moved to function level to support test mocking
 from sbomify.apps.sboms.models import SBOM
 from sbomify.apps.sboms.sbom_format_schemas import cyclonedx_1_6 as cdx16
-from sbomify.apps.teams.models import ContactProfile, Member, Team
+from sbomify.apps.teams.models import ContactProfile
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +134,200 @@ def get_sbom_data(sbom_id: str) -> tuple[SBOM, dict[str, Any]]:
     return sbom_instance, sbom_data
 
 
+# SBOMs are immutable (ADR-004) so caching a definitive answer (the SBOM
+# was parsed and either does or doesn't name sbomify-action) is safe for a
+# day. Transient read failures use a much shorter negative TTL so a brief
+# S3 / decode outage doesn't lock the wrong answer in for a full day.
+_SBOMIFY_ACTION_CHECK_CACHE_TTL = 24 * 3600
+_SBOMIFY_ACTION_NEGATIVE_CACHE_TTL = 60
+
+
+def _matches_sbomify_action_name(name: object) -> bool:
+    """True for ``sbomify-action`` / ``sbomify action`` (the augmentation.py
+    constant ships with a hyphen in newer releases and a space in older ones).
+    Comparison is case-insensitive and whitespace/hyphen-collapsed so a future
+    rename of the action keeps detection working.
+    """
+    if not isinstance(name, str):
+        return False
+    return name.replace(" ", "").replace("-", "").strip().lower() == "sbomifyaction"
+
+
+def _cyclonedx_metadata_has_sbomify_action(sbom_data: Any) -> bool:
+    """Detect sbomify-action in a parsed CycloneDX SBOM.
+
+    Supports both formats sbomify-action emits (see github-action repo
+    ``sbomify_action/augmentation.py``):
+
+    - CycloneDX 1.5+: ``metadata.tools.components[]`` and
+      ``metadata.tools.services[]`` (entry with ``name`` matching the
+      sbomify-action constant).
+    - CycloneDX 1.4 legacy: ``metadata.tools[]`` array of
+      ``{name, vendor, ...}`` dicts.
+
+    Each layer guards against unexpected JSON shapes — a malformed SBOM
+    (top-level list, non-dict metadata, scalar/None entries inside the
+    tools collections) returns ``False`` instead of raising
+    ``AttributeError`` from a ``.get`` on a non-dict, since this runs
+    on every Step 2 render and must never break the wizard.
+    """
+    if not isinstance(sbom_data, dict):
+        return False
+    metadata = sbom_data.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    tools = metadata.get("tools")
+    if isinstance(tools, list):
+        return any(isinstance(t, dict) and _matches_sbomify_action_name(t.get("name")) for t in tools)
+    if isinstance(tools, dict):
+        for collection_key in ("components", "services"):
+            collection = tools.get(collection_key)
+            if not isinstance(collection, list):
+                continue
+            for entry in collection:
+                if isinstance(entry, dict) and _matches_sbomify_action_name(entry.get("name")):
+                    return True
+    return False
+
+
+# SemVer-ish version: ``v?MAJOR.MINOR[.PATCH...][-prerelease][+build]``.
+# The ``(\.\d+)+`` is what distinguishes a real version (``1.2.3``,
+# ``v0.10``) from a fragment that just happens to start with ``v`` and a
+# digit (``v2-wrapper``). Without that, ``Tool: sbomify-action-v2-wrapper-1.0.0``
+# would split at ``-v2-`` and the left half would canonicalise to
+# ``sbomify-action``, hiding the CTA for a different generator.
+_SPDX_VERSION_SUFFIX = re.compile(r"^v?\d+(\.\d+)+([-+][\w.+-]*)?$")
+
+
+def _spdx_creator_names_sbomify_action(creator: str) -> bool:
+    """Return True iff a ``creationInfo.creators`` entry names sbomify-action.
+
+    SPDX 2.x tools are emitted as ``Tool: <name>-<version>`` (see
+    sbomify-action's ``augmentation.py`` — ``f"{name}-{version}"``).
+    Versions in the wild include hyphenated pre-release suffixes
+    (``1.2.3-rc1``, ``2.0.0-alpha.1+build.7``).
+
+    Locate the ``-<version>`` boundary by scanning hyphens from the right
+    and accepting the first one whose right-hand side matches an
+    end-anchored SemVer-ish pattern. ``rightmost`` keeps as much of the
+    string in the name as possible — that way ``sbomify-action-v2-wrapper-1.0.0``
+    splits at the trailing ``-1.0.0`` and rejects with the name
+    ``sbomify-action-v2-wrapper`` rather than the inner ``-v2-`` boundary.
+    The pattern requires at least ``MAJOR.MINOR`` (so a single ``v2``
+    fragment doesn't qualify as a version on its own).
+    Tool entries without a version part match against the whole string.
+    """
+    if not creator.lower().startswith("tool:"):
+        return False
+    tool_name = creator.split(":", 1)[1].strip()
+    # No version segment: the entire payload IS the name.
+    if _matches_sbomify_action_name(tool_name):
+        return True
+    # Right-to-left scan: prefer splitting off as little as possible,
+    # i.e. only accept the version that runs to the end of the string.
+    for i in range(len(tool_name) - 1, -1, -1):
+        if tool_name[i] != "-":
+            continue
+        suffix = tool_name[i + 1 :]
+        if _SPDX_VERSION_SUFFIX.match(suffix):
+            return _matches_sbomify_action_name(tool_name[:i])
+    return False
+
+
+def _spdx_metadata_has_sbomify_action(sbom_data: Any) -> bool:
+    """Detect sbomify-action in a parsed SPDX 2.x SBOM via
+    ``creationInfo.creators[]`` entries of the form
+    ``"Tool: sbomify-action-<version>"``.
+
+    Same fail-safe shape guards as the CycloneDX detector.
+    """
+    if not isinstance(sbom_data, dict):
+        return False
+    creation_info = sbom_data.get("creationInfo")
+    if not isinstance(creation_info, dict):
+        return False
+    creators = creation_info.get("creators")
+    if not isinstance(creators, list):
+        return False
+    for creator in creators:
+        if isinstance(creator, str) and _spdx_creator_names_sbomify_action(creator):
+            return True
+    return False
+
+
+def sbom_was_generated_by_sbomify_action(sbom: SBOM) -> bool:
+    """True iff the SBOM's stored content names sbomify-action as a generator.
+
+    Reads the SBOM JSON from S3 once and caches a definitive answer for
+    ``_SBOMIFY_ACTION_CHECK_CACHE_TTL`` seconds. A transient fetch / decode
+    failure caches ``False`` only for ``_SBOMIFY_ACTION_NEGATIVE_CACHE_TTL``
+    so a brief S3 outage doesn't keep the CTA on for the rest of the day for
+    SBOMs that would be detected once storage recovers. Returning ``False``
+    on error is the fail-safe choice — a missed detection only means an
+    unnecessary nudge to use the action, not data corruption.
+
+    Cache hits/misses are treated as best-effort: django-redis without
+    ``IGNORE_EXCEPTIONS`` raises on Redis outage, so ``cache.get`` and
+    ``cache.set`` are wrapped to fall back to "miss / no-op". A Redis
+    outage on Step 2 must not break the wizard before the S3 fail-safe
+    even gets a chance to run.
+    """
+    from django.core.cache import cache
+
+    cache_key = f"sbom:sbomify_action_check:{sbom.pk}"
+
+    def _cache_get() -> Any:
+        try:
+            return cache.get(cache_key)
+        except Exception:
+            log.debug("sbomify-action cache.get failed for SBOM %s", sbom.pk, exc_info=True)
+            return None
+
+    def _cache_set(value: bool, ttl: int) -> None:
+        try:
+            cache.set(cache_key, value, ttl)
+        except Exception:
+            log.debug("sbomify-action cache.set failed for SBOM %s", sbom.pk, exc_info=True)
+
+    cached = _cache_get()
+    if cached is not None:
+        return bool(cached)
+
+    if not sbom.sbom_filename:
+        # Definitive: an SBOM row without a stored blob will never name
+        # sbomify-action, so keep the long TTL.
+        _cache_set(False, _SBOMIFY_ACTION_CHECK_CACHE_TTL)
+        return False
+
+    try:
+        from sbomify.apps.core.object_store import S3Client
+
+        sbom_bytes = S3Client(bucket_type="SBOMS").get_sbom_data(sbom.sbom_filename)
+        if not sbom_bytes:
+            # Treat empty / missing as transient — the row points at a blob
+            # we couldn't read, so we should retry sooner than a day.
+            _cache_set(False, _SBOMIFY_ACTION_NEGATIVE_CACHE_TTL)
+            return False
+        sbom_data = json.loads(sbom_bytes.decode("utf-8"))
+        fmt = (sbom.format or "").lower()
+        if fmt == "spdx":
+            result = _spdx_metadata_has_sbomify_action(sbom_data)
+        else:
+            # Default to CycloneDX detection — covers ``cyclonedx`` and any
+            # future variant (sbom.format defaults to "spdx" but most uploads
+            # are CycloneDX in practice).
+            result = _cyclonedx_metadata_has_sbomify_action(sbom_data)
+    except Exception:
+        log.debug("sbomify-action detection failed for SBOM %s", sbom.pk, exc_info=True)
+        # Transient: S3 / decode failures are not durable facts about the
+        # SBOM. Cache only briefly so the next page load retries.
+        _cache_set(False, _SBOMIFY_ACTION_NEGATIVE_CACHE_TTL)
+        return False
+
+    _cache_set(result, _SBOMIFY_ACTION_CHECK_CACHE_TTL)
+    return result
+
+
 def get_sbom_data_bytes(sbom_id: str) -> tuple[SBOM, bytes]:
     """
     Fetch SBOM instance and raw bytes data for services that need bytes.
@@ -242,51 +436,6 @@ def _get_cyclonedx_model() -> Any:
     except ImportError:
         log.warning("CycloneDX library not available. Some SBOM features may be limited.")
         return None
-
-
-def verify_item_access(
-    request: HttpRequest,
-    item: Team | Product | Component | SBOM,
-    allowed_roles: list[str] | None,
-) -> bool:
-    """
-    Verify if the user has access to the item based on the allowed roles.
-    """
-    if not request.user.is_authenticated:
-        return False
-
-    team_id = None
-    team_key = None
-
-    if isinstance(item, Team):
-        team_id = item.id
-        team_key = item.key
-    elif isinstance(item, (Product, Component)):
-        team_id = item.team_id
-        team_key = item.team.key
-    elif isinstance(item, SBOM):
-        team_id = item.component.team_id
-        team_key = item.component.team.key
-
-    # Check session data first
-    if team_key and "user_teams" in request.session:
-        team_data = request.session["user_teams"].get(team_key)
-        if team_data and "role" in team_data:
-            # If no roles are specified, any role is allowed
-            if allowed_roles is None:
-                return True
-            return team_data["role"] in allowed_roles
-
-    # Fall back to database check
-    if team_id:
-        member = Member.objects.filter(user=request.user, team_id=team_id).first()
-        if member:
-            # If no roles are specified, any role is allowed
-            if allowed_roles is None:
-                return True
-            return member.role in allowed_roles
-
-    return False
 
 
 @contextmanager
@@ -484,6 +633,243 @@ def create_external_reference(sbom_filename: str, sbom_id: str, user: Any = None
     )
 
 
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}\Z")
+# Local SPDX 2.x element id: "SPDXRef-" + letters/digits/./- (the spec's idstring
+# set). No ':' so it can't corrupt a "DocumentRef-N:SPDXRef-..." external reference.
+_SPDX_LOCAL_REF_RE = re.compile(r"SPDXRef-[A-Za-z0-9.-]+\Z")
+
+
+def _is_sha256_hex(value: Any) -> TypeGuard[str]:
+    """True iff ``value`` is a lower-case 64-hex SHA-256 digest string."""
+    return isinstance(value, str) and bool(_SHA256_HEX_RE.fullmatch(value))
+
+
+def spdx2_member_link(
+    sbom_instance: Any, sbom_data: dict[str, Any], doc_ref_id: str
+) -> tuple[dict[str, Any], str] | None:
+    """Native SPDX 2.x cross-document link for an aggregate member.
+
+    Returns ``(external_document_ref, related_spdx_element)`` for SPDX-native
+    linking, or ``None`` when the member can't be linked natively (not an SPDX 2.x
+    document, or missing its ``documentNamespace`` or content checksum) — the
+    caller then falls back to the download-URL stub.
+
+    The aggregate declares ``external_document_ref`` at the top level and points a
+    CONTAINS relationship at ``related_spdx_element`` (``DocumentRef-x:SPDXRef-y``),
+    mirroring how CycloneDX aggregation links members via externalReference. The
+    checksum is the member's CONTENT hash so referential integrity is verifiable.
+    """
+    if not str(sbom_data.get("spdxVersion", "")).startswith("SPDX-2"):
+        return None
+    namespace = sbom_data.get("documentNamespace")
+    checksum = getattr(sbom_instance, "sha256_hash", None)
+    # namespace goes into the SPDX output (untrusted member JSON); checksum is the
+    # referential-integrity digest, so require a real 64-hex SHA-256.
+    if not (isinstance(namespace, str) and namespace) or not _is_sha256_hex(checksum):
+        return None
+
+    # The element the member document describes: documentDescribes, else the
+    # SPDXRef-DOCUMENT DESCRIBES relationship, else the document itself. Member
+    # JSON is untrusted, so accept only a valid local "SPDXRef-..." id at each
+    # step — anything else (non-string, or containing a ':' that would corrupt
+    # the "DocumentRef-N:SPDXRef-..." reference) falls back to SPDXRef-DOCUMENT.
+    def _valid_local_ref(value: Any) -> str | None:
+        return value if isinstance(value, str) and _SPDX_LOCAL_REF_RE.fullmatch(value) else None
+
+    described: str | None = None
+    describes = sbom_data.get("documentDescribes")
+    if isinstance(describes, list) and describes:
+        described = _valid_local_ref(describes[0])
+    if described is None:
+        relationships = sbom_data.get("relationships")
+        if isinstance(relationships, list):
+            for rel in relationships:
+                if (
+                    isinstance(rel, dict)
+                    and rel.get("relationshipType") == "DESCRIBES"
+                    and rel.get("spdxElementId") == "SPDXRef-DOCUMENT"
+                ):
+                    described = _valid_local_ref(rel.get("relatedSpdxElement"))
+                    if described is not None:
+                        break
+    if described is None:
+        described = "SPDXRef-DOCUMENT"
+
+    external_document_ref = {
+        "externalDocumentId": doc_ref_id,
+        "spdxDocument": namespace,
+        "checksum": {"algorithm": "SHA256", "checksumValue": checksum},
+    }
+    return external_document_ref, f"{doc_ref_id}:{described}"
+
+
+def spdx2_inbound_member_dependencies(
+    member_sbom_data: dict[str, Any], member_ref: str, member_digest: str, hash_to_ref: dict[str, str]
+) -> list[dict[str, str]]:
+    """DEPENDS_ON edges from a member to OTHER release members it actually depends on
+    via cross-document references (#357 inbound resolve).
+
+    Faithful to SPDX 2.x semantics: an ``externalDocumentRef`` only DECLARES an
+    external document — the dependency is asserted by the member's ``relationships``
+    graph. So an edge is emitted only when the member has a ``DEPENDS_ON``
+    relationship whose ``relatedSpdxElement`` is ``DocumentRef-x:...`` AND that
+    DocumentRef-x resolves, by SHA-256 checksum, to another loaded release member
+    (``hash_to_ref``, keyed by ``SBOM.sha256_hash``).
+
+    INTERNAL, digest-only: the external ``spdxDocument`` URL is NEVER dereferenced
+    (SSRF / ADR-004); unresolvable refs (SHA-1, off-platform docs) are left out.
+    """
+    refs = member_sbom_data.get("externalDocumentRefs")
+    relationships = member_sbom_data.get("relationships")
+    if not isinstance(refs, list) or not isinstance(relationships, list):
+        return []
+
+    # externalDocumentId -> SHA-256 digest (SHA-256 only; sbomify stores no SHA-1).
+    docid_to_digest: dict[str, str] = {}
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        checksum = ref.get("checksum")
+        docid = ref.get("externalDocumentId")
+        if isinstance(checksum, dict) and checksum.get("algorithm") == "SHA256" and isinstance(docid, str):
+            digest = checksum.get("checksumValue")
+            if _is_sha256_hex(digest):
+                docid_to_digest[docid] = digest
+
+    edges: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for rel in relationships:
+        if not isinstance(rel, dict) or rel.get("relationshipType") != "DEPENDS_ON":
+            continue
+        related = rel.get("relatedSpdxElement")
+        if not isinstance(related, str) or ":" not in related:
+            continue
+        digest = docid_to_digest.get(related.split(":", 1)[0])
+        if digest is None or digest == member_digest or digest in seen:
+            continue
+        target_ref = hash_to_ref.get(digest)
+        if target_ref is None or target_ref == member_ref:
+            continue
+        seen.add(digest)
+        edges.append({"spdxElementId": member_ref, "relatedSpdxElement": target_ref, "relationshipType": "DEPENDS_ON"})
+    return edges
+
+
+def _spdx3_root_element_uri(elements: Any) -> str | None:
+    """The root element URI of an SPDX 3.0 member graph: the SpdxDocument's
+    rootElement, else a software_Sbom, else the first software_Package.
+
+    Tolerates malformed input (a non-list ``@graph``, non-dict elements) since
+    member SBOM JSON is untrusted.
+    """
+    if not isinstance(elements, list):
+        return None
+    for element in elements:
+        if isinstance(element, dict) and element.get("type") == "SpdxDocument":
+            roots = element.get("rootElement")
+            if isinstance(roots, list) and roots and isinstance(roots[0], str) and roots[0]:
+                return roots[0]
+    for type_name in ("software_Sbom", "software_Package"):
+        for element in elements:
+            if isinstance(element, dict) and element.get("type") == type_name:
+                spdx_id = element.get("spdxId")
+                if isinstance(spdx_id, str) and spdx_id:
+                    return spdx_id
+    return None
+
+
+def spdx3_member_import(
+    sbom_instance: Any, sbom_data: dict[str, Any], download_url: str
+) -> tuple[dict[str, Any], str] | None:
+    """Native SPDX 3.0 import-map link for an aggregate member.
+
+    Returns ``(import_entry, root_element_uri)`` for an SPDX-3 member with a
+    content checksum, or ``None`` to fall back to the local stub. The aggregate
+    adds ``import_entry`` to ``SpdxDocument.import`` and references
+    ``root_element_uri`` in its ``describes`` relationship; ``externalSpdxId`` and
+    that referenced URI are identical so the cross-document reference resolves.
+    """
+    is_spdx3 = "@graph" in sbom_data or (
+        str(sbom_data.get("spdxVersion", "")).startswith("SPDX-3.") and "elements" in sbom_data
+    )
+    if not is_spdx3:
+        return None
+    checksum = getattr(sbom_instance, "sha256_hash", None)
+    if not _is_sha256_hex(checksum):  # goes into verifiedUsing as the integrity digest
+        return None
+    elements = sbom_data.get("@graph", sbom_data.get("elements", []))
+    root_uri = _spdx3_root_element_uri(elements)
+    if not root_uri:
+        return None
+    import_entry = {
+        "type": "ExternalMap",
+        "externalSpdxId": root_uri,
+        "locationHint": download_url,
+        "verifiedUsing": [{"type": "Hash", "algorithm": "sha256", "hashValue": checksum}],
+    }
+    return import_entry, root_uri
+
+
+def spdx3_inbound_member_dependency_uris(
+    member_sbom_data: dict[str, Any], member_digest: str, hash_to_uri: dict[str, str]
+) -> list[str]:
+    """Root URIs of OTHER release members a member actually depends on (#357 inbound
+    resolve, SPDX 3.0).
+
+    Faithful to SPDX 3.0 semantics: an ``import`` ExternalMap only establishes how
+    an external URI resolves — the dependency is asserted by a ``Relationship``
+    element with ``relationshipType == "dependsOn"``. So a target is returned only
+    when a dependsOn relationship's ``to`` URI is covered by an import entry whose
+    ``verifiedUsing`` sha256 equals another loaded member's content hash
+    (``hash_to_uri``, keyed by ``SBOM.sha256_hash``).
+
+    INTERNAL, digest-only: the ``locationHint`` URL is NEVER dereferenced (SSRF /
+    ADR-004); unresolvable entries are skipped.
+    """
+    elements = member_sbom_data.get("@graph", member_sbom_data.get("elements", []))
+    if not isinstance(elements, list):
+        return []
+
+    # external URI -> SHA-256 digest, from the SpdxDocument import maps.
+    uri_to_digest: dict[str, str] = {}
+    for element in elements:
+        if not isinstance(element, dict) or element.get("type") != "SpdxDocument":
+            continue
+        imports = element.get("import")
+        if not isinstance(imports, list):
+            continue
+        for entry in imports:
+            if not isinstance(entry, dict):
+                continue
+            external_id = entry.get("externalSpdxId")
+            if not isinstance(external_id, str):
+                continue
+            for hash_obj in entry.get("verifiedUsing") or []:
+                if isinstance(hash_obj, dict) and hash_obj.get("algorithm") == "sha256":
+                    digest = hash_obj.get("hashValue")
+                    if _is_sha256_hex(digest):
+                        uri_to_digest[external_id] = digest
+
+    targets: list[str] = []
+    seen: set[str] = set()
+    for element in elements:
+        if not isinstance(element, dict) or element.get("type") != "Relationship":
+            continue
+        if element.get("relationshipType") != "dependsOn":
+            continue
+        to = element.get("to")
+        to_uris = to if isinstance(to, list) else [to]
+        for uri in to_uris:
+            digest = uri_to_digest.get(uri) if isinstance(uri, str) else None
+            if digest is None or digest == member_digest or digest in seen:
+                continue
+            target_uri = hash_to_uri.get(digest)
+            if target_uri is not None:
+                seen.add(digest)
+                targets.append(target_uri)
+    return targets
+
+
 def create_product_external_references(product: Product, user: Any = None) -> list[Any]:
     """Create external references from product links and documents."""
     cdx16 = _get_cyclonedx_model()
@@ -503,17 +889,17 @@ def create_product_external_references(product: Product, user: Any = None) -> li
 
     # Add documents as external references (for document components that are part of this product)
     # Get document components that are part of this product
-    # Authorization is handled at the API level, so we don't filter by is_public here
+    # A public product's aggregate is cached in S3 and served to anyone, so it must embed
+    # only PUBLIC documents (plain, non-expiring URLs). Non-public documents render with
+    # per-user signed URLs that would otherwise leak to everyone via the shared cache; for
+    # private products the download is authenticated and per-user, so all documents are fine.
     from sbomify.apps.core.models import Component
 
-    document_components = (
-        Component.objects.filter(
-            component_type="document",
-            products=product,
-        )
-        .distinct()
-        .prefetch_related("document_set")
-    )
+    document_filter: dict[str, Any] = {"component_type": "document", "products": product}
+    if getattr(product, "is_public", False):
+        document_filter["visibility"] = Component.Visibility.PUBLIC
+
+    document_components = Component.objects.filter(**document_filter).distinct().prefetch_related("document_set")
 
     for component in document_components:
         for document in component.document_set.all():
@@ -550,17 +936,17 @@ def create_product_spdx_external_references(product: Product, user: Any = None) 
 
     # Add documents as external references (for document components that are part of this product)
     # Get document components that are part of this product
-    # Authorization is handled at the API level, so we don't filter by is_public here
+    # A public product's aggregate is cached in S3 and served to anyone, so it must embed
+    # only PUBLIC documents (plain, non-expiring URLs). Non-public documents render with
+    # per-user signed URLs that would otherwise leak to everyone via the shared cache; for
+    # private products the download is authenticated and per-user, so all documents are fine.
     from sbomify.apps.core.models import Component
 
-    document_components = (
-        Component.objects.filter(
-            component_type="document",
-            products=product,
-        )
-        .distinct()
-        .prefetch_related("document_set")
-    )
+    document_filter: dict[str, Any] = {"component_type": "document", "products": product}
+    if getattr(product, "is_public", False):
+        document_filter["visibility"] = Component.Visibility.PUBLIC
+
+    document_components = Component.objects.filter(**document_filter).distinct().prefetch_related("document_set")
 
     for component in document_components:
         for document in component.document_set.all():
@@ -1347,12 +1733,109 @@ def get_product_sbom_package(
     # Rename file to use product name instead of release name
     format_lower = output_format.lower()
     extension = ".spdx.json" if format_lower == "spdx" else ".cdx.json"
-    product_sbom_path = target_folder / f"{product.name}{extension}"
+    product_sbom_path = target_folder / _safe_sbom_filename(product.name, extension)
 
     # Move the release SBOM to product SBOM path
     sbom_path.rename(product_sbom_path)
 
     return product_sbom_path
+
+
+def _resolve_output_version(output_format: str, version: str | None) -> str:
+    """Resolve the concrete format version the builder would use.
+
+    Defers to the shared ``builders.default_version_for_format`` (the same source
+    ``get_sbom_builder`` uses) so the aggregate cache key never depends on a
+    ``None`` sentinel and can't drift from the version actually built.
+    """
+    if version:
+        return version
+    from sbomify.apps.sboms.builders import default_version_for_format
+
+    return str(default_version_for_format(output_format).value)
+
+
+def _safe_sbom_filename(stem: str, extension: str) -> str:
+    """Build a target filename from user-derived names (product/release) that
+    cannot escape ``target_folder``.
+
+    Product and release names are user-controlled; joining them onto a path with
+    ``target_folder / name`` would allow path traversal (``..``) or absolute-path
+    override if they contained separators. Neutralize path separators + null
+    bytes and strip leading dots/spaces so the result is always a pure basename.
+    """
+    safe = stem.replace("/", "_").replace("\\", "_").replace("\x00", "").lstrip(". ")
+    return f"{safe or 'sbom'}{extension}"
+
+
+def compute_release_aggregate_fingerprint(release: Any) -> str:
+    """Deterministic fingerprint of EVERY mutable input that shapes a public aggregate.
+
+    Computed from the DB only (no S3 reads). A change to any of these busts the
+    cache key so the next download rebuilds:
+
+    * its PUBLIC member SBOMs (id + ``sbom_filename``, which is the sha256 of the
+      bytes). Only PUBLIC members are fingerprinted — exactly the set a public
+      aggregate contains — so a member flipping PUBLIC <-> PRIVATE busts the key
+      while private/gated member churn does not needlessly rebuild; and
+    * the release/product METADATA the builder embeds: the product + release
+      names (the aggregate's top-level component name) and the product external
+      references it renders from product links + identifiers. So a rename or a
+      link/identifier edit also triggers a rebuild; and
+    * the PUBLIC documents embedded as external references (each document's
+      content_hash + metadata), so a document add/remove/rename/retype/rehash
+      also triggers a rebuild. Only PUBLIC documents are fed — exactly the set a
+      public aggregate embeds.
+
+    Rows are ordered, and every field is length-prefixed (netstring-style) before
+    hashing so user-controlled values cannot collide regardless of content — no
+    reliance on a delimiter byte that a name/URL could itself contain. (ADR-004:
+    member artifacts are immutable, so the filename is a faithful fingerprint.)
+    """
+    digest = hashlib.sha256(b"v5")
+
+    def feed(*parts: Any) -> None:
+        for part in parts:
+            b = str(part).encode()
+            digest.update(f"{len(b)}:".encode())
+            digest.update(b)
+
+    members = (
+        release.artifacts.filter(sbom__isnull=False, sbom__component__visibility=Component.Visibility.PUBLIC)
+        .order_by("sbom__id")
+        .values_list("sbom__id", "sbom__sbom_filename")
+    )
+    for sid, fname in members.iterator():
+        feed("m", sid, fname)
+
+    # Mutable metadata embedded in the aggregate's top-level component.
+    product = release.product
+    feed("name", product.name, release.name)
+    for ident_type, value in product.identifiers.order_by("id").values_list("identifier_type", "value").iterator():
+        feed("id", ident_type, value)
+    for lt, title, url, desc in (
+        product.links.order_by("id").values_list("link_type", "title", "url", "description").iterator()
+    ):
+        feed("ln", lt, title, url, desc)
+
+    # Public documents embedded in the aggregate (only PUBLIC document components are rendered
+    # for a public product). Feed content_hash + metadata so an add/remove/rename/retype/rehash
+    # busts the cache key — the fingerprint previously omitted documents entirely.
+    from sbomify.apps.documents.models import Document
+
+    documents = (
+        Document.objects.filter(
+            component__products=product,
+            component__component_type="document",
+            component__visibility=Component.Visibility.PUBLIC,
+        )
+        .order_by("id")
+        .values_list("id", "content_hash", "document_type", "name", "description")
+    )
+    for did, chash, dtype, dname, ddesc in documents.iterator():
+        feed("doc", did, chash, dtype, dname, ddesc)
+
+    return digest.hexdigest()
 
 
 def get_release_sbom_package(
@@ -1393,7 +1876,59 @@ def get_release_sbom_package(
     if version and version not in supported[format_lower]:
         raise ValueError(f"Unsupported version {version} for {output_format}. Supported: {supported[format_lower]}")
 
-    # Get the appropriate builder
+    # Determine file extension based on format
+    # Both CDX and SPDX builders return Pydantic models for consistent serialization
+    if format_lower == "spdx":
+        extension = ".spdx.json"
+    else:
+        extension = ".cdx.json"
+
+    sbom_path = target_folder / _safe_sbom_filename(f"{release.product.name}-{release.name}", extension)
+
+    # Aggregated SBOMs are expensive to build (O(N) serial member fetches) and
+    # the public release/product download endpoints are unauthenticated — a
+    # cheap DoS amplifier (#998). For PUBLIC products the aggregate is
+    # content-addressable (only public members, which carry plain non-expiring
+    # URLs), so cache it in S3 keyed by an artifact-set hash and serve it
+    # directly on repeat downloads. Private releases are NOT cached: they are
+    # authenticated-only (not the DoS vector) and embed short-lived signed
+    # member URLs that must stay fresh.
+    cache_key: str | None = None
+    s3: Any = None
+    # Computed unconditionally so the orphan-GC sweep below can reference it
+    # without a possibly-undefined flow; it's only USED on the cached public path.
+    resolved_version = _resolve_output_version(format_lower, version)
+    if release.product.is_public:
+        from sbomify.apps.core.object_store import S3Client
+
+        fingerprint = compute_release_aggregate_fingerprint(release)
+        cache_key = f"aggregates/release/{release.id}/{format_lower}-{resolved_version}-{fingerprint}.json"
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        s3 = S3Client("SBOMS")
+        # The cache is an optimization — a read failure scoped to the cache
+        # (e.g. AccessDenied on the aggregates/ prefix while members stay
+        # readable) falls back to a rebuild rather than 500'ing the download. A
+        # MISSING BUCKET is a whole-bucket misconfiguration — the rebuild reads
+        # members from the same bucket and would fail too — so let it surface
+        # loudly (get_cached_aggregate only swallows NoSuchKey).
+        try:
+            cached = s3.get_cached_aggregate(cache_key)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                raise
+            log.warning("Aggregate cache read failed for %s, rebuilding: %s", cache_key, e)
+            cached = None
+        except BotoCoreError as e:
+            # Connection errors, timeouts, etc. — the cache is best-effort, so any
+            # boto read failure falls back to a rebuild rather than 500'ing.
+            log.warning("Aggregate cache read failed for %s, rebuilding: %s", cache_key, e)
+            cached = None
+        if cached is not None:
+            sbom_path.write_bytes(cached)
+            return sbom_path
+
+    # Cache miss (or private release): build the aggregate.
     builder = get_sbom_builder(
         entity_type="release",
         output_format=format_lower,
@@ -1402,16 +1937,41 @@ def get_release_sbom_package(
         user=user,
     )
     sbom = builder(target_folder)
-
-    # Determine file extension based on format
-    # Both CDX and SPDX builders return Pydantic models for consistent serialization
-    if format_lower == "spdx":
-        extension = ".spdx.json"
+    # CycloneDX + SPDX 2.3 builders return a pydantic model; SPDX 3.0 builders
+    # return a JSON-LD dict (@context/@graph) that has no model_dump_json (#357).
+    if hasattr(sbom, "model_dump_json"):
+        body = sbom.model_dump_json(indent=2, exclude_none=True, exclude_unset=True, by_alias=True).encode()
     else:
-        extension = ".cdx.json"
+        body = json.dumps(sbom, indent=2).encode()
+    sbom_path.write_bytes(body)
 
-    sbom_path = target_folder / f"{release.product.name}-{release.name}{extension}"
-    sbom_path.write_text(sbom.model_dump_json(indent=2, exclude_none=True, exclude_unset=True, by_alias=True))
+    # Only cache a COMPLETE build. The builders skip a member on an S3 fetch
+    # error (non-fatal, returns a partial aggregate); caching that would freeze
+    # an incomplete document under this artifact-set hash indefinitely, so a
+    # transient blip would persist. Cache writes are best-effort — a failure to
+    # store must not fail the download.
+    if cache_key is not None and s3 is not None:
+        if getattr(builder, "had_member_fetch_error", False):
+            log.warning("Skipping aggregate cache for %s: build had member fetch errors", cache_key)
+        else:
+            try:
+                s3.put_cached_aggregate(cache_key, body)
+            except Exception as e:
+                log.warning("Aggregate cache write failed for %s (served anyway): %s", cache_key, e)
+            else:
+                # GC orphaned aggregates. When the artifact set or metadata changes
+                # the fingerprint changes, leaving the previous key behind. Sweep
+                # siblings under the SAME format+version prefix and drop all but the
+                # key just written — scoping to format_lower-resolved_version keeps
+                # other formats/versions intact. Best-effort: a sweep failure must
+                # never fail the download.
+                gc_prefix = f"aggregates/release/{release.id}/{format_lower}-{resolved_version}-"
+                try:
+                    for stale_key in s3.list_cached_aggregates(gc_prefix):
+                        if stale_key != cache_key:
+                            s3.delete_cached_aggregate(stale_key)
+                except Exception as e:
+                    log.warning("Aggregate cache GC failed for prefix %s: %s", gc_prefix, e)
 
     return sbom_path
 
@@ -1650,3 +2210,62 @@ def populate_component_metadata_native_fields(
                             bom_ref=license_data.get("bom_ref"),
                             order=order,
                         )
+
+
+# Shared by the upload API (#1042) and the CBOM backfill command (#1069); kept here in
+# the neutral utils module so neither imports the web/API layer for them.
+_SBOM_UNIQUE_CONSTRAINT = "sboms_sbom_unique_component_version_format_qualifiers_bom_type"
+
+
+def _is_crypto_component(component: Any) -> bool:
+    """A CycloneDX component is a crypto asset if typed as one or carrying cryptoProperties."""
+    return isinstance(component, dict) and (
+        component.get("type") == "cryptographic-asset" or "cryptoProperties" in component
+    )
+
+
+def _is_cbom(sbom_data: dict[str, Any]) -> bool:
+    """True when a CycloneDX document declares cryptographic-asset content (a CBOM).
+
+    Checks both the top-level ``components`` array and ``metadata.component`` (which
+    is itself a Component and may carry the crypto indicators on its own).
+    """
+    components = sbom_data.get("components")
+    if isinstance(components, list) and any(_is_crypto_component(c) for c in components):
+        return True
+    metadata = sbom_data.get("metadata")
+    return isinstance(metadata, dict) and _is_crypto_component(metadata.get("component"))
+
+
+def _is_duplicate_integrity_error(exc: IntegrityError) -> bool:
+    """Check if an IntegrityError is for the SBOM uniqueness constraint.
+
+    Postgres path: checks diag.constraint_name, then SQLSTATE 23505 with
+    constraint name in the message.
+    SQLite path: checks for "UNIQUE constraint failed" with the relevant columns.
+    """
+    cause = exc.__cause__
+    if cause is not None:
+        # Try PostgreSQL diagnostics first (most precise)
+        diag = getattr(cause, "diag", None)
+        if diag is not None:
+            diag_constraint: str | None = getattr(diag, "constraint_name", None)
+            if diag_constraint == _SBOM_UNIQUE_CONSTRAINT:
+                return True
+
+        pgcode: str | None = getattr(cause, "pgcode", None)
+        if pgcode == "23505":
+            return _SBOM_UNIQUE_CONSTRAINT in str(exc).lower()
+
+    msg = str(exc).lower()
+
+    # Postgres fallback (no __cause__ or missing diag)
+    if _SBOM_UNIQUE_CONSTRAINT in msg:
+        return True
+
+    # SQLite: "UNIQUE constraint failed: <db_table>.component_id, <db_table>.version, ..."
+    # Derive the table from the model so it can't drift (it's "sboms_sboms", not "sboms_sbom").
+    table = SBOM._meta.db_table
+    return "unique constraint failed" in msg and all(
+        f"{table}.{col}" in msg for col in ("component_id", "version", "format", "qualifiers", "bom_type")
+    )

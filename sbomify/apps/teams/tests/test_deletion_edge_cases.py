@@ -54,7 +54,7 @@ def test_removal_fallback_when_pending_invites_exist(client, owner, user_with_on
     we do NOT create a personal workspace, but handle it gracefully.
     """
     # 1. Setup: User has a pending invite to Team B (joinable)
-    Invitation.objects.create(team=other_team, email=user_with_one_team.email, role="member")
+    Invitation.objects.create(team=other_team, email=user_with_one_team.email, role="admin")
 
     # 2. Action: Owner removes User from Team A (their only team)
     client.force_login(owner)
@@ -62,7 +62,7 @@ def test_removal_fallback_when_pending_invites_exist(client, owner, user_with_on
     membership = Member.objects.get(user=user_with_one_team, team=team)
 
     url = reverse("teams:team_membership_delete", kwargs={"membership_id": membership.id})
-    response = client.get(url)
+    response = client.delete(url)
 
     assert response.status_code == 302
     assert response.url == reverse("teams:team_settings", kwargs={"team_key": team.key})
@@ -88,7 +88,7 @@ def test_self_removal_fallback_when_pending_invites_exist(client, user_with_one_
     we redirect them to dashboard and clear session.
     """
     # 1. Setup: User has pending invite
-    Invitation.objects.create(team=other_team, email=user_with_one_team.email, role="member")
+    Invitation.objects.create(team=other_team, email=user_with_one_team.email, role="admin")
 
     # 2. Action: User leaves Team A
     client.force_login(user_with_one_team)
@@ -96,7 +96,7 @@ def test_self_removal_fallback_when_pending_invites_exist(client, user_with_one_
     membership = Member.objects.get(user=user_with_one_team, team=team)
 
     url = reverse("teams:team_membership_delete", kwargs={"membership_id": membership.id})
-    response = client.get(url)
+    response = client.delete(url)
 
     assert response.status_code == 302
     assert response.url == reverse("core:dashboard")

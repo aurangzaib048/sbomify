@@ -9,6 +9,18 @@
 @source "../../templates/**/*.{html,html.j2,j2}";
 
 /* ============================================
+   Dark mode variant (class-based)
+   ============================================
+   Tailwind v4 ignores the v3-era ``darkMode: 'class'`` in
+   ``tailwind.config.js`` — the CSS-first variant below is the way to
+   make ``dark:*`` utilities fire from the ``.dark`` class added by
+   ``theme-manager.ts`` (and the inline FOUC script in
+   ``base.html.j2``). Without it, Tailwind defaults to
+   ``prefers-color-scheme: dark``, which means UI-toggled dark mode
+   on a light-OS browser wouldn't trigger ``dark:*`` rules. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ============================================
    Theme Configuration
    Based on sbomify Brand Guidelines v1.0
    ============================================ */
@@ -505,6 +517,30 @@ html.no-transitions * {
 .border-border\/30 { border-color: rgb(var(--color-border) / 0.3); }
 .border-border\/40 { border-color: rgb(var(--color-border) / 0.4); }
 .border-border\/50 { border-color: rgb(var(--color-border) / 0.5); }
+
+/* --- divide-border opacity variants ---
+   Tailwind v4 opacity modifiers can't be applied to raw-RGB CSS vars,
+   so without these explicit rules ``divide-border/N`` would have no
+   colour at all and the divider falls back to ``currentColor`` (body
+   text = near-black) wherever Tailwind sets a divide width. Colour
+   BOTH ``border-top`` and ``border-bottom`` on every direct child so
+   whichever side ``divide-y``/``divide-y-2``/``divide-y-reverse`` ends
+   up sizing, the colour is correct. The selector is wrapped in
+   ``:where()`` to keep these helpers at zero specificity, so an
+   explicit ``divide-y-*`` width utility on the same element still
+   wins in the cascade. */
+:where(.divide-border\/30) > * {
+  border-top-color: rgb(var(--color-border) / 0.3);
+  border-bottom-color: rgb(var(--color-border) / 0.3);
+}
+:where(.divide-border\/40) > * {
+  border-top-color: rgb(var(--color-border) / 0.4);
+  border-bottom-color: rgb(var(--color-border) / 0.4);
+}
+:where(.divide-border\/50) > * {
+  border-top-color: rgb(var(--color-border) / 0.5);
+  border-bottom-color: rgb(var(--color-border) / 0.5);
+}
 
 /* --- border-primary opacity variants --- */
 .border-primary\/10 { border-color: rgb(var(--color-primary) / 0.1); }
@@ -1604,6 +1640,21 @@ html.no-transitions * {
   border: 1px solid rgb(var(--color-info) / 0.2);
 }
 
+/* Neutral chip — squared variant for table-like contexts (counts, types).
+   Pair with utilities like .whitespace-nowrap as needed. */
+.tw-chip-neutral {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  background-color: rgb(var(--color-border) / 0.5);
+  color: rgb(var(--color-text-muted));
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
 /* Dot Badge - with status indicator */
 .tw-badge-dot {
   gap: 0.375rem;
@@ -2214,6 +2265,18 @@ html.no-transitions * {
 
 .tw-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+/* Tighter table cell padding on small screens for public trust-center
+   pages only, so 3-column tables (Name + Created + Actions) fit in
+   375px viewports without a horizontal scrollbar. Scoped to .public-page
+   so the app-wide tw-table padding stays unchanged on internal pages. */
+@media (max-width: 640px) {
+  .public-page .tw-table th,
+  .public-page .tw-table td {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
 }
 
 /* Sortable header */

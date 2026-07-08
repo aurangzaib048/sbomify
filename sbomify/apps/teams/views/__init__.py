@@ -13,6 +13,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.mail import EmailMultiAlternatives
+from django.db import transaction
 from django.http import (
     HttpResponse,
     HttpResponseForbidden,
@@ -21,13 +22,14 @@ from django.http import (
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_GET, require_http_methods
 
 from sbomify.apps.billing.models import BillingPlan
 from sbomify.apps.core.errors import error_response
 from sbomify.apps.core.models import User
+from sbomify.apps.core.posthog_service import capture_for_request
 from sbomify.apps.core.utils import token_to_number
-from sbomify.apps.teams.decorators import validate_role_in_current_team
+from sbomify.apps.teams.decorators import validate_role_in_url_team
 from sbomify.apps.teams.forms import InviteUserForm
 from sbomify.apps.teams.models import (
     Invitation,
@@ -154,14 +156,14 @@ def switch_team(request: HttpRequest, team_key: str) -> HttpResponse:
 
 
 @login_required
-@validate_role_in_current_team(["owner", "admin"])
+@validate_role_in_url_team(["owner", "admin"])
 def team_details(request: HttpRequest, team_key: str) -> HttpResponse:
     """Redirect to team settings for unified interface."""
     return redirect("teams:team_settings", team_key=team_key)
 
 
 @login_required
-@validate_role_in_current_team(["owner", "admin"])
+@require_http_methods(["POST", "DELETE"])
 def delete_member(request: HttpRequest, membership_id: int) -> HttpResponse:
     from sbomify.apps.teams.utils import remove_member_safely
 
@@ -174,10 +176,16 @@ def delete_member(request: HttpRequest, membership_id: int) -> HttpResponse:
         # Redirect to dashboard if membership not found, as team key is unavailable.
         return redirect("core:dashboard")
 
-    # Check if actor is an admin trying to remove an owner or themselves
-    # We query the actor's membership explicitly to be safe, although session usually has it.
+    # Authorize against the TARGET membership's workspace: this view takes a bare PK, so
+    # the session workspace is not a valid basis. Only owners/admins of that workspace.
     actor_membership = Member.objects.filter(user=user, team=membership.team).first()
-    if actor_membership and actor_membership.role == "admin":
+    if actor_membership is None or actor_membership.role not in ("owner", "admin"):
+        return error_response(
+            request,
+            HttpResponseForbidden("You don't have permission to manage this workspace's members"),
+        )
+
+    if actor_membership.role == "admin":
         # Admins cannot remove owners
         if membership.role == "owner":
             messages.add_message(
@@ -195,10 +203,6 @@ def delete_member(request: HttpRequest, membership_id: int) -> HttpResponse:
             has_pending_invites = Invitation.objects.filter(email=request.user.email).exists()
 
             if not has_pending_invites:
-                from django.http import HttpResponseForbidden
-
-                from sbomify.apps.core.errors import error_response
-
                 return error_response(
                     request,
                     HttpResponseForbidden(
@@ -221,7 +225,7 @@ def delete_member(request: HttpRequest, membership_id: int) -> HttpResponse:
 
 
 @login_required
-@validate_role_in_current_team(["owner"])
+@validate_role_in_url_team(["owner"])
 def invite(request: HttpRequest, team_key: str) -> HttpResponseForbidden | HttpResponse:
     team_id = token_to_number(team_key)
     context: dict[str, Any] = {"team_key": team_key}
@@ -289,6 +293,32 @@ def invite(request: HttpRequest, team_key: str) -> HttpResponseForbidden | HttpR
                 render_to_string("teams/emails/team_invite_email.html.j2", email_context), "text/html"
             )
             email.send()
+
+            # Capture AFTER email.send() — if SMTP fails (transient outage,
+            # template render error) the request raises and we want the
+            # funnel to reflect "no invite shipped", not an inflated
+            # "invite_sent" count. Ship the email DOMAIN only — never the
+            # local-part. The local-part identifies a person; the domain
+            # identifies a B2B prospect / cohort which is the analytics
+            # value here. A drive-by edit to ship the full email would
+            # leak PII to PostHog. Domain alone can still be sensitive for
+            # some B2B (e.g. an internal subsidiary) — acceptable trade-off
+            # for the funnel metric.
+            invited_email = invite_user_form.cleaned_data["email"]
+            email_domain = invited_email.rsplit("@", 1)[-1].lower() if "@" in invited_email else ""
+            captured_role = invite_user_form.cleaned_data["role"]
+            captured_team_key = team.key
+            transaction.on_commit(
+                lambda: capture_for_request(
+                    request,
+                    "team:member_invited",
+                    {
+                        "role": captured_role,
+                        "invited_email_domain": email_domain,
+                    },
+                    team_key=captured_team_key,
+                )
+            )
 
             messages.add_message(request, messages.SUCCESS, f"Invite sent to {invite_user_form.cleaned_data['email']}")
 
@@ -521,13 +551,27 @@ def accept_invite(request: HttpRequest, invite_token: str) -> HttpResponseNotFou
             "decided_at": timezone.now(),
         },
     )
-    # If AccessRequest already exists, approve it if still pending
-    if not created and access_request.status == AccessRequest.Status.PENDING:
+    # Count this as a document-access approval only when it actually came
+    # from a trust-center invitation flow. Two valid trust-center cases:
+    #   (1) An existing user had an AccessRequest pre-staged as PENDING by
+    #       documents/views/access_requests.py at invite-send time; the
+    #       acceptance here transitions it to APPROVED.
+    #   (2) A brand-new user had no AccessRequest pre-staged (their user
+    #       row didn't exist yet at invite-send time), so this branch is
+    #       both the create and the approval. The `inviter` (from the
+    #       `invitation_inviter:` cache key set only by the trust-center
+    #       flow) discriminates this case from regular workspace invites,
+    #       which also reach this branch but should not be counted.
+    access_request_approved_here = False
+    if created and inviter is not None:
+        access_request_approved_here = True
+    elif not created and access_request.status == AccessRequest.Status.PENDING:
         access_request.status = AccessRequest.Status.APPROVED
         access_request.decided_at = timezone.now()
         if not access_request.decided_by and inviter:
             access_request.decided_by = inviter
         access_request.save()
+        access_request_approved_here = True
 
     # Invalidate cache to refresh the access requests list
     from sbomify.apps.documents.views.access_requests import _invalidate_access_requests_cache
@@ -539,18 +583,53 @@ def accept_invite(request: HttpRequest, invite_token: str) -> HttpResponseNotFou
 
     messages.add_message(request, messages.INFO, f"You have joined {invitation.team.name} as {invitation.role}")
 
+    # Capture invitation fields into locals BEFORE the delete() below;
+    # the deferred ``on_commit`` lambdas reference these by closure and
+    # ``invitation`` becomes invalid after deletion.
+    captured_role = invitation.role
+    captured_team_key = invitation.team.key
+    transaction.on_commit(
+        lambda: capture_for_request(
+            request,
+            "team:member_invitation_accepted",
+            {"role": captured_role},
+            team_key=captured_team_key,
+        )
+    )
+
+    # Trust-center invitations auto-approve a document AccessRequest as part of the
+    # acceptance flow. The dashboard queue's approval capture does not cover this
+    # path, so emit it here whenever this branch actually drove a pending→approved
+    # transition (or freshly created an approved request).
+    if access_request_approved_here:
+        transaction.on_commit(
+            lambda: capture_for_request(
+                request,
+                "document:access_approved",
+                team_key=captured_team_key,
+            )
+        )
+
     invitation.delete()
 
     return redirect("core:dashboard")
 
 
 @login_required
-@validate_role_in_current_team(["owner"])
+@require_http_methods(["POST", "DELETE"])
 def delete_invite(request: HttpRequest, invitation_id: int) -> HttpResponse:
     try:
         invitation = Invitation.objects.get(pk=invitation_id)
     except Invitation.DoesNotExist:
-        return error_response(request, HttpResponseNotFound("Membership not found"))
+        return error_response(request, HttpResponseNotFound("Invitation not found"))
+
+    # Authorize against the invitation's OWN workspace (bare PK -> session is not a valid basis).
+    actor_membership = Member.objects.filter(user=cast(User, request.user), team=invitation.team).first()
+    if actor_membership is None or actor_membership.role != "owner":
+        return error_response(
+            request,
+            HttpResponseForbidden("You don't have permission to manage this workspace's invitations"),
+        )
 
     messages.add_message(request, messages.INFO, f"Invitation for {invitation.email} deleted")
     invitation.delete()
@@ -578,7 +657,7 @@ def settings_redirect(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
-@validate_role_in_current_team(["owner", "admin"])
+@validate_role_in_url_team(["owner", "admin"])
 def team_settings_redirect(request: HttpRequest, team_key: str) -> HttpResponse:
     """
     Redirect /workspace/{team_key}/settings/ to the unified settings interface.

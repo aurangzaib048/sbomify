@@ -33,7 +33,9 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_http_methods
 
 from sbomify.apps.access_tokens.models import AccessToken
-from sbomify.apps.core.utils import token_to_number, verify_item_access
+from sbomify.apps.core.authz import can
+from sbomify.apps.core.posthog_service import capture_for_request
+from sbomify.apps.core.utils import token_to_number
 from sbomify.apps.core.views.component_details_private import ComponentDetailsPrivateView as ComponentDetailsPrivateView
 from sbomify.apps.core.views.component_details_public import ComponentDetailsPublicView as ComponentDetailsPublicView
 from sbomify.apps.core.views.component_item import ComponentItemPublicView as ComponentItemPublicView
@@ -259,6 +261,16 @@ def accept_user_invitation(request: HttpRequest, invitation_id: int) -> HttpResp
 
     messages.add_message(request, messages.SUCCESS, f"You have joined {team.display_name} as {role}.")
 
+    captured_team_key = team.key
+    transaction.on_commit(
+        lambda: capture_for_request(
+            request,
+            "team:member_invitation_accepted",
+            {"role": role},
+            team_key=captured_team_key,
+        )
+    )
+
     return redirect("core:dashboard")
 
 
@@ -312,6 +324,8 @@ def delete_access_token(request: HttpRequest, token_id: int) -> Any:
                 return HttpResponse(status=403)
             return error_response(request, HttpResponseForbidden("Not allowed"))
 
+        token_team_key = token.team.key if token.team else ""
+
         try:
             token.delete()
         except Exception as e:
@@ -322,6 +336,21 @@ def delete_access_token(request: HttpRequest, token_id: int) -> Any:
                 return HttpResponse(status=500)
             messages.error(request, "An error occurred while deleting the token")
             return redirect(reverse("core:settings"))
+
+        # Deferred via ``on_commit`` so the event only ships if the
+        # delete actually committed (matters under ATOMIC_REQUESTS or any
+        # wrapping atomic block).
+        #
+        # Unscoped legacy tokens (``token.team is None`` → empty
+        # ``token_team_key``) are intentionally NOT captured. The Tier 2
+        # convention is workspace-keyed ``distinct_id`` (see
+        # analytics/events.py and PR #822); emitting with a user PK
+        # fallback would mix scopes for the same event name and skew
+        # workspace-level aggregations in PostHog. Unscoped tokens are
+        # legacy and rare; the count of their deletions is not load-
+        # bearing for any current funnel.
+        if token_team_key:
+            transaction.on_commit(lambda: capture_for_request(request, "api_token:deleted", team_key=token_team_key))
 
         if is_api_request:
             return HttpResponse(status=200)
@@ -503,7 +532,7 @@ def transfer_component_to_team(request: HttpRequest, component_id: str) -> HttpR
     except Component.DoesNotExist:
         return error_response(request, HttpResponseNotFound("Component not found"))
 
-    if not verify_item_access(request, component, ["owner"]):
+    if not can(request, "component:administer", component):
         return error_response(request, HttpResponseForbidden("Only allowed for owners of the component"))
 
     target_team = request.session.get("user_teams", {}).get(team_key, {})
@@ -547,7 +576,7 @@ def sbom_download_product(request: HttpRequest, product_id: str) -> HttpResponse
         return error_response(request, HttpResponseNotFound("Product not found"))
 
     if not product.is_public:
-        if not verify_item_access(request, product, ["owner", "admin"]):
+        if not can(request, "product:manage", product):
             return error_response(request, HttpResponseForbidden("Only allowed for members of the team"))
 
     # Get format parameters from query string and normalize early
@@ -588,7 +617,7 @@ def get_component_metadata(request: HttpRequest, component_id: str) -> HttpRespo
     except Component.DoesNotExist:
         return error_response(request, HttpResponseNotFound("Component not found"))
 
-    if not verify_item_access(request, component, ["owner", "admin"]):
+    if not can(request, "component:manage", component):
         return error_response(request, HttpResponseForbidden("Only allowed for members of the team"))
 
     metadata = component.metadata or {}

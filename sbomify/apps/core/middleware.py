@@ -500,6 +500,54 @@ class RealIPMiddleware(MiddlewareMixin):
             request.META["REMOTE_ADDR"] = client_ip
 
 
+def _policy_has_report_uri(policy: str) -> bool:
+    """True if any ``;``-separated directive in ``policy`` is a report-uri.
+
+    Directive names are case-insensitive per the CSP spec; matching the directive
+    at the start of each segment avoids false positives from a URL value in
+    another directive that happens to contain the substring "report-uri".
+    """
+    return any(directive.strip().lower().startswith("report-uri") for directive in policy.split(";"))
+
+
+class ContentSecurityPolicyMiddleware(MiddlewareMixin):
+    """Attach a Content-Security-Policy header to responses.
+
+    Ships in Report-Only mode by default (``settings.CSP_ENFORCE`` is False) so
+    violations can be collected before the policy is enforced. The policy string
+    itself comes from ``settings.CONTENT_SECURITY_POLICY``, with a ``report-uri``
+    directive appended when ``settings.CSP_REPORT_URI`` is set (otherwise
+    Report-Only violations only surface in the browser console). Responses that
+    already carry a CSP header are left untouched.
+    """
+
+    def process_response(self, request: Any, response: HttpResponse) -> HttpResponse:
+        policy = getattr(settings, "CONTENT_SECURITY_POLICY", "")
+        if not policy:
+            return response
+
+        already_present = "Content-Security-Policy" in response or "Content-Security-Policy-Report-Only" in response
+        if already_present:
+            return response
+
+        report_uri = getattr(settings, "CSP_REPORT_URI", "")
+        # Only append when the policy doesn't already carry a report-uri directive
+        # (it may come from the CONTENT_SECURITY_POLICY env var), and normalize any
+        # trailing separator so we don't emit "…; ; report-uri …". The check is
+        # directive-bound and case-insensitive so it won't false-match a URL that
+        # happens to contain "report-uri" inside another directive's value.
+        if report_uri and not _policy_has_report_uri(policy):
+            policy = f"{policy.rstrip(' ;')}; report-uri {report_uri}"
+
+        header = (
+            "Content-Security-Policy"
+            if getattr(settings, "CSP_ENFORCE", False)
+            else "Content-Security-Policy-Report-Only"
+        )
+        response[header] = policy
+        return response
+
+
 class HtmxMessagesMiddleware:
     """Convert Django session messages to HX-Trigger for HTMX requests.
 
@@ -632,4 +680,30 @@ class GzipRequestDecompressionMiddleware:
         request.META["CONTENT_LENGTH"] = str(decompressed_size)
         del request.META["HTTP_CONTENT_ENCODING"]
 
+        return self.get_response(request)
+
+
+class BearerAuthCsrfExemptMiddleware:
+    """Exempt bearer/token API requests from CSRF enforcement.
+
+    ``NinjaAPI(csrf=True)`` enforces CSRF for *every* request (it is global and runs
+    before auth), including Personal Access Token clients that carry no CSRF cookie —
+    which would 403 every programmatic API mutation. CSRF only protects
+    cookie/session-authenticated requests: a CSRF attacker rides the victim's cookies
+    and *cannot* set an ``Authorization`` header (browsers never send it cross-site and
+    CORS preflight blocks it). So a request bearing a token header is, by construction,
+    not a CSRF vector.
+
+    For such requests we set ``request._dont_enforce_csrf_checks`` — honoured both by
+    Django's ``CsrfViewMiddleware`` and by Ninja's ``check_csrf`` (which delegates to
+    it) — leaving full CSRF enforcement in place for cookie/session requests.
+    """
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        if request.META.get("HTTP_AUTHORIZATION", "").lower().startswith(("bearer ", "token ")):
+            # Django-internal flag honoured by CsrfViewMiddleware / Ninja's check_csrf.
+            request._dont_enforce_csrf_checks = True  # type: ignore[attr-defined]  # noqa: SLF001
         return self.get_response(request)

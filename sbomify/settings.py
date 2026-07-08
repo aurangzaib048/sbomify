@@ -103,8 +103,64 @@ AUTH_USER_MODEL = "core.User"
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Networks whose requests are allowed to set the client IP via the X-Real-IP
+# header (see core.utils.get_client_ip). Only honour that header when the direct
+# peer (REMOTE_ADDR) is a trusted reverse proxy; otherwise a client reaching
+# Django directly could spoof its IP and defeat per-IP rate limiting.
+#
+# The default trusts loopback + RFC1918 ranges, which cover the Caddy sidecar in
+# the default Docker topology (where the app is NOT directly reachable — the
+# backend port is unpublished). If Django can be reached directly from any other
+# private segment (shared cluster, corp VPN), narrow this to the actual
+# reverse-proxy address(es) via the TRUSTED_PROXIES env var so those clients
+# cannot spoof X-Real-IP.
+TRUSTED_PROXIES = [
+    cidr.strip()
+    for cidr in os.environ.get(
+        "TRUSTED_PROXIES",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    ).split(",")
+    if cidr.strip()
+]
+
 # Allow larger request bodies for OSCAL catalog imports (default is 2.5 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB
+
+# Prevent browsers from MIME-sniffing responses away from their declared
+# Content-Type — defense-in-depth for user-uploaded artifact downloads.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
+# Content-Security-Policy (see ContentSecurityPolicyMiddleware). Shipped in
+# Report-Only mode by default so violations can be observed before enforcement;
+# set CSP_ENFORCE=True once the reports are clean. The app relies on inline
+# Alpine.js expressions (needs 'unsafe-inline'/'unsafe-eval'), Stripe.js and
+# websockets, so the policy stays permissive on scripts while locking down
+# object-src, base-uri and plugin embedding.
+#
+# Report-Only violations are only delivered somewhere if CSP_REPORT_URI points
+# at a collector endpoint (e.g. Sentry's CSP ingest URL); without it, browsers
+# just log violations to their console. Set it to make the rollout actionable.
+CSP_ENFORCE = _env_bool(os.environ.get("CSP_ENFORCE"), default=False)
+CSP_REPORT_URI = os.environ.get("CSP_REPORT_URI", "")
+CONTENT_SECURITY_POLICY = os.environ.get(
+    "CONTENT_SECURITY_POLICY",
+    "; ".join(
+        [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' data:",
+            "connect-src 'self' https: wss: ws:",
+            "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+            "frame-ancestors 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "worker-src 'self' blob:",
+        ]
+    ),
+)
 
 # Application definition
 
@@ -146,11 +202,15 @@ INSTALLED_APPS = [
     "sbomify.apps.plugins",
     "sbomify.apps.tea",
     "sbomify.apps.controls",
+    "sbomify.apps.oidc",
 ]
 
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Outer enough to see the final API response; copies the per-token throttle budget
+    # stashed on the request onto X-RateLimit-* headers.
+    "sbomify.apps.access_tokens.throttling.RateLimitHeadersMiddleware",
     "sbomify.apps.core.middleware.DynamicHostValidationMiddleware",
     "sbomify.apps.core.middleware.CustomDomainContextMiddleware",
     "sbomify.apps.core.middleware.RealIPMiddleware",
@@ -159,11 +219,15 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django_htmx.middleware.HtmxMiddleware",
     "django.middleware.common.CommonMiddleware",
+    # Must precede CsrfViewMiddleware so the bearer exemption flag is set before any
+    # CSRF enforcement can run (Ninja's check_csrf and CsrfViewMiddleware both honour it).
+    "sbomify.apps.core.middleware.BearerAuthCsrfExemptMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "sbomify.apps.core.middleware.HtmxMessagesMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "sbomify.apps.core.middleware.ContentSecurityPolicyMiddleware",
     "allauth.account.middleware.AccountMiddleware",
 ]
 
@@ -555,6 +619,14 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        # Token-auth audit trail (sbomify.audit.*). Pinned to INFO independent of
+        # LOG_LEVEL so the success/expired events stay in the forensic record even
+        # when the general log level is raised to WARNING.
+        "sbomify.audit": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "core": {
             "handlers": ["console"],
             "level": "DEBUG",
@@ -742,14 +814,68 @@ sentry_sdk.init(
 )
 
 
-# Workspaces app related config (legacy 'teams' app)
-TEAMS_SUPPORTED_ROLES = [("owner", "Owner"), ("admin", "Admin"), ("guest", "Guest")]
+# Workspaces app related config (legacy 'teams' app).
+# The ``bot`` role is reserved for synthetic identities provisioned by
+# OIDC Trusted Publishing bindings (see ``sbomify.apps.oidc``); it should
+# NEVER appear in invite or role-change UIs presented to humans.
+TEAMS_SUPPORTED_ROLES = [
+    ("owner", "Owner"),
+    ("admin", "Admin"),
+    ("guest", "Guest"),
+    ("bot", "Bot"),
+]
+# Invitation.role choices — subset of supported roles that can be
+# stored on an Invitation row. Excludes only ``bot`` (reserved for
+# OIDC synthetic identities, never invited). ``guest`` IS valid for
+# Invitation because the trust-center auto-accept flow creates a
+# guest-role Invitation when a user requests access — that row is
+# accepted on login and upgrades the user to a guest Member.
+# The InviteUserForm UI further excludes guest from its choices since
+# admins shouldn't invite guests directly (they self-serve), but the
+# model-level constraint stays permissive.
+TEAMS_INVITABLE_ROLES = [(k, v) for k, v in TEAMS_SUPPORTED_ROLES if k != "bot"]
 INVITATION_EXPIRY_DAYS = 7  # 7 days
 
 
 JWT_ISSUER = os.environ.get("JWT_ISSUER", "sbomify")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "sbomify")
+
+# Per-token API rate limit (#1060): a django-ninja "<count>/<period>" string applied
+# per AccessToken pk. Generous enough for CI bursts while capping a leaked/runaway
+# token; tighten via the env var. Effectively a no-op under DEBUG (DummyCache).
+API_TOKEN_RATE_LIMIT = os.environ.get("API_TOKEN_RATE_LIMIT", "1000/min")
+
+# Stricter per-token limit for expensive endpoints (artifact uploads), enforced
+# alongside the global one (#1070). Lower because each call does real work (parse,
+# S3 write, downstream scan/assessment enqueue).
+API_TOKEN_HEAVY_RATE_LIMIT = os.environ.get("API_TOKEN_HEAVY_RATE_LIMIT", "100/min")
+
+# OIDC Trusted Publishing — see sbomify.apps.oidc.
+# Action workflows request an ID token with this audience; the backend
+# enforces the ``aud`` claim against it during verification.
+OIDC_GITHUB_ISSUER = os.environ.get("OIDC_GITHUB_ISSUER", "https://token.actions.githubusercontent.com")
+OIDC_GITHUB_JWKS_URL = os.environ.get(
+    "OIDC_GITHUB_JWKS_URL",
+    "https://token.actions.githubusercontent.com/.well-known/jwks",
+)
+OIDC_GITHUB_AUDIENCE = os.environ.get("OIDC_GITHUB_AUDIENCE", "sbomify.com")
+OIDC_TOKEN_TTL_SECONDS = int(os.environ.get("OIDC_TOKEN_TTL_SECONDS", "900"))  # 15 minutes
+OIDC_JWKS_CACHE_SECONDS = int(os.environ.get("OIDC_JWKS_CACHE_SECONDS", "3600"))  # 1 hour
+# Clock-skew tolerance (seconds) applied symmetrically to nbf/iat/exp when
+# verifying GitHub OIDC tokens. GitHub's issuer clock can run a few seconds
+# ahead of ours, so a freshly minted token's nbf/iat is often slightly in the
+# future at verification time; with zero leeway PyJWT rejects it as "not yet
+# valid" and every exchange fails. 60s matches common JWT clock-skew guidance.
+OIDC_GITHUB_LEEWAY_SECONDS = int(os.environ.get("OIDC_GITHUB_LEEWAY_SECONDS", "60"))
+
+# How stale AccessToken.last_used_at may be before an authenticated request
+# refreshes it. Throttles the per-request write to one UPDATE per token per
+# window so a token hammered in a tight loop doesn't write on every call. The
+# field exists to spot stale/leaked tokens, so minute-level accuracy is enough.
+# Clamped to >= 0: a negative value would invert the freshness window and make
+# every request rewrite the field.
+ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS = max(0, int(os.environ.get("ACCESS_TOKEN_LAST_USED_THROTTLE_SECONDS", "300")))
 
 # Localstack and AWS/S3 related settings
 AWS_REGION = os.environ.get("AWS_REGION", "")
@@ -781,6 +907,33 @@ if DEBUG:
     # CORS settings - allow all origins in development mode
     CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = True
+else:
+    # Production cookie + transport hardening (#922). Caddy terminates TLS at the edge
+    # (SECURE_PROXY_SSL_HEADER above lets Django see the original scheme), but Caddy
+    # cannot set the Secure/SameSite attributes on Django-issued cookies — so we set them
+    # here. (Tests relax these via test_settings; the HTTP test client can't use them.)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # Session cookie stays "Lax" (NOT "Strict"): the Keycloak/OIDC login callback is a
+    # cross-site top-level navigation, and a Strict session cookie would not be sent on
+    # it, breaking the OAuth state handshake. The CSRF cookie can be Strict — it is read
+    # by JS and only sent on same-site mutations.
+    SESSION_COOKIE_SAMESITE = "Lax"
+    CSRF_COOKIE_SAMESITE = "Strict"
+
+    # Defense-in-depth behind Caddy's edge HTTP->HTTPS redirect. Exempt the internal
+    # endpoints, which are probed over plain HTTP (container-to-container, no
+    # X-Forwarded-Proto header): the Django health check, and the on-demand-TLS "ask"
+    # endpoint Caddy hits to decide whether to issue a certificate for a custom/trust
+    # center domain. A 301 here makes Caddy refuse the redirect and deny the cert.
+    SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r"^UuPha8mu/", r"^api/v1/internal/"]
+
+    # HSTS (Caddy sets it at the edge too; harmless to assert at the app for direct hits).
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 STRIPE_API_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_SECRET_KEY = STRIPE_API_KEY

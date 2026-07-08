@@ -739,7 +739,7 @@ def test_delete_membership(
     session["user_teams"] = {membership.team.key: {"role": "admin", "name": membership.team.name}}
     session.save()
 
-    response: HttpResponse = client.get(uri)
+    response: HttpResponse = client.delete(uri)
     assert response.status_code == 403
 
     # Owner user should be able to delete the membership
@@ -751,7 +751,7 @@ def test_delete_membership(
     session["user_teams"] = {membership.team.key: {"role": "owner", "name": membership.team.name}}
     session.save()
 
-    response: HttpResponse = client.get(uri)
+    response: HttpResponse = client.delete(uri)
     assert response.status_code == 302
 
     messages = list(get_messages(response.wsgi_request))
@@ -775,7 +775,7 @@ def test_deleting_last_owner_of_team_is_not_allowed(
 
     uri = reverse("teams:team_membership_delete", kwargs={"membership_id": sample_team_with_owner_member.id})
 
-    response: HttpResponse = client.get(uri)
+    response: HttpResponse = client.delete(uri)
 
     assert response.status_code == HttpResponseRedirect.status_code
     messages = list(get_messages(response.wsgi_request))
@@ -796,7 +796,7 @@ def test_delete_invitation(sample_team_with_owner_member: Member):  # noqa: F811
     assert invitation is not None
     uri = reverse("teams:team_invitation_delete", kwargs={"invitation_id": invitation.id})
 
-    response: HttpResponse = client.get(uri)
+    response: HttpResponse = client.delete(uri)
 
     assert response.status_code == 302
 
@@ -1287,6 +1287,52 @@ def test_team_branding_atomic_upload(sample_team_with_owner_member: Member, mock
         assert new_icon_filename != new_filename  # Different from previous icon
 
     os.remove("test_icon_new.png")
+
+
+@pytest.mark.django_db
+def test_team_branding_api_rejects_non_member(
+    sample_team_with_owner_member: Member,  # noqa: F811
+    guest_user,  # noqa: F811
+):
+    """A user who is not a member of the workspace cannot read its branding (BOLA regression)."""
+    team = sample_team_with_owner_member.team
+    client = Client()
+    assert client.login(username="guest", password="guest")  # nosec B106
+
+    response = client.get(f"/api/v1/workspaces/{team.key}/branding")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Forbidden"
+
+
+@pytest.mark.django_db
+def test_get_team_branding_enforces_token_read_scope(sample_team_with_owner_member: Member):  # noqa: F811
+    """The branding endpoint routes through can(), so a narrow-scoped token (no
+    read scope) is denied — a publish-only token could previously read internal
+    workspace branding it had no scope for.
+    """
+    from sbomify.apps.access_tokens.models import AccessToken
+    from sbomify.apps.access_tokens.utils import create_personal_access_token
+    from sbomify.apps.core.authz import SCOPE_PRESETS
+
+    team = sample_team_with_owner_member.team
+    user = sample_team_with_owner_member.user
+    url = f"/api/v1/workspaces/{team.key}/branding"
+
+    def tok(scopes):
+        s = create_personal_access_token(user)
+        AccessToken.objects.create(user=user, encoded_token=s, description="t", team=team, scopes=scopes)
+        return s
+
+    client = Client()
+    # publish-only token: no read scope -> 403
+    pub = tok(["artifact:publish"])
+    assert client.get(url, HTTP_AUTHORIZATION=f"Bearer {pub}").status_code == 403
+    # read-only preset (includes workspace:read) -> 200
+    ro = tok(SCOPE_PRESETS["read_only"])
+    assert client.get(url, HTTP_AUTHORIZATION=f"Bearer {ro}").status_code == 200
+    # unscoped (full) token -> 200, unchanged
+    full = tok(None)
+    assert client.get(url, HTTP_AUTHORIZATION=f"Bearer {full}").status_code == 200
 
 
 @pytest.mark.django_db

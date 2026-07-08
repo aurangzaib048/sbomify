@@ -95,19 +95,33 @@ def test_schema_org_metadata_tag(mocker):
         assert "billingIncrement" in ps
 
 
-def test_get_client_ip_simplified():
-    """
-    Test get_client_ip simply returns X-Real-IP if present, otherwise REMOTE_ADDR.
-    The application trusts the upstream proxy (Caddy) to sanitize these headers.
-    """
+def test_get_client_ip_honours_x_real_ip_from_trusted_proxy():
+    """X-Real-IP is honoured when the direct peer is a trusted proxy."""
     request = HttpRequest()
 
-    # 1. X-Real-IP present (from Caddy)
+    # Direct peer (REMOTE_ADDR) is a private/loopback proxy → header trusted.
     request.META = {"HTTP_X_REAL_IP": "1.2.3.4", "REMOTE_ADDR": "10.0.0.1"}
     assert get_client_ip(request) == "1.2.3.4"
 
-    # 2. X-Real-IP missing, fallback to REMOTE_ADDR
+    # X-Real-IP missing → fall back to REMOTE_ADDR.
     request.META = {"REMOTE_ADDR": "10.0.0.1"}
+    assert get_client_ip(request) == "10.0.0.1"
+
+
+def test_get_client_ip_ignores_spoofed_x_real_ip_from_untrusted_peer():
+    """A client reaching Django directly cannot spoof its IP via X-Real-IP."""
+    request = HttpRequest()
+
+    # Direct peer is a public, untrusted address → X-Real-IP is ignored.
+    request.META = {"HTTP_X_REAL_IP": "1.2.3.4", "REMOTE_ADDR": "203.0.113.7"}
+    assert get_client_ip(request) == "203.0.113.7"
+
+
+def test_get_client_ip_rejects_non_ip_x_real_ip_from_trusted_proxy():
+    """A trusted proxy forwarding a non-IP value falls back to REMOTE_ADDR."""
+    request = HttpRequest()
+
+    request.META = {"HTTP_X_REAL_IP": "not-an-ip", "REMOTE_ADDR": "10.0.0.1"}
     assert get_client_ip(request) == "10.0.0.1"
 
 
@@ -212,3 +226,167 @@ class TestAddArtifactToReleaseCrossTeamCheck:
         result = add_artifact_to_release(release, document=doc)
         assert result["created"] is True
         assert result["replaced"] is False
+
+
+@pytest.mark.django_db
+class TestVerifyItemAccessIsDbAuthoritative:
+    """verify_item_access must read the role from the DB, never from the mutable
+    (possibly stale) session ``user_teams`` cache — a demoted or removed member
+    must not keep elevated access until the cache happens to refresh."""
+
+    @staticmethod
+    def _request(user, user_teams):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get("/")
+        request.user = user
+        request.session = {"user_teams": user_teams}
+        return request
+
+    def test_stale_cached_role_does_not_grant_elevated_access(self, sample_team_with_owner_member):
+        from sbomify.apps.core.utils import verify_item_access
+
+        member = sample_team_with_owner_member
+        team = member.team
+
+        # Demote to guest in the DB; the session cache is stale and still says owner.
+        member.role = "guest"
+        member.save(update_fields=["role"])
+        request = self._request(member.user, {team.key: {"role": "owner"}})
+
+        # Owner/admin-only check is denied based on the live DB role (guest)...
+        assert verify_item_access(request, team, ["owner", "admin"]) is False
+        # ...while the user's real (guest) access still works.
+        assert verify_item_access(request, team, ["guest"]) is True
+
+    def test_stale_cached_role_for_removed_member_is_denied(self, sample_team_with_owner_member):
+        from sbomify.apps.core.utils import verify_item_access
+        from sbomify.apps.teams.models import Member
+
+        team = sample_team_with_owner_member.team
+        user = sample_team_with_owner_member.user
+
+        # Remove the membership (queryset delete leaves the fixture instance intact
+        # for teardown); the session cache is stale and still grants owner.
+        Member.objects.filter(pk=sample_team_with_owner_member.pk).delete()
+        request = self._request(user, {team.key: {"role": "owner"}})
+
+        assert verify_item_access(request, team, ["owner", "admin"]) is False
+        assert verify_item_access(request, team, None) is False
+
+
+@pytest.mark.django_db
+def test_release_artifact_replacement_leaves_single_artifact(sample_team_with_owner_member):
+    """Replacement leaves exactly one artifact of the format (the new one) — no loss, no
+    duplicate."""
+    from sbomify.apps.core.models import Component, Product, Release, ReleaseArtifact
+    from sbomify.apps.core.utils import add_artifact_to_release
+    from sbomify.apps.sboms.models import SBOM
+
+    team = sample_team_with_owner_member.team
+    component = Component.objects.create(name="comp-replace", team=team)
+    product = Product.objects.create(name="prod-replace", team=team)
+    release = Release.objects.create(product=product, name="v1")
+    sbom_old = SBOM.objects.create(
+        name="old", component=component, format="cyclonedx", version="1.0", format_version="1.6"
+    )
+    sbom_new = SBOM.objects.create(
+        name="new", component=component, format="cyclonedx", version="2.0", format_version="1.6"
+    )
+
+    add_artifact_to_release(release, sbom=sbom_old)
+    result = add_artifact_to_release(release, sbom=sbom_new, allow_replacement=True)
+
+    assert result["replaced"] is True
+    artifacts = ReleaseArtifact.objects.filter(release=release, sbom__component=component, sbom__format="cyclonedx")
+    assert artifacts.count() == 1
+    assert artifacts.first().sbom_id == sbom_new.id
+
+
+@pytest.mark.django_db
+def test_release_artifact_replacement_rolls_back_on_failure(sample_team_with_owner_member, mocker):
+    """If the create fails mid-replacement, the atomic block rolls back the delete so the old
+    artifact survives rather than being lost."""
+    from django.db import IntegrityError
+
+    from sbomify.apps.core.models import Component, Product, Release, ReleaseArtifact
+    from sbomify.apps.core.utils import add_artifact_to_release
+    from sbomify.apps.sboms.models import SBOM
+
+    team = sample_team_with_owner_member.team
+    component = Component.objects.create(name="comp-rollback", team=team)
+    product = Product.objects.create(name="prod-rollback", team=team)
+    release = Release.objects.create(product=product, name="v1")
+    sbom_old = SBOM.objects.create(
+        name="old", component=component, format="cyclonedx", version="1.0", format_version="1.6"
+    )
+    sbom_new = SBOM.objects.create(
+        name="new", component=component, format="cyclonedx", version="2.0", format_version="1.6"
+    )
+
+    add_artifact_to_release(release, sbom=sbom_old)
+
+    # Force the create() during replacement to raise, after the delete() has run.
+    mocker.patch(
+        "sbomify.apps.core.models.ReleaseArtifact.objects.create",
+        side_effect=IntegrityError("boom"),
+    )
+    with pytest.raises(IntegrityError):
+        add_artifact_to_release(release, sbom=sbom_new, allow_replacement=True)
+
+    # The delete must have rolled back: the old artifact is still there, none lost.
+    assert ReleaseArtifact.objects.filter(release=release, sbom=sbom_old).exists()
+
+
+@pytest.mark.django_db
+def test_release_artifact_replaced_info_reflects_the_replaced_row(sample_team_with_owner_member):
+    """replaced_info is snapshotted under the lock from the artifact actually replaced."""
+    from sbomify.apps.core.models import Component, Product, Release
+    from sbomify.apps.core.utils import add_artifact_to_release
+    from sbomify.apps.sboms.models import SBOM
+
+    team = sample_team_with_owner_member.team
+    component = Component.objects.create(name="comp-info", team=team)
+    product = Product.objects.create(name="prod-info", team=team)
+    release = Release.objects.create(product=product, name="v1")
+    sbom_old = SBOM.objects.create(
+        name="the-old-one", component=component, format="cyclonedx", version="1.0", format_version="1.6"
+    )
+    sbom_new = SBOM.objects.create(
+        name="the-new-one", component=component, format="cyclonedx", version="2.0", format_version="1.6"
+    )
+
+    add_artifact_to_release(release, sbom=sbom_old)
+    result = add_artifact_to_release(release, sbom=sbom_new, allow_replacement=True)
+
+    assert result["replaced_info"]["replaced_sbom"] == "the-old-one"
+    assert result["replaced_info"]["new_sbom"] == "the-new-one"
+
+
+@pytest.mark.django_db
+def test_release_artifact_replaces_preexisting_same_format_when_allowed(sample_team_with_owner_member):
+    """With allow_replacement=True, a same-format artifact already present under the lock (the
+    concurrent-add case) is replaced, not rejected as an error."""
+    from sbomify.apps.core.models import Component, Product, Release, ReleaseArtifact
+    from sbomify.apps.core.utils import add_artifact_to_release
+    from sbomify.apps.sboms.models import SBOM
+
+    team = sample_team_with_owner_member.team
+    component = Component.objects.create(name="comp-concurrent", team=team)
+    product = Product.objects.create(name="prod-concurrent", team=team)
+    release = Release.objects.create(product=product, name="v1")
+    sbom_old = SBOM.objects.create(
+        name="old", component=component, format="cyclonedx", version="1.0", format_version="1.6"
+    )
+    sbom_new = SBOM.objects.create(
+        name="new", component=component, format="cyclonedx", version="2.0", format_version="1.6"
+    )
+    # Pre-existing same-format artifact (stands in for a row a concurrent add committed).
+    ReleaseArtifact.objects.create(release=release, sbom=sbom_old)
+
+    result = add_artifact_to_release(release, sbom=sbom_new, allow_replacement=True)
+
+    assert result["replaced"] is True and result.get("error") is None
+    artifacts = ReleaseArtifact.objects.filter(release=release, sbom__component=component, sbom__format="cyclonedx")
+    assert artifacts.count() == 1
+    assert artifacts.first().sbom_id == sbom_new.id

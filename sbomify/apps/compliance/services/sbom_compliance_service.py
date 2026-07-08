@@ -6,6 +6,8 @@ and evaluate overall SBOM compliance gates.
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from django.db.models import Prefetch
 from packaging.version import Version
 
@@ -13,6 +15,7 @@ from sbomify.apps.core.models import Component, Product
 from sbomify.apps.core.services.results import ServiceResult
 from sbomify.apps.plugins.models import AssessmentRun
 from sbomify.apps.sboms.models import SBOM
+from sbomify.apps.sboms.utils import sbom_was_generated_by_sbomify_action
 
 BSI_PLUGIN_NAME = "bsi-tr03183-v2.1-compliance"
 
@@ -75,16 +78,19 @@ _BSI_REMEDIATION_TYPE: dict[str, str] = {
     "bsi-tr03183:attestation-check": "operator_action",
 }
 
-# Single source of truth for the sbomify-action enrichment docs so
-# every guidance link points at the same page. Overridable per-
-# finding via ``_BSI_GUIDANCE_URL_OVERRIDES`` below.
-_SBOMIFY_ACTION_ENRICHMENT_URL = "https://sbomify.com/docs/sbomify-action/enrichment"
+# Default guidance URL for BSI findings without a more specific override.
+_BSI_DEFAULT_GUIDANCE_URL = "https://sbomify.com/compliance/"
 
-# Per-finding doc links when the default URL isn't the right target
-# (e.g. CycloneDX / SPDX schema reference for format issues).
+# BSI TR-03183-2 guidance page. The ``#format-requirements-4`` anchor is the
+# best landing for ``sbom-format`` and is acceptable for ``attestation-check``
+# (the BSI page is the standard reference for both; no separate attestation
+# anchor exists yet). Swap individual overrides to per-finding constants once
+# more specific pages (e.g. ``/compliance/attestations/``) ship.
+_BSI_TR03183_GUIDANCE_URL = "https://sbomify.com/compliance/bsi-tr-03183/#format-requirements-4"
+
 _BSI_GUIDANCE_URL_OVERRIDES: dict[str, str] = {
-    "bsi-tr03183:sbom-format": "https://sbomify.com/docs/sbom-format",
-    "bsi-tr03183:attestation-check": "https://sbomify.com/docs/attestations",
+    "bsi-tr03183:sbom-format": _BSI_TR03183_GUIDANCE_URL,
+    "bsi-tr03183:attestation-check": _BSI_TR03183_GUIDANCE_URL,
 }
 
 # Plain-English "why is this failing and what do I do about it" sentence
@@ -200,11 +206,11 @@ def _classify_bsi_finding(finding_id: object) -> tuple[str, str, str]:
     finding in the scan. Coerce to the fail-closed default instead.
 
     Unknown or non-string finding ids fall back to ``operator_action``
-    + the enrichment URL + a generic summary — the conservative
-    default keeps the wizard gate strict when the BSI plugin gains a
-    new check that this classifier hasn't been updated for yet, or
-    when upstream emits a malformed id that the ``_build_bsi_assessment_dict``
-    coercion didn't catch.
+    + ``_BSI_DEFAULT_GUIDANCE_URL`` + a generic summary — the
+    conservative default keeps the wizard gate strict when the BSI
+    plugin gains a new check that this classifier hasn't been updated
+    for yet, or when upstream emits a malformed id that the
+    ``_build_bsi_assessment_dict`` coercion didn't catch.
 
     The ``human_summary`` is a one-line operator-facing sentence
     (issue #907) explaining in plain English why this check fails
@@ -214,9 +220,9 @@ def _classify_bsi_finding(finding_id: object) -> tuple[str, str, str]:
     the remediation from the BSI plugin's schema-oriented text.
     """
     if not isinstance(finding_id, str):
-        return "operator_action", _SBOMIFY_ACTION_ENRICHMENT_URL, _UNKNOWN_FINDING_SUMMARY
+        return "operator_action", _BSI_DEFAULT_GUIDANCE_URL, _UNKNOWN_FINDING_SUMMARY
     remediation_type = _BSI_REMEDIATION_TYPE.get(finding_id, "operator_action")
-    guidance_url = _BSI_GUIDANCE_URL_OVERRIDES.get(finding_id, _SBOMIFY_ACTION_ENRICHMENT_URL)
+    guidance_url = _BSI_GUIDANCE_URL_OVERRIDES.get(finding_id, _BSI_DEFAULT_GUIDANCE_URL)
     human_summary = _BSI_HUMAN_SUMMARY.get(finding_id, _UNKNOWN_FINDING_SUMMARY)
     return remediation_type, guidance_url, human_summary
 
@@ -247,6 +253,42 @@ def is_waivable_bsi_finding(finding_id: object) -> bool:
     return _BSI_REMEDIATION_TYPE.get(finding_id) == "tooling_limitation"
 
 
+def _prefetch_sbomify_action_flags(sboms: Iterable[SBOM]) -> None:
+    """Warm the per-SBOM sbomify-action detection cache concurrently.
+
+    Only SBOMs whose latest BSI run has at least one tooling_limitation
+    failing check need the flag (per ``_build_bsi_assessment_dict``); the
+    rest skip the S3 fetch anyway. Looking up the cache here in a thread
+    pool turns the otherwise serial per-component S3 reads into one
+    bounded burst, so the wall-clock cost of a cold-cache Step 2 render
+    is roughly the slowest single fetch rather than N times that.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    sboms_needing_lookup: list[SBOM] = []
+    for sbom in sboms:
+        runs = getattr(sbom, "prefetched_bsi_runs", None) or []
+        if not runs:
+            continue
+        findings = (runs[0].result or {}).get("findings") or []
+        if any(
+            isinstance(f, dict)
+            and f.get("status") == "fail"
+            and _classify_bsi_finding(f.get("id", ""))[0] == "tooling_limitation"
+            for f in findings
+        ):
+            sboms_needing_lookup.append(sbom)
+
+    if not sboms_needing_lookup:
+        return
+
+    # max_workers caps the burst so a product with thousands of components
+    # cannot exhaust the S3 client's connection pool.
+    max_workers = min(10, len(sboms_needing_lookup))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(sbom_was_generated_by_sbomify_action, sboms_needing_lookup))
+
+
 def _is_format_compliant(sbom_format: str | None, format_version: str | None) -> bool:
     """Check whether the SBOM format version meets BSI TR-03183-2 requirements.
 
@@ -265,8 +307,15 @@ def _is_format_compliant(sbom_format: str | None, format_version: str | None) ->
         return False
 
 
-def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
-    """Build the bsi_assessment dict from an AssessmentRun."""
+def _build_bsi_assessment_dict(run: AssessmentRun, sbom: SBOM | None = None) -> dict[str, object]:
+    """Build the bsi_assessment dict from an AssessmentRun.
+
+    ``sbom`` is optional and only used to compute the
+    ``was_generated_by_sbomify_action`` flag the wizard template uses to
+    suppress the "See sbomify-action enrichment guide" CTA for SBOMs
+    already generated by sbomify-action (issue #902). When omitted, the
+    flag defaults to ``False`` and the CTA renders as before.
+    """
     result = run.result or {}
     summary = result.get("summary", {})
     raw_findings = result.get("findings", [])
@@ -300,6 +349,16 @@ def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
                 }
             )
 
+    # Issue #902: only fetch + parse the SBOM blob from S3 when at least one
+    # failing check is a tooling_limitation. The flag exists solely to gate
+    # the "See sbomify-action enrichment guide" CTA on those findings, so
+    # passing assessments and assessments whose failures are all
+    # operator_action skip the S3 round-trip entirely.
+    has_tooling_limitation_failure = any(c["remediation_type"] == "tooling_limitation" for c in failing_checks)
+    was_generated_by_sbomify_action_flag = bool(
+        sbom and has_tooling_limitation_failure and sbom_was_generated_by_sbomify_action(sbom)
+    )
+
     return {
         "status": run.status,
         "pass_count": summary.get("pass_count", 0),
@@ -307,6 +366,7 @@ def _build_bsi_assessment_dict(run: AssessmentRun) -> dict[str, object]:
         "warning_count": summary.get("warning_count", 0),
         "assessed_at": run.created_at.isoformat() if run.created_at else None,
         "failing_checks": failing_checks,
+        "was_generated_by_sbomify_action": was_generated_by_sbomify_action_flag,
     }
 
 
@@ -342,6 +402,13 @@ def get_bsi_assessment_status(product: Product) -> ServiceResult[dict[str, objec
         )
         sboms_by_id = {s.pk: s for s in sbom_qs}
 
+    # Warm the sbomify-action detection cache concurrently for every SBOM
+    # that has at least one tooling_limitation failing check. Without this
+    # batched prefetch, each per-component call to _build_bsi_assessment_dict
+    # would do its own serial S3 fetch on a cold cache, turning Step 2
+    # rendering into O(N) sequential round trips for large products.
+    _prefetch_sbomify_action_flags(sboms_by_id.values())
+
     component_results: list[dict[str, object]] = []
     components_with_sbom = 0
     components_passing_bsi = 0
@@ -364,7 +431,7 @@ def get_bsi_assessment_status(product: Product) -> ServiceResult[dict[str, objec
             latest_run = prefetched_runs[0] if prefetched_runs else None
 
             if latest_run:
-                bsi_assessment = _build_bsi_assessment_dict(latest_run)
+                bsi_assessment = _build_bsi_assessment_dict(latest_run, sbom=latest_sbom)
                 if latest_run.status == "completed" and bsi_assessment["fail_count"] == 0 and format_compliant:
                     is_passing = True
 

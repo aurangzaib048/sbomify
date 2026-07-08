@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.http import HttpRequest
 from ninja import File, Router
@@ -15,9 +16,12 @@ from ninja.security import django_auth
 from pydantic import BaseModel
 
 from sbomify.apps.access_tokens.auth import PersonalAccessTokenAuth
+from sbomify.apps.core.authz import can
 from sbomify.apps.core.models import User
 from sbomify.apps.core.object_store import S3Client
-from sbomify.apps.core.schemas import ErrorResponse
+from sbomify.apps.core.posthog_service import capture_for_request
+from sbomify.apps.core.schemas import ErrorCode, ErrorResponse
+from sbomify.apps.core.services.validation_response import validation_error_response
 from sbomify.apps.core.utils import token_to_number
 from sbomify.apps.teams.models import ContactEntity, ContactProfile, ContactProfileContact, Member, Team
 from sbomify.apps.teams.schemas import (
@@ -123,7 +127,10 @@ def _normalize_branding_payload(branding: dict[str, Any] | None) -> dict[str, An
     return data
 
 
-@router.get("/{team_key}/branding", response={200: BrandingInfoWithUrls, 400: ErrorResponse, 404: ErrorResponse})
+@router.get(
+    "/{team_key}/branding",
+    response={200: BrandingInfoWithUrls, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse},
+)
 def get_team_branding(request: HttpRequest, team_key: str) -> tuple[int, Any]:
     """Get workspace branding information.
 
@@ -138,6 +145,14 @@ def get_team_branding(request: HttpRequest, team_key: str) -> tuple[int, Any]:
         team = Team.objects.get(pk=team_id)
     except Team.DoesNotExist:
         return 404, {"detail": "Workspace not found"}
+
+    user = cast(User, request.user)
+    if not Member.objects.filter(user=user, team=team).exists():
+        logger.warning(f"User {user.username} is not a member of team {team_key}")
+        return 403, {"detail": "Forbidden"}
+
+    if not can(request, "workspace:read", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     branding_data = _normalize_branding_payload(team.branding_info)
     branding_info = BrandingInfo(**branding_data)
@@ -697,6 +712,10 @@ def list_contact_profiles(request: HttpRequest, team_key: str) -> tuple[int, Any
     if error:
         return error
 
+    assert team is not None  # guaranteed when error is None
+    if not can(request, "workspace:read", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     # Allow all team members to view contact profiles (for use in component metadata)
     # Exclude component-private profiles as they're managed through component metadata
     profiles = (
@@ -807,8 +826,23 @@ def create_contact_profile(request: HttpRequest, team_key: str, payload: Contact
         return 201, serialize_contact_profile(profile)
     except ValueError as e:
         return 400, {"detail": str(e)}
-    except IntegrityError:
-        return 400, {"detail": "A profile with this name already exists"}
+    except DjangoValidationError as ve:
+        return validation_error_response(ve, "contact entity", scope_label="contact profile")
+    except IntegrityError as e:
+        # The atomic block touches ContactProfile, ContactEntity, AND
+        # ContactProfileContact — each with its own unique constraints
+        # (profile name, entity name per profile, contact name+email per
+        # entity). ``full_clean()`` covers all three at the model layer,
+        # so this branch is a backstop for genuine concurrent-write races
+        # where validate_unique() passed and a DB constraint then fired.
+        # Log the underlying exception so operators can identify which
+        # constraint tripped; return a non-specific 400 rather than
+        # presuming the failure was the profile name.
+        logger.warning("IntegrityError in contact-profile handler: %s", e)
+        return 400, {
+            "detail": "Could not save contact profile due to a database constraint (possibly a duplicate name)",
+            "error_code": ErrorCode.DUPLICATE_NAME,
+        }
 
 
 @router.patch(
@@ -907,8 +941,23 @@ def update_contact_profile(
         return 200, serialize_contact_profile(profile)
     except ValueError as e:
         return 400, {"detail": str(e)}
-    except IntegrityError:
-        return 400, {"detail": "A profile with this name already exists"}
+    except DjangoValidationError as ve:
+        return validation_error_response(ve, "contact entity", scope_label="contact profile")
+    except IntegrityError as e:
+        # The atomic block touches ContactProfile, ContactEntity, AND
+        # ContactProfileContact — each with its own unique constraints
+        # (profile name, entity name per profile, contact name+email per
+        # entity). ``full_clean()`` covers all three at the model layer,
+        # so this branch is a backstop for genuine concurrent-write races
+        # where validate_unique() passed and a DB constraint then fired.
+        # Log the underlying exception so operators can identify which
+        # constraint tripped; return a non-specific 400 rather than
+        # presuming the failure was the profile name.
+        logger.warning("IntegrityError in contact-profile handler: %s", e)
+        return 400, {
+            "detail": "Could not save contact profile due to a database constraint (possibly a duplicate name)",
+            "error_code": ErrorCode.DUPLICATE_NAME,
+        }
 
 
 @router.delete(
@@ -1080,23 +1129,33 @@ def update_team_domain(request: HttpRequest, team_key: str, payload: TeamDomainS
     if not is_valid:
         return 400, {"detail": error_message}
 
-    # Store old domain for cache invalidation
-    old_domain = team.custom_domain
-
     try:
         # Normalize domain (validator already does this, but be explicit)
         normalized_domain = payload.domain.strip().lower()
 
+        # Read the pre-save domain inside the same row lock that performs the
+        # write, so two concurrent first-time saves can't both observe an
+        # empty value and both treat themselves as the "first" domain set.
         with transaction.atomic():
-            team.custom_domain = normalized_domain
-            team.custom_domain_validated = False  # Reset validation on change
-            team.save(update_fields=["custom_domain", "custom_domain_validated"])
+            locked_team = Team.objects.select_for_update().get(pk=team.pk)
+            old_domain = locked_team.custom_domain
+            locked_team.custom_domain = normalized_domain
+            locked_team.custom_domain_validated = False  # Reset validation on change
+            locked_team.save(update_fields=["custom_domain", "custom_domain_validated"])
+            is_first_time_set = not old_domain
 
         # Invalidate cache for both old and new domains
         invalidate_custom_domain_cache(old_domain)
         invalidate_custom_domain_cache(normalized_domain)
 
-        return 200, {"domain": team.custom_domain, "validated": team.custom_domain_validated}
+        # Only fire on first-time domain set (not domain changes or re-saves),
+        # so the "added" semantics match the event name. Deferred via
+        # ``on_commit`` so a rollback in the surrounding flow doesn't
+        # ship a ghost event for a domain that wasn't actually persisted.
+        if is_first_time_set:
+            transaction.on_commit(lambda: capture_for_request(request, "team:custom_domain_added", team_key=team_key))
+
+        return 200, {"domain": normalized_domain, "validated": False}
 
     except IntegrityError:
         return 400, {"detail": "This domain is already in use by another workspace"}
@@ -1187,6 +1246,9 @@ def get_team(request: HttpRequest, team_key: str) -> tuple[int, Any]:
         return 403, {"detail": "Access denied"}
     if membership.role == "guest":
         return 403, {"detail": "Guest members can only access public pages"}
+
+    if not can(request, "workspace:read", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     return 200, _build_team_response(request, team)
 

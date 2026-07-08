@@ -6,8 +6,9 @@ from typing import Any
 from django.db import transaction
 from django.http import HttpRequest
 
+from sbomify.apps.core.authz import can
 from sbomify.apps.core.services.results import ServiceResult
-from sbomify.apps.core.utils import broadcast_to_workspace, verify_item_access
+from sbomify.apps.core.utils import broadcast_to_workspace
 from sbomify.apps.documents.models import Document
 from sbomify.apps.documents.schemas import DocumentUpdateRequest
 
@@ -40,12 +41,12 @@ def get_document_detail(request: HttpRequest, document_id: str) -> ServiceResult
 
     component = document.component
 
-    # Use centralized access control
-    from sbomify.apps.core.services.access_control import check_component_access
-
-    access_result = check_component_access(request, component)
-
-    if not access_result.has_access:
+    # Route through the authz front door so a scoped API token's read scope is
+    # honoured — this endpoint runs under PAT auth, and check_component_access
+    # alone enforces visibility/NDA but not the token action-scope (that gate
+    # lives in can()). component:access is the ABAC read action; no change for
+    # sessions, anonymous callers, or full/read-only tokens.
+    if not can(request, "component:access", component):
         return ServiceResult.failure("Forbidden", status_code=403)
 
     return ServiceResult.success(serialize_document(document))
@@ -59,7 +60,7 @@ def update_document_metadata(
     except Document.DoesNotExist:
         return ServiceResult.failure("Document not found", status_code=404)
 
-    if not verify_item_access(request, document.component, ["owner", "admin"]):
+    if not can(request, "document:manage", document.component):
         return ServiceResult.failure("Only owners and admins can update documents", status_code=403)
 
     update_fields = []
@@ -95,8 +96,8 @@ def delete_document_record(request: HttpRequest, document_id: str) -> ServiceRes
     except Document.DoesNotExist:
         return ServiceResult.failure("Document not found", status_code=404)
 
-    if not verify_item_access(request, document.component, ["owner", "admin"]):
-        return ServiceResult.failure("Only owners and admins can delete documents", status_code=403)
+    if not can(request, "document:delete", document.component):
+        return ServiceResult.failure("Only owners can delete documents", status_code=403)
 
     # Capture info for broadcast before deleting
     workspace_key: str = document.component.team.key  # type: ignore[assignment]

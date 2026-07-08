@@ -97,13 +97,14 @@ Submitted by user: {user_email} ({user_name})
 Submitted at: {submitted_at}
 """
 
-        # Send email to sales team
+        # Send email to sales team. Reply-to is the prospect so a reply reaches
+        # them rather than bouncing back to the sales inbox.
         sales_email = EmailMessage(
             subject=subject,
             body=message_content,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[settings.ENTERPRISE_SALES_EMAIL],
-            reply_to=[settings.ENTERPRISE_SALES_EMAIL],
+            reply_to=[str(email)] if email else [settings.ENTERPRISE_SALES_EMAIL],
         )
         sales_email.send(fail_silently=False)
 
@@ -173,6 +174,41 @@ You can reply to this email and we'll receive your message at {settings.ENTERPRI
         # Log and don't retry to avoid infinite loops
         logger.error("Permanent error processing enterprise inquiry email: %s", e, exc_info=True)
         record_task_breadcrumb("send_enterprise_inquiry_email", "error", level="error", data={"error": str(e)})
+
+
+@dramatiq.actor(queue_name="billing", max_retries=1, time_limit=600000)  # 10 minutes
+def sync_active_subscriptions_task() -> None:
+    """Safety-net sync of every team that has a Stripe subscription.
+
+    Subscription data is normally kept current by Stripe webhooks
+    (customer.subscription.updated / invoice.*). This task — scheduled daily by
+    ``billing.cron.daily_subscription_sync`` — is the fallback for missed/failed
+    webhooks, and replaces the per-request Stripe sync that used to run inside
+    the ``team_context`` context processor on every authenticated page load.
+    """
+    from sbomify.apps.billing.stripe_sync import sync_subscription_from_stripe
+    from sbomify.apps.teams.models import Team
+
+    record_task_breadcrumb("sync_active_subscriptions_task", "start")
+    if not is_billing_enabled():
+        logger.info("Billing is not enabled, skipping subscription sync")
+        return
+
+    # JSON path lookup (portable across SQLite/Postgres, unlike has_key) — also
+    # naturally excludes a null subscription id.
+    teams_with_subscriptions = Team.objects.filter(billing_plan_limits__stripe_subscription_id__isnull=False)
+
+    synced = 0
+    errors = 0
+    for team in teams_with_subscriptions.iterator():
+        try:
+            if sync_subscription_from_stripe(team, force_refresh=True):
+                synced += 1
+        except Exception:
+            logger.warning("Failed to sync subscription for team %s", team.key, exc_info=True)
+            errors += 1
+
+    logger.info("Subscription sync complete: synced=%d, errors=%d", synced, errors)
 
 
 @dramatiq.actor(queue_name="billing", max_retries=1, time_limit=600000)  # 10 minutes
