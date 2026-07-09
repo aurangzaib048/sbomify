@@ -72,5 +72,7 @@ the same CVE is not over-suppressed.
 
 ## Publishing
 
-`.github/scripts/publish-vex.sh` uploads each document to its component as
-`bom_type=vex` via OIDC trusted publishing (the gated `publish-vex` CI jobs).
+Documents are published manually with the
+[sbomify-action](https://github.com/sbomify/sbomify-action) (`BOM_TYPE=vex`,
+`SBOM_FILE=<document>`), which uploads them verbatim to their component as
+`bom_type=vex`. Publishing is deliberately not wired into CI.
