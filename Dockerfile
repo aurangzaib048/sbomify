@@ -28,7 +28,7 @@ ARG VERSION=""
 ARG BUILD_TYPE=""
 
 ### Stage 0: Keycloak Theme Build (Fully Independent)
-FROM oven/bun:1.3-debian@sha256:3da1c52799fc527af4c5969876734cbaddbf3e49479c601cfebdb0d7cbcc61b4 AS keycloak-build
+FROM oven/bun:1.3-debian@sha256:9dba1a1b43ce28c9d7931bfc4eb00feb63b0114720a0277a8f939ae4dfc9db6f AS keycloak-build
 
 WORKDIR /keycloak-build
 
@@ -42,7 +42,7 @@ COPY keycloak/themes/ ./themes/
 RUN bun install --frozen-lockfile && bun run build
 
 ### Stage 1: Bun JS build for Production Frontend Assets
-FROM oven/bun:1.3-debian@sha256:b5cf5ca5dc3e2a02d805802ba089401c4beabf597daabbf35a17b8e82dc2f7bc AS js-build-prod
+FROM oven/bun:1.3-debian@sha256:9dba1a1b43ce28c9d7931bfc4eb00feb63b0114720a0277a8f939ae4dfc9db6f AS js-build-prod
 
 WORKDIR /js-build
 
@@ -94,7 +94,7 @@ RUN mkdir -p sbomify/static/css sbomify/static/webfonts sbomify/static/dist
 RUN bun run copy-deps && bun x vite build
 
 ### Stage 2: Frontend Development Server
-FROM oven/bun:1.3-debian@sha256:b5cf5ca5dc3e2a02d805802ba089401c4beabf597daabbf35a17b8e82dc2f7bc AS frontend-dev-server
+FROM oven/bun:1.3-debian@sha256:9dba1a1b43ce28c9d7931bfc4eb00feb63b0114720a0277a8f939ae4dfc9db6f AS frontend-dev-server
 
 WORKDIR /app-frontend
 
@@ -197,7 +197,7 @@ RUN if [ "${BUILD_ENV}" = "production" ]; then \
     fi
 
 ### Stage 5: Download pre-built binaries for OSV-Scanner and Cosign
-FROM alpine:3.21 AS binary-downloader
+FROM alpine:3.24 AS binary-downloader
 ARG OSV_SCANNER_VERSION
 ARG COSIGN_VERSION
 ARG TARGETARCH
