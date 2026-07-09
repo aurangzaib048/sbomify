@@ -379,10 +379,11 @@ def test_build_release_response_has_vex_flag(
     )
     ReleaseArtifact.objects.create(release=release, sbom=sbom)
 
-    # SBOM only: has_sboms true, has_vex false.
+    # SBOM only: has_sboms true, has_vex/has_cbom false.
     before = _build_release_response(request, release)
     assert before["has_sboms"] is True
     assert before["has_vex"] is False
+    assert before["has_cbom"] is False
 
     # Add a VEX slot: has_vex flips true, has_sboms unchanged.
     vex = SBOM.objects.create(
@@ -397,6 +398,18 @@ def test_build_release_response_has_vex_flag(
     after = _build_release_response(request, release)
     assert after["has_sboms"] is True
     assert after["has_vex"] is True
+
+    # Add a CBOM slot: has_cbom flips true.
+    cbom = SBOM.objects.create(
+        name="cb",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="cb.json",
+        component=sample_component,
+        bom_type=SBOM.BomType.CBOM,
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=cbom)
+    assert _build_release_response(request, release)["has_cbom"] is True
 
 
 @pytest.mark.django_db

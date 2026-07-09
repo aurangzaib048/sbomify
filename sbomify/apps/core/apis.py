@@ -2705,6 +2705,8 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
     has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
     # Check if release has a VEX to offer the latest-VEX download (Trust Center).
     has_vex = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.VEX).exists()
+    # Check if release has a CBOM to offer the crypto BOM download (Trust Center).
+    has_cbom = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.CBOM).exists()
     has_crud_permissions = can(request, "release:manage", release.product).allowed
 
     response = {
@@ -2724,6 +2726,7 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
         "artifacts_count": artifact_count,
         "has_sboms": has_sboms,
         "has_vex": has_vex,
+        "has_cbom": has_cbom,
         "product": {
             "id": str(release.product.id),
             "name": release.product.name,
@@ -3241,6 +3244,57 @@ def download_release_vex(request: HttpRequest, release_id: str) -> Any:
 
     content = json.dumps(document, indent=2)
     filename = f"{release.product.name}-{release.name}.vex.cdx.json"
+    response = HttpResponse(content, content_type="application/json")
+    response["Content-Disposition"] = f"attachment; filename={filename}"
+    return response
+
+
+@router.get(
+    "/releases/{release_id}/cbom/download",
+    response={200: None, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
+    auth=None,
+    tags=["Releases"],
+)
+@decorate_view(optional_token_auth)
+def download_release_cbom(request: HttpRequest, release_id: str) -> Any:
+    """Download the merged CBOM (Cryptography BOM) for a release.
+
+    Combines the newest CBOM of each component in the release into a single CycloneDX document, so a
+    consumer pulls one crypto BOM per release. Gated exactly like the SBOM and VEX downloads: open
+    for a public product, otherwise authenticated with release read access.
+    """
+    try:
+        release = Release.objects.select_related("product").get(pk=release_id)
+    except Release.DoesNotExist:
+        return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
+
+    if not release.product.is_public:
+        if not request.user or not request.user.is_authenticated:
+            return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
+        if not can(request, "release:read", release.product):
+            return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
+
+    from django.core.cache import cache
+    from django.db.models import Count, Max
+
+    from sbomify.apps.sboms.cbom import build_release_cbom
+    from sbomify.apps.sboms.models import SBOM
+
+    # Same cache-by-slot-state approach as the VEX download: the merge fans out one
+    # S3 fetch per pinned CBOM and the endpoint is open for public products.
+    slot_state = ReleaseArtifact.objects.filter(release=release, sbom__bom_type=SBOM.BomType.CBOM).aggregate(
+        n=Count("id"), newest=Max("sbom__created_at")
+    )
+    cache_key = f"release-cbom:{release.id}:{slot_state['n']}:{slot_state['newest']}"
+    document = cache.get(cache_key)
+    if document is None:
+        document = build_release_cbom(release) or {"__absent__": True}
+        cache.set(cache_key, document, 900)
+    if document.get("__absent__"):
+        return 404, {"detail": "No CBOM available for this release", "error_code": ErrorCode.NOT_FOUND}
+
+    content = json.dumps(document, indent=2)
+    filename = f"{release.product.name}-{release.name}.cbom.cdx.json"
     response = HttpResponse(content, content_type="application/json")
     response["Content-Disposition"] = f"attachment; filename={filename}"
     return response

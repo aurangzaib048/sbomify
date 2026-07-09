@@ -50,7 +50,7 @@
                 </div>
             </div>
             {# Download Buttons - Desktop #}
-            {% if release.has_sboms or release.has_vex %}
+            {% if release.has_sboms or release.has_vex or release.has_cbom %}
                 <div class="hidden lg:flex gap-2 flex-shrink-0">
                     {% if release.has_sboms %}
                         <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
@@ -82,6 +82,14 @@
                             <i class="fas fa-download text-xs" aria-hidden="true"></i>
                         </a>
                     {% endif %}
+                    {% if release.has_cbom %}
+                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                           href="{% url 'api-1:download_release_cbom' release.id %}"
+                           title="Download CBOM (Cryptography BOM, CycloneDX)">
+                            <span class="text-sm font-semibold tracking-wide">CBOM</span>
+                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                        </a>
+                    {% endif %}
                 </div>
             {% endif %}
         </div>
@@ -107,7 +115,7 @@
             {% endif %}
         </div>
         {# Download Card - Mobile Only #}
-        {% if release.has_sboms or release.has_vex %}
+        {% if release.has_sboms or release.has_vex or release.has_cbom %}
             <div class="tw-card lg:hidden">
                 <div class="px-6 py-4 border-b border-border">
                     <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
@@ -147,6 +155,14 @@
                                href="{% url 'api-1:download_release_vex' release.id %}"
                                title="Download latest VEX (CycloneDX)">
                                 <span class="text-sm font-semibold tracking-wide">VEX</span>
+                                <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                            </a>
+                        {% endif %}
+                        {% if release.has_cbom %}
+                            <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                               href="{% url 'api-1:download_release_cbom' release.id %}"
+                               title="Download CBOM (Cryptography BOM, CycloneDX)">
+                                <span class="text-sm font-semibold tracking-wide">CBOM</span>
                                 <i class="fas fa-download text-xs" aria-hidden="true"></i>
                             </a>
                         {% endif %}
