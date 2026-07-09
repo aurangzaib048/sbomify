@@ -65,6 +65,41 @@ def test_build_release_cbom_merges_slot_documents(sample_team_with_owner_member,
 
 
 @pytest.mark.django_db
+def test_build_release_cbom_unions_shared_dependency_edges(sample_team_with_owner_member, mocker):
+    """Two components' CBOMs sharing a source node union their dependsOn targets
+    rather than dropping the second edge (which would hide crypto usage)."""
+    team = sample_team_with_owner_member.team
+    _product, release, c1, c2 = _release_with_components(team, is_public=True)
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c1, "a.cbom.json"))
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c2, "b.cbom.json"))
+    import json as _json
+
+    doc_a = _json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [{"bom-ref": "tls-ctx"}, {"bom-ref": "rsa2048"}],
+            "dependencies": [{"ref": "tls-ctx", "dependsOn": ["rsa2048"]}],
+        }
+    ).encode()
+    doc_b = _json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [{"bom-ref": "tls-ctx"}, {"bom-ref": "ecdsaP256"}],
+            "dependencies": [{"ref": "tls-ctx", "dependsOn": ["ecdsaP256"]}],
+        }
+    ).encode()
+    _mock_s3(mocker, {"a.cbom.json": doc_a, "b.cbom.json": doc_b})
+
+    merged = build_release_cbom(release)
+
+    edges = {d["ref"]: sorted(d["dependsOn"]) for d in merged["dependencies"]}
+    assert edges == {"tls-ctx": ["ecdsaP256", "rsa2048"]}
+    assert {c["bom-ref"] for c in merged["components"]} == {"tls-ctx", "rsa2048", "ecdsaP256"}
+
+
+@pytest.mark.django_db
 def test_build_release_cbom_none_without_slot(sample_team_with_owner_member):
     team = sample_team_with_owner_member.team
     _product, release, _c1, _c2 = _release_with_components(team, is_public=True)

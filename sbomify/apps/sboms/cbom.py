@@ -45,7 +45,7 @@ def build_release_cbom(release: Any) -> dict[str, Any] | None:
     components: list[dict[str, Any]] = []
     dependencies: list[dict[str, Any]] = []
     seen_refs: set[str] = set()
-    seen_dep_refs: set[str] = set()
+    dep_by_ref: dict[str, dict[str, Any]] = {}  # merge dependsOn for a shared source ref
     seen_components: set[Any] = set()
     found = False
     artifacts = (
@@ -70,10 +70,25 @@ def build_release_cbom(release: Any) -> dict[str, Any] | None:
                 seen_refs.add(ref)
             components.append(comp)
         for dep in document.get("dependencies") or []:
-            ref = dep.get("ref") if isinstance(dep, dict) else None
-            if ref and ref not in seen_dep_refs:
-                seen_dep_refs.add(ref)
-                dependencies.append(dep)
+            if not isinstance(dep, dict):
+                continue
+            ref = dep.get("ref")
+            if not ref:
+                continue
+            existing = dep_by_ref.get(ref)
+            if existing is None:
+                # Copy so merging into it never mutates the source document.
+                new_dep = {**dep, "dependsOn": list(dep.get("dependsOn") or [])}
+                dep_by_ref[ref] = new_dep
+                dependencies.append(new_dep)
+            else:
+                # Same source node in two CBOMs: union the targets rather than
+                # dropping the second edge (which would hide crypto usage).
+                have = set(existing["dependsOn"])
+                for target in dep.get("dependsOn") or []:
+                    if target not in have:
+                        have.add(target)
+                        existing["dependsOn"].append(target)
 
     if not found:
         return None
