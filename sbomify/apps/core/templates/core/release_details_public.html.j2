@@ -154,6 +154,108 @@
                 </div>
             </div>
         {% endif %}
+        {# Vulnerability Posture — with and without the release's VEX applied #}
+        {% if vuln_posture.has_data %}
+            {{ vuln_posture|json_script:"vuln-posture-data" }}
+            <div class="tw-card"
+                 x-data="{ data: { raw: {}, applied: {}, findings: [], suppressed_count: 0 }, applied: true, init() { this.data = window.parseJsonScript ? window.parseJsonScript('vuln-posture-data') : JSON.parse(document.getElementById('vuln-posture-data').textContent); }, current() { return this.applied ? this.data.applied : this.data.raw; }, sevPill(sev) { return { critical: 'bg-red-500/10 text-red-600', high: 'bg-orange-500/10 text-orange-600', medium: 'bg-yellow-500/10 text-yellow-700', low: 'bg-cyan-500/10 text-cyan-600' }[sev] || 'bg-border/40 text-text-muted'; } }"
+                 x-init="init()">
+                <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-wrap">
+                    <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                        <i class="fas fa-shield-halved text-primary" aria-hidden="true"></i>
+                        Vulnerability Posture
+                    </h4>
+                    {# With/Without VEX toggle — only meaningful when the VEX suppresses something #}
+                    <div class="inline-flex rounded-lg border border-border overflow-hidden"
+                         x-show="data.suppressed_count > 0"
+                         x-cloak>
+                        <button type="button"
+                                class="px-3 py-1.5 text-sm font-medium transition-colors"
+                                :class="applied ? 'bg-primary text-white' : 'bg-surface text-text hover:bg-background'"
+                                @click="applied = true">With VEX</button>
+                        <button type="button"
+                                class="px-3 py-1.5 text-sm font-medium border-l border-border transition-colors"
+                                :class="!applied ? 'bg-primary text-white' : 'bg-surface text-text hover:bg-background'"
+                                @click="applied = false">Without VEX</button>
+                    </div>
+                </div>
+                <div class="p-6 space-y-5">
+                    {# Severity breakdown — reflects the active toggle #}
+                    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                        <div class="flex items-center gap-3 p-3 rounded-lg bg-background border border-border">
+                            <div>
+                                <span class="text-xl font-bold text-text" x-text="current().total"></span>
+                                <span class="block text-xs text-text-muted">Total</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 p-3 rounded-lg bg-red-500/5 border border-red-500/10">
+                            <div>
+                                <span class="text-xl font-bold text-red-600" x-text="current().critical"></span>
+                                <span class="block text-xs text-text-muted">Critical</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 p-3 rounded-lg bg-orange-500/5 border border-orange-500/10">
+                            <div>
+                                <span class="text-xl font-bold text-orange-600" x-text="current().high"></span>
+                                <span class="block text-xs text-text-muted">High</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10">
+                            <div>
+                                <span class="text-xl font-bold text-yellow-700" x-text="current().medium"></span>
+                                <span class="block text-xs text-text-muted">Medium</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 p-3 rounded-lg bg-cyan-500/5 border border-cyan-500/10">
+                            <div>
+                                <span class="text-xl font-bold text-cyan-600" x-text="current().low"></span>
+                                <span class="block text-xs text-text-muted">Low</span>
+                            </div>
+                        </div>
+                    </div>
+                    {# Suppression note #}
+                    <p class="text-sm text-text-muted m-0 flex items-center gap-2 flex-wrap"
+                       x-show="data.suppressed_count > 0"
+                       x-cloak>
+                        <i class="fas fa-circle-check text-success" aria-hidden="true"></i>
+                        <span>
+                            <span class="font-semibold text-text" x-text="data.suppressed_count"></span>
+                            finding<span x-show="data.suppressed_count !== 1">s</span>
+                            suppressed by VEX (not affected / false positive).
+                        </span>
+                        <span class="text-warning" x-show="!applied">Showing raw findings without VEX applied.</span>
+                    </p>
+                    {# Findings list #}
+                    <div class="divide-y divide-border" x-show="data.findings.length" x-cloak>
+                        <template x-for="f in data.findings" :key="f.id + f.component">
+                            <div class="py-2.5 flex items-start gap-3"
+                                 :class="(applied &amp;&amp; f.suppressed) ? 'opacity-50' : ''">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold uppercase flex-shrink-0"
+                                      :class="sevPill(f.severity)"
+                                      x-text="f.severity"></span>
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <code class="text-sm text-text" x-text="f.id"></code>
+                                        <span class="text-text-muted text-xs"
+                                              x-show="f.component"
+                                              x-text="f.component + (f.component_version ? ' ' + f.component_version : '')"></span>
+                                        <span class="tw-badge tw-badge-secondary text-xs"
+                                              x-show="f.suppressed"
+                                              x-text="f.state.replace('_', ' ')"></span>
+                                    </div>
+                                    <p class="text-xs text-text-muted m-0 mt-0.5"
+                                       x-show="f.suppressed &amp;&amp; f.justification"
+                                       x-text="'VEX: ' + f.justification.replace(/_/g, ' ')"></p>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <p class="text-sm text-text-muted m-0"
+                       x-show="!data.findings.length"
+                       x-cloak>No vulnerabilities found in this release.</p>
+                </div>
+            </div>
+        {% endif %}
         {# Release Artifacts #}
         {% include 'core/components/public_release_artifacts.html.j2' %}
     </div>
