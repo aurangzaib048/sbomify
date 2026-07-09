@@ -359,6 +359,47 @@ def test_get_release_success(
 
 
 @pytest.mark.django_db
+def test_build_release_response_has_vex_flag(
+    sample_product: Product,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+):
+    """The release response dict (consumed by the public Trust Center page)
+    exposes has_vex so the latest-VEX download button gates independently of the
+    SBOM download."""
+    from django.test import RequestFactory
+
+    from sbomify.apps.core.apis import _build_release_response
+
+    request = RequestFactory().get("/")
+    request.user = sample_product.team.members.first()
+
+    release = Release.objects.create(product=sample_product, name="v1.0.0")
+    sbom = SBOM.objects.create(
+        name="s", format="cyclonedx", format_version="1.6", sbom_filename="s.json", component=sample_component
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=sbom)
+
+    # SBOM only: has_sboms true, has_vex false.
+    before = _build_release_response(request, release)
+    assert before["has_sboms"] is True
+    assert before["has_vex"] is False
+
+    # Add a VEX slot: has_vex flips true, has_sboms unchanged.
+    vex = SBOM.objects.create(
+        name="v",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="v.json",
+        component=sample_component,
+        bom_type=SBOM.BomType.VEX,
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=vex)
+    after = _build_release_response(request, release)
+    assert after["has_sboms"] is True
+    assert after["has_vex"] is True
+
+
+@pytest.mark.django_db
 def test_update_release_success(
     sample_product: Product,  # noqa: F811
     sample_access_token: AccessToken,  # noqa: F811

@@ -50,28 +50,39 @@
                 </div>
             </div>
             {# Download Buttons - Desktop #}
-            {% if release.has_sboms %}
+            {% if release.has_sboms or release.has_vex %}
                 <div class="hidden lg:flex gap-2 flex-shrink-0">
-                    <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
-                       href="{% url 'api-1:download_release' release.id %}"
-                       title="Download release as CycloneDX">
-                        <img src="{% static 'img/cyclonedx-logo.svg' %}"
-                             alt="CycloneDX"
-                             class="h-4 w-auto dark:brightness-0 dark:invert"
-                             width="16"
-                             height="16">
-                        <i class="fas fa-download text-xs" aria-hidden="true"></i>
-                    </a>
-                    <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
-                       href="{% url 'api-1:download_release' release.id %}?format=spdx"
-                       title="Download release as SPDX">
-                        <img src="{% static 'img/spdx-logo.svg' %}"
-                             alt="SPDX"
-                             class="h-4 w-auto dark:brightness-0 dark:invert"
-                             width="16"
-                             height="16">
-                        <i class="fas fa-download text-xs" aria-hidden="true"></i>
-                    </a>
+                    {% if release.has_sboms %}
+                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                           href="{% url 'api-1:download_release' release.id %}"
+                           title="Download release as CycloneDX">
+                            <img src="{% static 'img/cyclonedx-logo.svg' %}"
+                                 alt="CycloneDX"
+                                 class="h-4 w-auto dark:brightness-0 dark:invert"
+                                 width="16"
+                                 height="16">
+                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                        </a>
+                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                           href="{% url 'api-1:download_release' release.id %}?format=spdx"
+                           title="Download release as SPDX">
+                            <img src="{% static 'img/spdx-logo.svg' %}"
+                                 alt="SPDX"
+                                 class="h-4 w-auto dark:brightness-0 dark:invert"
+                                 width="16"
+                                 height="16">
+                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                        </a>
+                    {% endif %}
+                    {% if release.has_vex %}
+                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                           href="{% url 'api-1:download_release_vex' release.id %}"
+                           title="Download latest VEX (CycloneDX)">
+                            <i class="fas fa-shield-halved text-sm" aria-hidden="true"></i>
+                            <span class="text-sm font-medium">VEX</span>
+                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                        </a>
+                    {% endif %}
                 </div>
             {% endif %}
         </div>
@@ -97,7 +108,7 @@
             {% endif %}
         </div>
         {# Download Card - Mobile Only #}
-        {% if release.has_sboms %}
+        {% if release.has_sboms or release.has_vex %}
             <div class="tw-card lg:hidden">
                 <div class="px-6 py-4 border-b border-border">
                     <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
@@ -106,28 +117,41 @@
                     </h4>
                 </div>
                 <div class="p-6">
-                    <p class="text-text-muted mb-4">Download consolidated SBOM containing all artifacts in this release.</p>
+                    {% if release.has_sboms %}
+                        <p class="text-text-muted mb-4">Download consolidated SBOM containing all artifacts in this release.</p>
+                    {% endif %}
                     <div class="flex gap-3 flex-wrap">
-                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
-                           href="{% url 'api-1:download_release' release.id %}"
-                           title="Download release as CycloneDX">
-                            <img src="{% static 'img/cyclonedx-logo.svg' %}"
-                                 alt="CycloneDX"
-                                 class="h-5 w-auto dark:brightness-0 dark:invert"
-                                 width="20"
-                                 height="20">
-                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
-                        </a>
-                        <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
-                           href="{% url 'api-1:download_release' release.id %}?format=spdx"
-                           title="Download release as SPDX">
-                            <img src="{% static 'img/spdx-logo.svg' %}"
-                                 alt="SPDX"
-                                 class="h-5 w-auto dark:brightness-0 dark:invert"
-                                 width="20"
-                                 height="20">
-                            <i class="fas fa-download text-xs" aria-hidden="true"></i>
-                        </a>
+                        {% if release.has_sboms %}
+                            <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                               href="{% url 'api-1:download_release' release.id %}"
+                               title="Download release as CycloneDX">
+                                <img src="{% static 'img/cyclonedx-logo.svg' %}"
+                                     alt="CycloneDX"
+                                     class="h-5 w-auto dark:brightness-0 dark:invert"
+                                     width="20"
+                                     height="20">
+                                <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                            </a>
+                            <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                               href="{% url 'api-1:download_release' release.id %}?format=spdx"
+                               title="Download release as SPDX">
+                                <img src="{% static 'img/spdx-logo.svg' %}"
+                                     alt="SPDX"
+                                     class="h-5 w-auto dark:brightness-0 dark:invert"
+                                     width="20"
+                                     height="20">
+                                <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                            </a>
+                        {% endif %}
+                        {% if release.has_vex %}
+                            <a class="tw-btn-secondary inline-flex items-center gap-2 min-h-10 no-underline"
+                               href="{% url 'api-1:download_release_vex' release.id %}"
+                               title="Download latest VEX (CycloneDX)">
+                                <i class="fas fa-shield-halved text-base" aria-hidden="true"></i>
+                                <span class="text-sm font-medium">VEX</span>
+                                <i class="fas fa-download text-xs" aria-hidden="true"></i>
+                            </a>
+                        {% endif %}
                     </div>
                 </div>
             </div>

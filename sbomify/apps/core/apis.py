@@ -2703,6 +2703,8 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
 
     # Check if release has SBOMs for download capability
     has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
+    # Check if release has a VEX to offer the latest-VEX download (Trust Center).
+    has_vex = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.VEX).exists()
     has_crud_permissions = can(request, "release:manage", release.product).allowed
 
     response = {
@@ -2721,6 +2723,7 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
         "released_at": release.released_at,
         "artifacts_count": artifact_count,
         "has_sboms": has_sboms,
+        "has_vex": has_vex,
         "product": {
             "id": str(release.product.id),
             "name": release.product.name,
