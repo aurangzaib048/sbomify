@@ -20,6 +20,25 @@ from sbomify.apps.sboms.pqc import assess_inventory
 log = logging.getLogger(__name__)
 
 
+def schedule_vex_reapply(component_id: str) -> None:
+    """Enqueue the VEX re-apply to run after the current transaction commits (async, best-effort).
+
+    ``transaction.on_commit`` guarantees the VEX row change is visible to the worker; enqueuing (a
+    Redis push) is cheap, and any broker error is swallowed so the triggering request still
+    succeeds.
+    """
+
+    def _send() -> None:
+        try:
+            from sbomify.apps.vulnerability_scanning.tasks import reapply_vex_to_component_scans
+
+            reapply_vex_to_component_scans.send(component_id)
+        except Exception:
+            log.warning("Failed to enqueue VEX re-apply for component %s", component_id, exc_info=True)
+
+    transaction.on_commit(_send)
+
+
 def delete_sbom_record(request: HttpRequest, sbom_id: str) -> ServiceResult[None]:
     try:
         sbom = SBOM.objects.select_related("component__team").get(pk=sbom_id)
@@ -33,6 +52,7 @@ def delete_sbom_record(request: HttpRequest, sbom_id: str) -> ServiceResult[None
     workspace_key = sbom.component.team.key
     component_id = str(sbom.component.id)
     sbom_name = sbom.name
+    was_vex = sbom.bom_type == SBOM.BomType.VEX.value
 
     s3 = S3Client("SBOMS")
     for blob_key in filter(None, [sbom.sbom_filename, sbom.signature_blob_key, sbom.provenance_blob_key]):
@@ -42,6 +62,11 @@ def delete_sbom_record(request: HttpRequest, sbom_id: str) -> ServiceResult[None
             log.warning("Failed to delete S3 object %s: %s", blob_key, exc)
 
     sbom.delete()
+
+    # Deleting a VEX retracts its statements: re-annotate the component's stored
+    # scans so the suppressed findings surface again.
+    if was_vex:
+        schedule_vex_reapply(component_id)
 
     # Broadcast to workspace for real-time UI updates (after transaction commits)
     if workspace_key:

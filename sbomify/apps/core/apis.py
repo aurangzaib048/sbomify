@@ -3216,10 +3216,24 @@ def download_release_vex(request: HttpRequest, release_id: str) -> Any:
         if not can(request, "release:read", release.product):
             return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
 
-    from sbomify.apps.vulnerability_scanning.vex import build_release_vex
+    from django.core.cache import cache
+    from django.db.models import Count, Max
 
-    document = build_release_vex(release)
+    from sbomify.apps.sboms.models import SBOM
+    from sbomify.apps.vulnerability_scanning import vex as vex_module
+
+    # The merge fans out one S3 fetch per pinned VEX and the endpoint is open for
+    # public products, so cache the built document. The key carries the slot state
+    # (count + newest artifact), invalidating naturally when the release changes.
+    slot_state = ReleaseArtifact.objects.filter(release=release, sbom__bom_type=SBOM.BomType.VEX).aggregate(
+        n=Count("id"), newest=Max("sbom__created_at")
+    )
+    cache_key = f"release-vex:{release.id}:{slot_state['n']}:{slot_state['newest']}"
+    document = cache.get(cache_key)
     if document is None:
+        document = vex_module.build_release_vex(release) or {"__absent__": True}
+        cache.set(cache_key, document, 900)
+    if document.get("__absent__"):
         return 404, {"detail": "No VEX available for this release", "error_code": ErrorCode.NOT_FOUND}
 
     content = json.dumps(document, indent=2)

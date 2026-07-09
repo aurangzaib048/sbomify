@@ -119,6 +119,10 @@ _ROLE_ACTIONS: dict[str, tuple[str, ...]] = {
     "document:delete": DELETE,
     # artifact upload — allows OIDC/CI bot identities and guests (#468)
     "artifact:publish": PUBLISH,
+    # VEX publishing rewrites the workspace's stored vulnerability posture (the
+    # re-annotated scan summaries feed every dashboard), so guests are excluded;
+    # owners, admins and the CI/OIDC bot keep it.
+    "artifact:publish_vex": RELEASE_PUBLISH,
     # any-member read of internal (non-public) workspace data
     "workspace:read": READ_MEMBER,
     "component:read_internal": READ_MEMBER,

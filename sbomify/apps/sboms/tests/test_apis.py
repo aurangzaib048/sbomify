@@ -175,6 +175,141 @@ def test_vex_reissues_coexist_latest_by_created_at(
 
 
 @pytest.mark.django_db
+def test_guest_can_upload_sbom_but_not_vex(
+    guest_api_client,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+):
+    """A VEX rewrites the workspace's stored vulnerability posture (dashboards read
+    the re-annotated summaries), so the guest role may contribute plain artifacts
+    but not publish a VEX."""
+    from sbomify.apps.teams.models import Member
+
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+    client, guest_token = guest_api_client
+    Member.objects.create(user=guest_token.user, team=sample_component.team, role="guest")
+    headers = get_api_headers(guest_token)
+    base = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id})
+    vex_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
+            "vulnerabilities": [
+                {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
+            ],
+        }
+    )
+    sbom_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "3.0.0"}},
+            "components": [],
+        }
+    )
+
+    rv = client.post(base + "?bom_type=vex", data=vex_doc, content_type="application/json", **headers)
+    assert rv.status_code == 403, rv.content
+
+    rs = client.post(base, data=sbom_doc, content_type="application/json", **headers)
+    assert rs.status_code == 201, rs.content
+
+
+@pytest.mark.django_db
+def test_vex_delete_enqueues_reapply_sbom_delete_does_not(
+    sample_access_token: AccessToken,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+    django_capture_on_commit_callbacks,
+):
+    """Deleting a VEX is the retraction path: the component's stored scans must be
+    re-annotated so the deleted document's suppressions are lifted. Deleting a
+    plain SBOM must not enqueue a re-apply."""
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.delete_object")
+    send = mocker.patch("sbomify.apps.vulnerability_scanning.tasks.reapply_vex_to_component_scans.send")
+
+    vex = SBOM.objects.create(
+        name="vex",
+        version="",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="v.json",
+        component=sample_component,
+        bom_type="vex",
+    )
+    plain = SBOM.objects.create(
+        name="sbom",
+        version="9.9.9",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="s.json",
+        component=sample_component,
+    )
+
+    client = Client()
+    headers = get_api_headers(sample_access_token)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        rv = client.delete(reverse("api-1:delete_sbom", kwargs={"sbom_id": vex.id}), **headers)
+    assert rv.status_code == 204, rv.content
+    send.assert_called_once_with(str(sample_component.id))
+
+    send.reset_mock()
+    with django_capture_on_commit_callbacks(execute=True):
+        rs = client.delete(reverse("api-1:delete_sbom", kwargs={"sbom_id": plain.id}), **headers)
+    assert rs.status_code == 204, rs.content
+    send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_web_upload_vex_reissue_allowed_and_enqueues_reapply(
+    sample_user,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+    mocker: MockerFixture,  # noqa: F811
+    django_capture_on_commit_callbacks,
+):
+    """The web upload endpoint has the same VEX semantics as the API artifact
+    endpoint: re-issues coexist (no 409) and each upload enqueues the re-apply."""
+    import io
+
+    mocker.patch("boto3.resource")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_data_as_file")
+    mocker.patch("sbomify.apps.core.object_store.S3Client.upload_sbom", return_value="stored.json")
+    send = mocker.patch("sbomify.apps.vulnerability_scanning.tasks.reapply_vex_to_component_scans.send")
+    SBOM.objects.all().delete()
+
+    client = Client()
+    client.force_login(sample_user)
+    url = reverse("api-1:sbom_upload_file", kwargs={"component_id": sample_component.id}) + "?bom_type=vex"
+    vex_doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "metadata": {"component": {"type": "application", "name": "app", "version": "1.0.0"}},
+            "vulnerabilities": [
+                {"id": "CVE-1", "analysis": {"state": "not_affected", "justification": "code_not_reachable"}}
+            ],
+        }
+    ).encode()
+
+    for _ in range(2):
+        with django_capture_on_commit_callbacks(execute=True):
+            f = io.BytesIO(vex_doc)
+            f.name = "doc.vex.cdx.json"
+            response = client.post(url, data={"sbom_file": f}, format="multipart")
+        assert response.status_code == 201, response.content
+
+    assert SBOM.objects.filter(bom_type="vex").count() == 2
+    assert send.call_count == 2
+
+
+@pytest.mark.django_db
 def test_vex_upload_enqueues_async_reapply_sbom_does_not(
     sample_access_token: AccessToken,  # noqa: F811
     sample_component: Component,  # noqa: F811
@@ -3666,7 +3801,9 @@ def test_cyclonedx_upload_autodetects_cbom_bom_type(
     client = Client()
     url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id})
     resp = client.post(
-        url, data=cbom_path.read_text(), content_type="application/json",
+        url,
+        data=cbom_path.read_text(),
+        content_type="application/json",
         **get_api_headers(sample_access_token),
     )
     assert resp.status_code == 201
@@ -3689,7 +3826,9 @@ def test_cyclonedx_upload_non_crypto_stays_sbom(
     client = Client()
     url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id})
     resp = client.post(
-        url, data=path.read_text(), content_type="application/json",
+        url,
+        data=path.read_text(),
+        content_type="application/json",
         **get_api_headers(sample_access_token),
     )
     assert resp.status_code == 201
@@ -3735,7 +3874,9 @@ def test_cyclonedx_upload_explicit_sbom_not_reclassified(
     client = Client()
     url = reverse("api-1:sbom_upload_cyclonedx", kwargs={"component_id": sample_component.id}) + "?bom_type=sbom"
     resp = client.post(
-        url, data=cbom_path.read_text(), content_type="application/json",
+        url,
+        data=cbom_path.read_text(),
+        content_type="application/json",
         **get_api_headers(sample_access_token),
     )
     assert resp.status_code == 201
