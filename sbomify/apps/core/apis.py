@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -3188,6 +3189,58 @@ def download_release(
             content='{"detail": "Error generating release SBOM"}',
             content_type="application/json",
         )
+
+
+@router.get(
+    "/releases/{release_id}/vex/download",
+    response={200: None, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
+    auth=None,
+    tags=["Releases"],
+)
+@decorate_view(optional_token_auth)
+def download_release_vex(request: HttpRequest, release_id: str) -> Any:
+    """Download the merged latest VEX for a release.
+
+    Combines the newest VEX of each component in the release into a single CycloneDX VEX document,
+    so a consumer pulls one file per release rather than one per component. Gated exactly like the
+    SBOM download: open for a public product, otherwise authenticated with release read access.
+    """
+    try:
+        release = Release.objects.select_related("product").get(pk=release_id)
+    except Release.DoesNotExist:
+        return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
+
+    if not release.product.is_public:
+        if not request.user or not request.user.is_authenticated:
+            return 403, {"detail": "Authentication required", "error_code": ErrorCode.UNAUTHORIZED}
+        if not can(request, "release:read", release.product):
+            return 403, {"detail": "Access denied", "error_code": ErrorCode.FORBIDDEN}
+
+    from django.core.cache import cache
+    from django.db.models import Count, Max
+
+    from sbomify.apps.sboms.models import SBOM
+    from sbomify.apps.vulnerability_scanning import vex as vex_module
+
+    # The merge fans out one S3 fetch per pinned VEX and the endpoint is open for
+    # public products, so cache the built document. The key carries the slot state
+    # (count + newest artifact), invalidating naturally when the release changes.
+    slot_state = ReleaseArtifact.objects.filter(release=release, sbom__bom_type=SBOM.BomType.VEX).aggregate(
+        n=Count("id"), newest=Max("sbom__created_at")
+    )
+    cache_key = f"release-vex:{release.id}:{slot_state['n']}:{slot_state['newest']}"
+    document = cache.get(cache_key)
+    if document is None:
+        document = vex_module.build_release_vex(release) or {"__absent__": True}
+        cache.set(cache_key, document, 900)
+    if document.get("__absent__"):
+        return 404, {"detail": "No VEX available for this release", "error_code": ErrorCode.NOT_FOUND}
+
+    content = json.dumps(document, indent=2)
+    filename = f"{release.product.name}-{release.name}.vex.cdx.json"
+    response = HttpResponse(content, content_type="application/json")
+    response["Content-Disposition"] = f"attachment; filename={filename}"
+    return response
 
 
 # =============================================================================

@@ -54,7 +54,7 @@ from .schemas import (
     validate_cyclonedx_sbom,
     validate_spdx_sbom,
 )
-from .services.sboms import delete_sbom_record, get_crypto_inventory, get_sbom_detail
+from .services.sboms import delete_sbom_record, get_crypto_inventory, get_sbom_detail, schedule_vex_reapply
 
 log = logging.getLogger(__name__)
 
@@ -344,6 +344,10 @@ def sbom_upload_cyclonedx(
         # ``sbomify.apps.oidc.permissions.is_authorised_for_component``.
         if not can(request, "artifact:publish", component):
             return 403, {"detail": "Forbidden"}
+        # A VEX rewrites the workspace's stored vulnerability posture, so it takes
+        # the stricter publish tier (guests are excluded).
+        if bom_type == SBOM.BomType.VEX.value and not can(request, "artifact:publish_vex", component):
+            return 403, {"detail": "Forbidden"}
         if not is_authorised_for_component(request, component):
             return 403, {"detail": "Forbidden"}
 
@@ -397,10 +401,19 @@ def sbom_upload_cyclonedx(
         cdx_purl = _extract_cdx_purl(payload)
         sbom_qualifiers = extract_purl_qualifiers(cdx_purl) if cdx_purl else {}
 
-        # Check for duplicate (same component + version + format + qualifiers + bom_type)
-        if SBOM.objects.filter(
-            component=component, version=sbom_version, format=sbom_format, qualifiers=sbom_qualifiers, bom_type=bom_type
-        ).exists():
+        # VEX is re-issued continuously against the same release with no meaningful version, so it is
+        # exempt from the duplicate guard (multiple rows coexist, the latest is by created_at). SBOM
+        # and CBOM keep the guard so a re-uploaded static artifact stays a 409.
+        if (
+            bom_type != SBOM.BomType.VEX
+            and SBOM.objects.filter(
+                component=component,
+                version=sbom_version,
+                format=sbom_format,
+                qualifiers=sbom_qualifiers,
+                bom_type=bom_type,
+            ).exists()
+        ):
             return 409, {
                 "detail": f"{bom_type.upper()} artifact with version '{sbom_version}' and format '{sbom_format}' "
                 "already exists for this component",
@@ -437,6 +450,13 @@ def sbom_upload_cyclonedx(
             _broadcast_sbom_uploaded(component, sbom)
         except Exception:
             log.warning("Failed to broadcast SBOM upload notification", exc_info=True)
+
+        # A new VEX changes which findings are suppressed; re-apply it to the component's existing
+        # security scans so the dashboard reflects it without a re-scan. Run it in the background,
+        # after this upload commits, so the request stays fast (the app serves on ASGI/uvicorn,
+        # where a synchronous re-apply would block a worker) and the task can see the new VEX row.
+        if bom_type == SBOM.BomType.VEX.value:
+            schedule_vex_reapply(component.id)
 
         return 201, {"id": sbom.id}
 
@@ -1096,14 +1116,19 @@ def sbom_upload_file(
             cdx_purl = _extract_cdx_purl(cdx_payload)
             sbom_qualifiers = extract_purl_qualifiers(cdx_purl) if cdx_purl else {}
 
-            # Check for duplicate (same component + version + format + qualifiers + bom_type)
-            if SBOM.objects.filter(
-                component=component,
-                version=sbom_version,
-                format=sbom_format,
-                qualifiers=sbom_qualifiers,
-                bom_type=bom_type,
-            ).exists():
+            # Check for duplicate (same component + version + format + qualifiers + bom_type).
+            # VEX is exempt (re-issued continuously with no meaningful version; rows coexist
+            # and the latest wins by created_at), mirroring the API endpoint.
+            if (
+                bom_type != SBOM.BomType.VEX
+                and SBOM.objects.filter(
+                    component=component,
+                    version=sbom_version,
+                    format=sbom_format,
+                    qualifiers=sbom_qualifiers,
+                    bom_type=bom_type,
+                ).exists()
+            ):
                 return 409, {
                     "detail": f"{bom_type.upper()} artifact with version '{sbom_version}' and format '{sbom_format}' "
                     "already exists for this component",
@@ -1139,6 +1164,11 @@ def sbom_upload_file(
 
             # Broadcast to workspace for real-time UI updates
             _broadcast_sbom_uploaded(component, sbom)
+
+            # A new VEX changes which findings are suppressed; re-apply it to the
+            # component's stored scans, mirroring the API artifact endpoint.
+            if bom_type == SBOM.BomType.VEX.value:
+                schedule_vex_reapply(component.id)
 
             return 201, {"id": sbom.id}
 

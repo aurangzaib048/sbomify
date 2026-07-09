@@ -80,6 +80,23 @@ class TestBomTypeField:
                 bom_type="sbom",
             )
 
+    @pytest.mark.django_db(transaction=True)
+    def test_duplicate_vex_is_allowed(self, sample_component: Component):
+        """VEX is exempt from the uniqueness constraint (re-issued continuously with no meaningful
+        version), so two identical VEX rows coexist rather than raising."""
+        for name in ("v1", "v2"):
+            SBOM.objects.create(
+                name=name,
+                version="1.0.0",
+                format="cyclonedx",
+                format_version="1.6",
+                sbom_filename=f"{name}.json",
+                component=sample_component,
+                source="test",
+                bom_type="vex",
+            )
+        assert SBOM.objects.filter(component=sample_component, bom_type="vex").count() == 2
+
 
 @pytest.mark.django_db
 class TestBomTypeSerialization:

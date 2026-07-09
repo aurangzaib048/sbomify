@@ -20,7 +20,7 @@ from sbomify.logging import getLogger
 
 from .models import AssessmentRun, RegisteredPlugin
 from .sdk.base import AssessmentPlugin, RetryLaterError, SBOMContext
-from .sdk.enums import RunReason, RunStatus, ScanMode
+from .sdk.enums import AssessmentCategory, RunReason, RunStatus, ScanMode
 from .utils import compute_config_hash, compute_content_digest
 
 if TYPE_CHECKING:
@@ -245,6 +245,29 @@ class PluginOrchestrator:
 
                 # Execute the plugin with dependency status and context
                 result = plugin.assess(sbom_id, temp_path, dependency_status, context=sbom_context)
+
+            # Apply an uploaded VEX server-side for vulnerability scanners (OSV and
+            # Dependency Track share this one path): annotate the cleared findings
+            # and drop them from the severity counts. Raw findings are kept (ADR-004).
+            # Best-effort: the scan result is already complete, so a VEX problem
+            # (missing S3 object, transient storage error) must never fail the run.
+            if result.category == AssessmentCategory.SECURITY:
+                try:
+                    from sbomify.apps.vulnerability_scanning.vex import (
+                        annotate_findings_with_vex,
+                        resolve_vex_statements_for_sbom,
+                    )
+
+                    component_id = assessment_run.sbom.component_id
+                    if component_id:
+                        annotate_findings_with_vex(
+                            result, resolve_vex_statements_for_sbom(component_id, assessment_run.sbom_id)
+                        )
+                except Exception:
+                    logger.warning(
+                        f"[PLUGIN] VEX annotation failed for run {assessment_run.id}; keeping the scan result",
+                        exc_info=True,
+                    )
 
             # Update AssessmentRun with results
             assessment_run.result = result.to_dict()
