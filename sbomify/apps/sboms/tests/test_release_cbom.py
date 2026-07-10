@@ -123,6 +123,21 @@ def test_build_release_cbom_skips_non_dict_components(sample_team_with_owner_mem
 
 
 @pytest.mark.django_db
+def test_build_release_cbom_skips_missing_s3_object(sample_team_with_owner_member, mocker):
+    """A missing/unreadable CBOM object is skipped, not 500 — the S3 ClientError
+    must be swallowed by the loader."""
+    from botocore.exceptions import ClientError
+
+    team = sample_team_with_owner_member.team
+    _product, release, c1, _c2 = _release_with_components(team, is_public=True)
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c1, "gone.cbom.json"))
+    s3 = mocker.patch("sbomify.apps.core.object_store.S3Client")
+    s3.return_value.get_sbom_data.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+
+    assert build_release_cbom(release) is None
+
+
+@pytest.mark.django_db
 def test_build_release_cbom_none_without_slot(sample_team_with_owner_member):
     team = sample_team_with_owner_member.team
     _product, release, _c1, _c2 = _release_with_components(team, is_public=True)
@@ -141,7 +156,7 @@ def test_download_release_cbom_public_returns_attachment(sample_team_with_owner_
 
     assert resp.status_code == 200
     assert "attachment" in resp["Content-Disposition"]
-    assert resp["Content-Disposition"].endswith(".cbom.cdx.json")
+    assert resp["Content-Disposition"].rstrip('"').endswith(".cbom.cdx.json")
 
 
 @pytest.mark.django_db

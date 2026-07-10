@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -2533,11 +2534,11 @@ def download_product_sbom(
 
             # Determine file extension based on format
             extension = ".spdx.json" if format_lower == "spdx" else ".cdx.json"
-            filename = f"{product.name}{extension}"
+            filename = _download_filename(product.name, "", extension)
 
             with open(sbom_path, "rb") as f:
                 response = HttpResponse(f.read(), content_type="application/json")
-            response["Content-Disposition"] = f"attachment; filename={filename}"
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
 
             return response
     except ValueError as e:
@@ -3112,6 +3113,18 @@ def delete_release(request: HttpRequest, release_id: str) -> Any:
 # =============================================================================
 
 
+def _download_filename(product_name: str, release_name: str, extension: str) -> str:
+    """Build a safe download filename from user-controlled product/release names.
+
+    Product and release names are user-controlled, so they must not reach the
+    ``Content-Disposition`` header raw (header injection / broken headers via
+    newlines, quotes, or non-ASCII). Reduce each to a filesystem-safe slug.
+    """
+    base = f"{product_name}-{release_name}"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-.")
+    return f"{slug or 'release'}{extension}"
+
+
 @router.get(
     "/releases/{release_id}/download",
     response={200: None, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
@@ -3180,10 +3193,10 @@ def download_release(
 
             # Determine file extension based on format
             extension = ".spdx.json" if format_lower == "spdx" else ".cdx.json"
-            filename = f"{release.product.name}-{release.name}{extension}"
+            filename = _download_filename(release.product.name, release.name, extension)
 
             response = HttpResponse(sbom_content, content_type="application/json")
-            response["Content-Disposition"] = f"attachment; filename={filename}"
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
 
             return response
 
@@ -3245,9 +3258,9 @@ def download_release_vex(request: HttpRequest, release_id: str) -> Any:
         return 404, {"detail": "No VEX available for this release", "error_code": ErrorCode.NOT_FOUND}
 
     content = json.dumps(document, indent=2)
-    filename = f"{release.product.name}-{release.name}.vex.cdx.json"
+    filename = _download_filename(release.product.name, release.name, ".vex.cdx.json")
     response = HttpResponse(content, content_type="application/json")
-    response["Content-Disposition"] = f"attachment; filename={filename}"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
 
@@ -3296,9 +3309,9 @@ def download_release_cbom(request: HttpRequest, release_id: str) -> Any:
         return 404, {"detail": "No CBOM available for this release", "error_code": ErrorCode.NOT_FOUND}
 
     content = json.dumps(document, indent=2)
-    filename = f"{release.product.name}-{release.name}.cbom.cdx.json"
+    filename = _download_filename(release.product.name, release.name, ".cbom.cdx.json")
     response = HttpResponse(content, content_type="application/json")
-    response["Content-Disposition"] = f"attachment; filename={filename}"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
 

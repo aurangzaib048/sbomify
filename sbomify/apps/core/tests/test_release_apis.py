@@ -899,7 +899,8 @@ def test_download_release_sbom_success(
 
     assert response.status_code == 200
     assert response["Content-Type"] == "application/json"
-    assert f"attachment; filename={sample_product.name}-v1.0.0.cdx.json" in response["Content-Disposition"]
+    # Name is sanitized (space -> '-') and quoted so it can't break the header.
+    assert response["Content-Disposition"] == 'attachment; filename="test-product-v1.0.0.cdx.json"'
 
     # Verify the mock was called with correct parameters (release and temp_dir)
     mock_get_release_sbom_package.assert_called_once()
@@ -1879,3 +1880,14 @@ def test_delete_release_admin_forbidden(sample_team_with_owner_member: Member): 
 
     assert response.status_code == 403
     assert Release.objects.filter(id=release.id).exists()
+
+
+def test_download_filename_sanitizes_user_names():
+    """Product/release names can't inject the Content-Disposition header."""
+    from sbomify.apps.core.apis import _download_filename
+
+    assert _download_filename("Acme Corp", "v1.0", ".vex.cdx.json") == "Acme-Corp-v1.0.vex.cdx.json"
+    dirty = _download_filename('bad"\r\nX-Evil: 1', "v2", ".cdx.json")
+    assert "\r" not in dirty and "\n" not in dirty and '"' not in dirty
+    assert dirty.endswith(".cdx.json")
+    assert _download_filename("", "", ".cdx.json") == "release.cdx.json"

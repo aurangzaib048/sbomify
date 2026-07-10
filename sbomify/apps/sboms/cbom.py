@@ -16,11 +16,17 @@ from typing import Any
 
 def _document_from_cbom_sbom(cbom: Any) -> dict[str, Any] | None:
     """Load a CBOM SBOM row's document from S3. ``None`` when absent or unreadable."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
     from sbomify.apps.core.object_store import S3Client
 
     if cbom is None or not cbom.sbom_filename:
         return None
-    raw = S3Client("SBOMS").get_sbom_data(cbom.sbom_filename)
+    try:
+        raw = S3Client("SBOMS").get_sbom_data(cbom.sbom_filename)
+    except (ClientError, BotoCoreError):
+        # A missing/unreadable object must not 500 the merge — skip this CBOM.
+        return None
     if not raw:
         return None
     try:
