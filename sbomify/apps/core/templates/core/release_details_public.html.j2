@@ -253,8 +253,7 @@
                     </p>
                     {# Findings list #}
                     <div class="divide-y divide-border" x-show="data.findings.length" x-cloak>
-                        <template x-for="f in data.findings"
-                                  :key="f.id + f.component + f.component_version">
+                        <template x-for="f in data.findings" :key="f.idx">
                             <div class="py-2.5 flex items-start gap-3"
                                  :class="(applied &amp;&amp; f.suppressed) ? 'opacity-50' : ''">
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold uppercase flex-shrink-0"
