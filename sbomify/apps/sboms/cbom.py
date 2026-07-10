@@ -63,7 +63,9 @@ def build_release_cbom(release: Any) -> dict[str, Any] | None:
             continue
         found = True
         for comp in document.get("components") or []:
-            ref = comp.get("bom-ref") if isinstance(comp, dict) else None
+            if not isinstance(comp, dict):
+                continue
+            ref = comp.get("bom-ref")
             if ref and ref in seen_refs:
                 continue
             if ref:

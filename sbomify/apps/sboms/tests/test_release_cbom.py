@@ -100,6 +100,29 @@ def test_build_release_cbom_unions_shared_dependency_edges(sample_team_with_owne
 
 
 @pytest.mark.django_db
+def test_build_release_cbom_skips_non_dict_components(sample_team_with_owner_member, mocker):
+    """A malformed CBOM with a non-dict component entry is skipped, not appended
+    (which would produce an invalid merged CycloneDX document)."""
+    import json as _json
+
+    team = sample_team_with_owner_member.team
+    _product, release, c1, _c2 = _release_with_components(team, is_public=True)
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c1, "a.cbom.json"))
+    doc = _json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [{"bom-ref": "good"}, "junk", None, 42],
+        }
+    ).encode()
+    _mock_s3(mocker, {"a.cbom.json": doc})
+
+    merged = build_release_cbom(release)
+    assert all(isinstance(c, dict) for c in merged["components"])
+    assert {c["bom-ref"] for c in merged["components"]} == {"good"}
+
+
+@pytest.mark.django_db
 def test_build_release_cbom_none_without_slot(sample_team_with_owner_member):
     team = sample_team_with_owner_member.team
     _product, release, _c1, _c2 = _release_with_components(team, is_public=True)
