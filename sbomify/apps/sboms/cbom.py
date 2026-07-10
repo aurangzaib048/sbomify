@@ -81,19 +81,24 @@ def build_release_cbom(release: Any) -> dict[str, Any] | None:
             if not isinstance(dep, dict):
                 continue
             ref = dep.get("ref")
-            if not ref:
+            if not isinstance(ref, str) or not ref:
                 continue
+            # A dependsOn entry is normatively a list of bom-ref strings; tolerate a
+            # malformed CBOM by keeping only the string targets rather than raising
+            # (a non-list dependsOn contributes nothing).
+            raw_targets = dep.get("dependsOn")
+            targets = [t for t in raw_targets if isinstance(t, str)] if isinstance(raw_targets, list) else []
             existing = dep_by_ref.get(ref)
             if existing is None:
                 # Copy so merging into it never mutates the source document.
-                new_dep = {**dep, "dependsOn": list(dep.get("dependsOn") or [])}
+                new_dep = {**dep, "dependsOn": list(targets)}
                 dep_by_ref[ref] = new_dep
                 dependencies.append(new_dep)
             else:
                 # Same source node in two CBOMs: union the targets rather than
                 # dropping the second edge (which would hide crypto usage).
                 have = set(existing["dependsOn"])
-                for target in dep.get("dependsOn") or []:
+                for target in targets:
                     if target not in have:
                         have.add(target)
                         existing["dependsOn"].append(target)

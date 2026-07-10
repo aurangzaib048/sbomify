@@ -138,6 +138,34 @@ def test_build_release_cbom_skips_missing_s3_object(sample_team_with_owner_membe
 
 
 @pytest.mark.django_db
+def test_build_release_cbom_tolerates_malformed_dependsOn(sample_team_with_owner_member, mocker):
+    """A malformed dependsOn (non-list, or containing non-string entries) is
+    coerced to its string targets instead of raising."""
+    import json as _json
+
+    team = sample_team_with_owner_member.team
+    _product, release, c1, _c2 = _release_with_components(team, is_public=True)
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c1, "a.cbom.json"))
+    doc = _json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [{"bom-ref": "x"}],
+            "dependencies": [
+                {"ref": "x", "dependsOn": ["ok", {"nested": 1}, 42, None]},
+                {"ref": "y", "dependsOn": "not-a-list"},
+                {"ref": 99, "dependsOn": ["ignored"]},
+            ],
+        }
+    ).encode()
+    _mock_s3(mocker, {"a.cbom.json": doc})
+
+    merged = build_release_cbom(release)
+    edges = {d["ref"]: d["dependsOn"] for d in merged["dependencies"]}
+    assert edges == {"x": ["ok"], "y": []}
+
+
+@pytest.mark.django_db
 def test_build_release_cbom_none_without_slot(sample_team_with_owner_member):
     team = sample_team_with_owner_member.team
     _product, release, _c1, _c2 = _release_with_components(team, is_public=True)

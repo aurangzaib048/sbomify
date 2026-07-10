@@ -24,7 +24,9 @@ def _public_release_with_scan(team):
         sbom=sbom,
         plugin_name="osv",
         plugin_version="1.0.0",
+        plugin_config_hash="",
         category="security",
+        run_reason="on_upload",
         status="completed",
         result={
             "findings": [
