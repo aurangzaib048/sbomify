@@ -77,9 +77,11 @@ def build_release_cbom(release: Any) -> dict[str, Any] | None:
             if not isinstance(comp, dict):
                 continue
             ref = comp.get("bom-ref")
-            if ref and ref in seen_refs:
-                continue
-            if ref:
+            # Only dedupe on a real string bom-ref; a malformed non-string ref is
+            # unhashable and can't be a dedup key, so keep the component as-is.
+            if isinstance(ref, str) and ref:
+                if ref in seen_refs:
+                    continue
                 seen_refs.add(ref)
             components.append(comp)
         for dep in document.get("dependencies") or []:

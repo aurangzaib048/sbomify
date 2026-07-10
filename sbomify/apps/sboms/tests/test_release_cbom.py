@@ -150,7 +150,7 @@ def test_build_release_cbom_tolerates_malformed_dependsOn(sample_team_with_owner
         {
             "bomFormat": "CycloneDX",
             "specVersion": "1.6",
-            "components": [{"bom-ref": "x"}],
+            "components": [{"bom-ref": "x"}, {"bom-ref": {"weird": 1}}, {"name": "no-ref"}],
             "dependencies": [
                 {"ref": "x", "dependsOn": ["ok", {"nested": 1}, 42, None]},
                 {"ref": "y", "dependsOn": "not-a-list"},
@@ -163,6 +163,9 @@ def test_build_release_cbom_tolerates_malformed_dependsOn(sample_team_with_owner
     merged = build_release_cbom(release)
     edges = {d["ref"]: d["dependsOn"] for d in merged["dependencies"]}
     assert edges == {"x": ["ok"], "y": []}
+    # Non-string / missing bom-ref components are kept without raising on the set key.
+    assert len(merged["components"]) == 3
+    assert all(isinstance(c, dict) for c in merged["components"])
 
 
 @pytest.mark.django_db
