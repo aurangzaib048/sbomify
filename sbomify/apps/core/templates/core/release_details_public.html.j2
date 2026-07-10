@@ -262,7 +262,8 @@
                                       x-text="f.severity"></span>
                                 <div class="min-w-0 flex-1">
                                     <div class="flex items-center gap-2 flex-wrap">
-                                        <code class="text-sm text-text" x-text="f.id"></code>
+                                        <span class="font-mono text-sm text-text px-1.5 py-0.5 rounded bg-border/30"
+                                              x-text="f.id"></span>
                                         <span class="text-text-muted text-xs"
                                               x-show="f.component"
                                               x-text="f.component + (f.component_version ? ' ' + f.component_version : '')"></span>
