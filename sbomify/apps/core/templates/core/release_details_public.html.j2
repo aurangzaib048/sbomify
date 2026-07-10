@@ -184,14 +184,18 @@
                     {# With/Without VEX toggle — only meaningful when the VEX suppresses something #}
                     <div class="inline-flex rounded-lg border border-border overflow-hidden"
                          x-show="data.suppressed_count > 0"
-                         x-cloak>
+                         x-cloak
+                         role="group"
+                         aria-label="Apply VEX to the posture">
                         <button type="button"
                                 class="px-3 py-1.5 text-sm font-medium transition-colors"
                                 :class="applied ? 'bg-primary text-white' : 'bg-surface text-text hover:bg-background'"
+                                :aria-pressed="applied"
                                 @click="applied = true">With VEX</button>
                         <button type="button"
                                 class="px-3 py-1.5 text-sm font-medium border-l border-border transition-colors"
                                 :class="!applied ? 'bg-primary text-white' : 'bg-surface text-text hover:bg-background'"
+                                :aria-pressed="!applied"
                                 @click="applied = false">Without VEX</button>
                     </div>
                 </div>
@@ -264,7 +268,7 @@
                                               x-text="f.component + (f.component_version ? ' ' + f.component_version : '')"></span>
                                         <span class="tw-badge tw-badge-secondary text-xs"
                                               x-show="f.suppressed"
-                                              x-text="f.state.replace('_', ' ')"></span>
+                                              x-text="f.state.replace(/_/g, ' ')"></span>
                                     </div>
                                     <p class="text-xs text-text-muted m-0 mt-0.5"
                                        x-show="f.suppressed &amp;&amp; f.justification"
