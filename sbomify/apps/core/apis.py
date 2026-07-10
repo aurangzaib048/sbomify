@@ -2701,12 +2701,14 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
     # Count artifacts for this release
     artifact_count = release.artifacts.count()
 
-    # Check if release has SBOMs for download capability
-    has_sboms = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.SBOM).exists()
-    # Check if release has a VEX to offer the latest-VEX download (Trust Center).
-    has_vex = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.VEX).exists()
-    # Check if release has a CBOM to offer the crypto BOM download (Trust Center).
-    has_cbom = release.artifacts.filter(sbom__isnull=False, sbom__bom_type=SBOM.BomType.CBOM).exists()
+    # Which bom_types the release carries — one query drives all the download
+    # capability flags (SBOM download, and the Trust Center VEX/CBOM downloads).
+    bom_types_present = set(
+        release.artifacts.filter(sbom__isnull=False).values_list("sbom__bom_type", flat=True).distinct()
+    )
+    has_sboms = SBOM.BomType.SBOM.value in bom_types_present
+    has_vex = SBOM.BomType.VEX.value in bom_types_present
+    has_cbom = SBOM.BomType.CBOM.value in bom_types_present
     has_crud_permissions = can(request, "release:manage", release.product).allowed
 
     response = {
