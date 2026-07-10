@@ -10,8 +10,11 @@ download.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _document_from_cbom_sbom(cbom: Any) -> dict[str, Any] | None:
@@ -24,8 +27,10 @@ def _document_from_cbom_sbom(cbom: Any) -> dict[str, Any] | None:
         return None
     try:
         raw = S3Client("SBOMS").get_sbom_data(cbom.sbom_filename)
-    except (ClientError, BotoCoreError):
-        # A missing/unreadable object must not 500 the merge — skip this CBOM.
+    except (ClientError, BotoCoreError) as exc:
+        # A missing/unreadable object must not 500 the merge — skip this CBOM, but
+        # log so a genuinely misconfigured/unreachable bucket stays diagnosable.
+        logger.warning("Could not load CBOM artifact %s from S3: %s", cbom.sbom_filename, exc)
         return None
     if not raw:
         return None
