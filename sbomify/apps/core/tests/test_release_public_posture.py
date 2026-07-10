@@ -57,7 +57,7 @@ def test_public_release_page_shows_vuln_posture(sample_team_with_owner_member):
     # The posture card and its embedded data are present.
     assert "Vulnerability Posture" in html
     assert 'id="vuln-posture-data"' in html
-    # Data carries both raw and VEX-applied counts plus the suppressed finding.
+    # Data carries the VEX-applied counts plus the suppressed finding.
     assert "CVE-2026-1" in html
     assert "not_affected" in html
     assert '"suppressed_count": 1' in html
