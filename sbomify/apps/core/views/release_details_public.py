@@ -63,9 +63,16 @@ class ReleaseDetailsPublicView(View):
         # Get workspace public URL for breadcrumbs
         workspace_public_url = get_workspace_public_url(request, team)
 
+        # Vulnerability posture for the release, with and without its VEX applied,
+        # so the Trust Center can show the effect of the VEX as a toggle.
+        from sbomify.apps.vulnerability_scanning.posture import build_release_vuln_posture
+
+        vuln_posture = build_release_vuln_posture(release_obj)
+
         context = {
             "brand": brand,
             "release": release,
+            "vuln_posture": vuln_posture,
             # `product` is consumed by the breadcrumb tag so the release page
             # gets a `Trust Center > Product` breadcrumb consistent with the
             # releases list and component pages. The current release isn't

@@ -385,7 +385,8 @@ def test_download_private_product_sbom_success(
 
     assert response.status_code == 200
     assert response["Content-Type"] == "application/json"
-    assert f"attachment; filename={sample_product.name}.cdx.json" in response["Content-Disposition"]
+    # Name is sanitized (space -> '-') and quoted so it can't break the header.
+    assert response["Content-Disposition"] == 'attachment; filename="test-product.cdx.json"'
 
     # Verify the mock was called with correct parameters
     mock_get_product_sbom_package.assert_called_once()

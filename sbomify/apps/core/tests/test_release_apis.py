@@ -359,6 +359,60 @@ def test_get_release_success(
 
 
 @pytest.mark.django_db
+def test_build_release_response_has_vex_flag(
+    sample_product: Product,  # noqa: F811
+    sample_component: Component,  # noqa: F811
+):
+    """The release response dict (consumed by the public Trust Center page)
+    exposes has_vex so the latest-VEX download button gates independently of the
+    SBOM download."""
+    from django.test import RequestFactory
+
+    from sbomify.apps.core.apis import _build_release_response
+
+    request = RequestFactory().get("/")
+    request.user = sample_product.team.members.first()
+
+    release = Release.objects.create(product=sample_product, name="v1.0.0")
+    sbom = SBOM.objects.create(
+        name="s", format="cyclonedx", format_version="1.6", sbom_filename="s.json", component=sample_component
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=sbom)
+
+    # SBOM only: has_sboms true, has_vex/has_cbom false.
+    before = _build_release_response(request, release)
+    assert before["has_sboms"] is True
+    assert before["has_vex"] is False
+    assert before["has_cbom"] is False
+
+    # Add a VEX slot: has_vex flips true, has_sboms unchanged.
+    vex = SBOM.objects.create(
+        name="v",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="v.json",
+        component=sample_component,
+        bom_type=SBOM.BomType.VEX,
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=vex)
+    after = _build_release_response(request, release)
+    assert after["has_sboms"] is True
+    assert after["has_vex"] is True
+
+    # Add a CBOM slot: has_cbom flips true.
+    cbom = SBOM.objects.create(
+        name="cb",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="cb.json",
+        component=sample_component,
+        bom_type=SBOM.BomType.CBOM,
+    )
+    ReleaseArtifact.objects.create(release=release, sbom=cbom)
+    assert _build_release_response(request, release)["has_cbom"] is True
+
+
+@pytest.mark.django_db
 def test_update_release_success(
     sample_product: Product,  # noqa: F811
     sample_access_token: AccessToken,  # noqa: F811
@@ -845,7 +899,8 @@ def test_download_release_sbom_success(
 
     assert response.status_code == 200
     assert response["Content-Type"] == "application/json"
-    assert f"attachment; filename={sample_product.name}-v1.0.0.cdx.json" in response["Content-Disposition"]
+    # Name is sanitized (space -> '-') and quoted so it can't break the header.
+    assert response["Content-Disposition"] == 'attachment; filename="test-product-v1.0.0.cdx.json"'
 
     # Verify the mock was called with correct parameters (release and temp_dir)
     mock_get_release_sbom_package.assert_called_once()
@@ -1825,3 +1880,14 @@ def test_delete_release_admin_forbidden(sample_team_with_owner_member: Member): 
 
     assert response.status_code == 403
     assert Release.objects.filter(id=release.id).exists()
+
+
+def test_download_filename_sanitizes_user_names():
+    """Product/release names can't inject the Content-Disposition header."""
+    from sbomify.apps.core.apis import _download_filename
+
+    assert _download_filename("Acme Corp", "v1.0", ".vex.cdx.json") == "Acme-Corp-v1.0.vex.cdx.json"
+    dirty = _download_filename('bad"\r\nX-Evil: 1', "v2", ".cdx.json")
+    assert "\r" not in dirty and "\n" not in dirty and '"' not in dirty
+    assert dirty.endswith(".cdx.json")
+    assert _download_filename("", "", ".cdx.json") == "release.cdx.json"
