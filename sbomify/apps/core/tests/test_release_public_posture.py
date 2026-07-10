@@ -54,13 +54,24 @@ def test_public_release_page_shows_vuln_posture(sample_team_with_owner_member):
 
     assert resp.status_code == 200
     html = resp.content.decode()
-    # The posture card and its embedded data are present.
     assert "Vulnerability Posture" in html
     assert 'id="vuln-posture-data"' in html
-    # Data carries the VEX-applied counts plus the suppressed finding.
-    assert "CVE-2026-1" in html
-    assert "not_affected" in html
-    assert '"suppressed_count": 1' in html
+
+    # Parse the embedded posture data and verify the VEX-applied breakdown: the
+    # active high finding counts, the not_affected critical is suppressed (dropped
+    # from counts) but still listed with its state.
+    import json
+    import re
+
+    match = re.search(r'<script id="vuln-posture-data"[^>]*>(.*?)</script>', html, re.DOTALL)
+    assert match is not None
+    posture = json.loads(match.group(1))
+    assert posture["counts"] == {"critical": 0, "high": 1, "medium": 0, "low": 0, "unknown": 0, "total": 1}
+    assert posture["suppressed_count"] == 1
+    by_id = {f["id"]: f for f in posture["findings"]}
+    assert by_id["CVE-2026-1"]["suppressed"] is False
+    assert by_id["CVE-2026-2"]["suppressed"] is True
+    assert by_id["CVE-2026-2"]["state"] == "not_affected"
 
 
 @pytest.mark.django_db
