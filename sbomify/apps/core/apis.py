@@ -4137,6 +4137,10 @@ def list_component_sboms(
         from sbomify.apps.plugins.models import AssessmentRun, RegisteredPlugin, TeamPluginSettings
         from sbomify.apps.plugins.schemas import AssessmentStatusSummary
         from sbomify.apps.plugins.sdk.enums import RunStatus
+        from sbomify.apps.vulnerability_scanning.utils import (
+            RESULT_SUMMARY_ANNOTATIONS,
+            reconstruct_result_summary,
+        )
 
         # Build response items with vulnerability status, releases, and assessments.
         # Everything below is batched by sbom-id so the cost is constant in
@@ -4204,10 +4208,17 @@ def list_component_sboms(
         try:
             latest_runs = list(
                 AssessmentRun.objects.filter(sbom_id__in=sbom_ids)
+                .defer("result")
+                .annotate(**RESULT_SUMMARY_ANNOTATIONS)
                 .order_by("sbom_id", "plugin_name", "-created_at")
                 .distinct("sbom_id", "plugin_name")
             )
             for run in latest_runs:
+                # Rebuild the small summary slice from the SQL annotations so the
+                # status helpers below never lazy-load the deferred multi-MB
+                # ``result`` blob — one fat de-TOAST per row was part of what made
+                # this endpoint take tens of seconds.
+                run.result = reconstruct_result_summary(run)
                 runs_by_sbom[str(run.sbom_id)].append(run)
                 plugin_names_seen.add(run.plugin_name)
         except (DatabaseError, OperationalError) as db_err:
