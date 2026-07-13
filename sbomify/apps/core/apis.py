@@ -4210,7 +4210,10 @@ def list_component_sboms(
                 AssessmentRun.objects.filter(sbom_id__in=sbom_ids)
                 .defer("result")
                 .annotate(**RESULT_SUMMARY_ANNOTATIONS)
-                .order_by("sbom_id", "plugin_name", "-created_at")
+                # -id breaks created_at ties deterministically (newest row wins),
+                # matching vulnerability_trends so both surfaces agree on which
+                # run is "latest" when two share a timestamp.
+                .order_by("sbom_id", "plugin_name", "-created_at", "-id")
                 .distinct("sbom_id", "plugin_name")
             )
             for run in latest_runs:
