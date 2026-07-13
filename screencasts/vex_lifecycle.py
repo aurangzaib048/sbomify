@@ -35,7 +35,7 @@ import json
 
 import pytest
 from django.urls import reverse
-from playwright.sync_api import Page
+from playwright.sync_api import Locator, Page
 
 from conftest import (
     click_into_row,
@@ -222,6 +222,17 @@ def _apply_vex(component: Component, release: Release, run: AssessmentRun) -> No
     ReleaseArtifact.objects.get_or_create(release=release, sbom=vex)
 
 
+def _smooth_scroll(page: Page, locator: Locator, pause_ms: int = 1400) -> None:
+    """Smoothly pan an element to the centre of the viewport, then pause.
+
+    Instant ``scrollIntoView`` jumps read as jarring on the recording; a smooth
+    animation plus a pause lets the pan land before the next action (and before
+    any ``bounding_box`` read that follows).
+    """
+    locator.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+    pace(page, pause_ms)
+
+
 @pytest.mark.django_db(transaction=True)
 def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: None) -> None:
     page = recording_page
@@ -250,21 +261,18 @@ def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: Non
     critical_card = page.locator("span.text-xl.font-bold.text-red-600").first
     critical_card.wait_for(state="visible", timeout=15_000)
     pace(page, 1500)
-    critical_card.evaluate("el => el.scrollIntoView({ block: 'center' })")
-    pace(page, 4000)
+    _smooth_scroll(page, critical_card, 4000)
 
     # ── 2. Upload the hand-authored VEX ──────────────────────────────────
     upload_header = page.locator("#upload-sbom button").first
     upload_header.wait_for(state="visible", timeout=15_000)
-    upload_header.scroll_into_view_if_needed()
-    pace(page, 1200)
+    _smooth_scroll(page, upload_header, 1200)
     hover_and_click(page, upload_header)
     pace(page, 1200)
 
     helper_text = page.locator("#upload-sbom").locator("text=SBOM, VEX, CBOM").first
     helper_text.wait_for(state="visible", timeout=10_000)
-    helper_text.scroll_into_view_if_needed()
-    pace(page, 2000)
+    _smooth_scroll(page, helper_text, 2000)
 
     file_input = page.locator("#upload-sbom input[type='file']")
     with page.expect_response(
@@ -293,9 +301,8 @@ def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: Non
     page.wait_for_load_state("networkidle")
     critical_card.wait_for(state="visible", timeout=15_000)
     pace(page, 1500)
-    critical_card.evaluate("el => el.scrollIntoView({ block: 'center' })")
     # The critical is gone from the counts now (0).
-    pace(page, 4000)
+    _smooth_scroll(page, critical_card, 4000)
 
     # ── 4. Publish — the VEX-applied posture on the Trust Center ─────────
     page.goto(public_url)
@@ -303,22 +310,18 @@ def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: Non
 
     posture_heading = page.locator("h4:has-text('Vulnerability Posture')")
     posture_heading.wait_for(state="visible", timeout=15_000)
-    posture_heading.scroll_into_view_if_needed()
-    pace(page, 2000)
+    _smooth_scroll(page, posture_heading, 2000)
 
     suppression_note = page.locator("text=suppressed by VEX").first
     suppression_note.wait_for(state="visible", timeout=10_000)
-    suppression_note.scroll_into_view_if_needed()
-    pace(page, 2500)
+    _smooth_scroll(page, suppression_note, 2500)
 
     suppressed_cve = page.locator(f"span:text-is('{SUPPRESSED_CVE}')").first
     suppressed_cve.wait_for(state="visible", timeout=10_000)
-    suppressed_cve.scroll_into_view_if_needed()
-    pace(page, 3000)
+    _smooth_scroll(page, suppressed_cve, 3000)
 
     vex_download = page.locator("a[title='Download latest VEX (CycloneDX)']").first
     vex_download.wait_for(state="visible", timeout=10_000)
-    vex_download.scroll_into_view_if_needed()
-    pace(page, 1200)
+    _smooth_scroll(page, vex_download, 1200)
     vex_download.hover()
     pace(page, 2500)
