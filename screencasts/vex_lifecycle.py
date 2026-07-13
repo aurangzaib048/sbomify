@@ -1,17 +1,17 @@
-"""Record the VEX lifecycle screencast — generate → upload → suppress → publish.
+"""Record the VEX lifecycle screencast — generate → upload → suppress → publish,
+including VEX versioning (a re-issued VEX supersedes the previous one).
 
-Drives the full producer-to-consumer journey for a hand-authored CycloneDX VEX:
+Drives the full producer-to-consumer journey for hand-authored CycloneDX VEX:
 
-1. **The vulnerability.** Open the component. Its scan flagged a critical
-   (``CVE-2024-12345`` in ``requests``) plus a high and a medium.
-2. **Upload the VEX.** Expand the upload card and drop a CycloneDX VEX that marks
-   the critical ``not_affected`` (the vulnerable code path is never reached). The
-   VEX badge lands next to the SBOM in the BOMs table.
-3. **Suppression.** The stored scan is re-annotated: the critical drops out of the
-   component's severity counts.
-4. **Publish.** The release's public Trust Center page shows the VEX-applied
-   posture — the critical suppressed with its justification, and the VEX
-   downloadable.
+1. **The vulnerability.** Open the component. Its scan flagged a critical, a high
+   and a medium.
+2. **VEX v1.** Show the CycloneDX VEX (version 1) that marks the critical
+   ``not_affected``, upload it, and watch the critical drop from the component's
+   severity counts. The public Trust Center shows one finding suppressed.
+3. **VEX v2 (versioning).** Show a re-issued VEX (version 2) that also clears the
+   high. sbomify applies a component's newest VEX, so uploading v2 supersedes v1:
+   the high now drops too and the Trust Center shows two findings suppressed, with
+   the newer VEX downloadable.
 
 Three infrastructure notes:
 
@@ -31,6 +31,7 @@ Three infrastructure notes:
    engine's output — only the S3 round-trip is skipped.
 """
 
+import html as html_lib
 import json
 
 import pytest
@@ -53,21 +54,22 @@ from sbomify.apps.teams.models import Team
 COMPONENT_NAME = "Compression Core Library"
 PRODUCT_NAME = "Pied Piper Compression Engine"
 SBOM_NAME = "com.piedpiper/compression-core"
+VEX_FILENAME = "compression-core-2.1.0.vex.cdx.json"
 
-SUPPRESSED_CVE = "CVE-2024-12345"
-SUPPRESSED_PURL = "pkg:pypi/requests@2.32.3"
+CRITICAL_CVE = "CVE-2024-12345"
+HIGH_CVE = "CVE-2024-45210"
 
-# Raw scan findings for the release's SBOM before any VEX is applied: one
-# critical, one high, one medium. Shapes mirror what a security scanner stores.
+# Raw scan findings for the release's SBOM before any VEX: one critical, one
+# high, one medium. Shapes mirror what a security scanner stores.
 RAW_FINDINGS = [
     {
-        "id": SUPPRESSED_CVE,
+        "id": CRITICAL_CVE,
         "severity": "critical",
         "title": "Server-side request forgery in requests",
-        "component": {"name": "requests", "version": "2.32.3", "purl": SUPPRESSED_PURL},
+        "component": {"name": "requests", "version": "2.32.3", "purl": "pkg:pypi/requests@2.32.3"},
     },
     {
-        "id": "CVE-2024-45210",
+        "id": HIGH_CVE,
         "severity": "high",
         "title": "Improper certificate validation in urllib3",
         "component": {"name": "urllib3", "version": "2.0.7", "purl": "pkg:pypi/urllib3@2.0.7"},
@@ -80,35 +82,56 @@ RAW_FINDINGS = [
     },
 ]
 
-# The hand-authored CycloneDX VEX. One statement marks the critical not_affected;
-# the upload bytes and the suppression statements both derive from this document.
-VEX_DOCUMENT = {
-    "bomFormat": "CycloneDX",
-    "specVersion": "1.6",
-    "serialNumber": "urn:uuid:11111111-2222-3333-4444-555555555555",
-    "version": 1,
-    "metadata": {
-        "timestamp": "2026-04-29T00:00:00Z",
-        "component": {"type": "application", "name": SBOM_NAME, "version": "2.1.0"},
+
+def _vex_document(version: int, vulnerabilities: list[dict]) -> dict:
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "serialNumber": "urn:uuid:11111111-2222-3333-4444-555555555555",
+        "version": version,
+        "metadata": {
+            "timestamp": "2026-04-29T00:00:00Z",
+            "component": {"type": "application", "name": SBOM_NAME, "version": "2.1.0"},
+        },
+        "vulnerabilities": vulnerabilities,
+    }
+
+
+_CRITICAL_STATEMENT = {
+    "id": CRITICAL_CVE,
+    "source": {"name": "NVD"},
+    "ratings": [{"severity": "critical"}],
+    "affects": [{"ref": "pkg:pypi/requests@2.32.3"}],
+    "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "detail": (
+            "requests is only used for outbound HTTPS to a fixed allowlist; "
+            "the vulnerable redirect path is never exercised."
+        ),
     },
-    "vulnerabilities": [
-        {
-            "id": SUPPRESSED_CVE,
-            "source": {"name": "NVD"},
-            "ratings": [{"severity": "critical"}],
-            "affects": [{"ref": SUPPRESSED_PURL}],
-            "analysis": {
-                "state": "not_affected",
-                "justification": "code_not_reachable",
-                "detail": (
-                    "We use requests only for outbound HTTPS to a fixed allowlist "
-                    "of internal hosts. The vulnerable redirect path is never exercised."
-                ),
-            },
-        }
-    ],
 }
-VEX_FILE_BYTES = json.dumps(VEX_DOCUMENT, indent=2).encode("utf-8")
+_HIGH_STATEMENT = {
+    "id": HIGH_CVE,
+    "source": {"name": "NVD"},
+    "ratings": [{"severity": "high"}],
+    "affects": [{"ref": "pkg:pypi/urllib3@2.0.7"}],
+    "analysis": {
+        "state": "not_affected",
+        "justification": "protected_by_mitigating_control",
+        "detail": (
+            "TLS verification is pinned and enforced at the gateway, so the weak certificate path cannot be reached."
+        ),
+    },
+}
+
+# v1 clears the critical; v2 is re-issued (version 2) and also clears the high.
+VEX_V1 = _vex_document(1, [_CRITICAL_STATEMENT])
+VEX_V2 = _vex_document(2, [_CRITICAL_STATEMENT, _HIGH_STATEMENT])
+
+
+def _vex_bytes(document: dict) -> bytes:
+    return json.dumps(document, indent=2).encode("utf-8")
 
 
 @pytest.fixture
@@ -156,7 +179,7 @@ def vex_release(deletable_team: Team) -> dict:
         },
     )
 
-    return {"component": component, "sbom": sbom, "product": product, "release": release, "run": run}
+    return {"component": component, "release": release, "run": run, "product": product}
 
 
 def _patch_uploads_as_vex(page: Page) -> None:
@@ -189,37 +212,28 @@ def s3_short_circuit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(S3Client, "upload_data_as_file", lambda *args, **kwargs: None)
 
 
-def _apply_vex(component: Component, release: Release, run: AssessmentRun) -> None:
-    """Suppress via the real VEX engine, then attach the VEX to the release.
+def _apply_vex(component: Component, release: Release, run: AssessmentRun, document: dict) -> None:
+    """Suppress via the real VEX engine, then pin the uploaded VEX to the release.
 
     Runs ``derive_vex_suppressions`` + ``reapply_vex_to_stored_result`` on the
     in-memory VEX document — the same functions the async job runs after reading
-    the VEX from S3 — so the annotated findings and rebuilt severity counts are
-    the engine's genuine output. Then attaches a VEX artifact so the release's
-    merged VEX is downloadable on the Trust Center.
+    the VEX from S3 — so the annotated findings and rebuilt counts are the
+    engine's genuine output. ``reapply`` is a full recompute, so applying v2's
+    statements supersedes v1. Then attaches the component's newest VEX (the one
+    just uploaded through the UI) to the release so it's downloadable.
     """
     from sbomify.apps.vulnerability_scanning.vex import (
         derive_vex_suppressions,
         reapply_vex_to_stored_result,
     )
 
-    statements = derive_vex_suppressions(VEX_DOCUMENT)
+    statements = derive_vex_suppressions(document)
     run.result = reapply_vex_to_stored_result(run.result, statements)
     run.save(update_fields=["result"])
 
     vex = SBOM.objects.filter(component=component, bom_type=SBOM.BomType.VEX).order_by("-created_at").first()
-    if vex is None:
-        vex = SBOM.objects.create(
-            name=SBOM_NAME,
-            version="2.1.0",
-            format="cyclonedx",
-            format_version="1.6",
-            sbom_filename="compression-core-2.1.0.vex.cdx.json",
-            source="api",
-            bom_type=SBOM.BomType.VEX,
-            component=component,
-        )
-    ReleaseArtifact.objects.get_or_create(release=release, sbom=vex)
+    if vex is not None:
+        ReleaseArtifact.objects.get_or_create(release=release, sbom=vex)
 
 
 def _smooth_scroll(page: Page, locator: Locator, pause_ms: int = 1400) -> None:
@@ -233,6 +247,114 @@ def _smooth_scroll(page: Page, locator: Locator, pause_ms: int = 1400) -> None:
     pace(page, pause_ms)
 
 
+def _show_vex_file(page: Page, document: dict, subtitle: str, pause_ms: int = 5000) -> None:
+    """Render the CycloneDX VEX document full-screen so viewers see its contents.
+
+    There is no in-app VEX viewer (the component BOMs table lists SBOM-type
+    artifacts only), so the file is drawn directly via ``set_content`` as a styled
+    code view, with the decision-carrying lines highlighted.
+    """
+    escaped = html_lib.escape(json.dumps(document, indent=2))
+    for needle in (
+        "&quot;state&quot;: &quot;not_affected&quot;",
+        "&quot;justification&quot;: &quot;code_not_reachable&quot;",
+        "&quot;justification&quot;: &quot;protected_by_mitigating_control&quot;",
+        f"&quot;id&quot;: &quot;{CRITICAL_CVE}&quot;",
+        f"&quot;id&quot;: &quot;{HIGH_CVE}&quot;",
+    ):
+        escaped = escaped.replace(needle, f'<span class="hl">{needle}</span>')
+    for version in ("1", "2"):
+        escaped = escaped.replace(
+            f"&quot;version&quot;: {version},", f'<span class="hlv">&quot;version&quot;: {version}</span>,'
+        )
+
+    content = f"""<!doctype html><html><head><meta charset="utf-8"><style>
+      * {{ box-sizing: border-box; }}
+      body {{ margin: 0; min-height: 100vh; background: #0A0A23;
+             display: flex; align-items: center; justify-content: center;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; }}
+      .win {{ width: 780px; max-width: 92vw; background: #14142e;
+             border: 1px solid #2b2b52; border-radius: 12px; overflow: hidden;
+             box-shadow: 0 24px 60px rgba(0,0,0,.5); }}
+      .bar {{ display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+             background: #1c1c3d; border-bottom: 1px solid #2b2b52; }}
+      .dot {{ width: 12px; height: 12px; border-radius: 50%; }}
+      .r {{ background: #ff5f57; }} .y {{ background: #febc2e; }} .g {{ background: #28c840; }}
+      .fname {{ margin-left: 8px; color: #e6e6f0; font-size: 14px; font-weight: 600; }}
+      .badge {{ margin-left: auto; color: #a5b4fc; background: #312e81; font-size: 12px;
+               padding: 4px 10px; border-radius: 999px; }}
+      pre {{ margin: 0; padding: 20px 22px; color: #c8c8e0; font-size: 14px; line-height: 1.6;
+            max-height: 70vh; overflow: auto; }}
+      .hl {{ color: #fbbf24; font-weight: 700; }}
+      .hlv {{ color: #34d399; font-weight: 700; }}
+    </style></head><body>
+      <div class="win">
+        <div class="bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="fname">{html_lib.escape(VEX_FILENAME)}</span>
+          <span class="badge">{html_lib.escape(subtitle)}</span>
+        </div>
+        <pre>{escaped}</pre>
+      </div>
+    </body></html>"""
+    page.set_content(content, wait_until="load")
+    pace(page, pause_ms)
+
+
+def _upload_vex(page: Page, document: dict) -> None:
+    """Expand the upload card and drop the VEX file through the existing UI."""
+    upload_header = page.locator("#upload-sbom button").first
+    upload_header.wait_for(state="visible", timeout=15_000)
+    _smooth_scroll(page, upload_header, 1200)
+    hover_and_click(page, upload_header)
+    pace(page, 1000)
+
+    helper_text = page.locator("#upload-sbom").locator("text=SBOM, VEX, CBOM").first
+    helper_text.wait_for(state="visible", timeout=10_000)
+    _smooth_scroll(page, helper_text, 1500)
+
+    file_input = page.locator("#upload-sbom input[type='file']")
+    with page.expect_response(
+        lambda r: "/api/v1/sboms/upload-file/" in r.url and r.status == 201,
+        timeout=15_000,
+    ):
+        file_input.set_input_files(
+            files=[{"name": VEX_FILENAME, "mimeType": "application/json", "buffer": _vex_bytes(document)}]
+        )
+    pace(page, 1800)
+
+
+def _show_component_posture(page: Page, component_url: str, hold_ms: int = 4000) -> None:
+    """Land on the component and centre its severity summary cards."""
+    page.goto(component_url)
+    page.wait_for_load_state("networkidle")
+    critical_card = page.locator("span.text-xl.font-bold.text-red-600").first
+    critical_card.wait_for(state="visible", timeout=15_000)
+    pace(page, 1500)
+    _smooth_scroll(page, critical_card, hold_ms)
+
+
+def _show_trust_center(page: Page, public_url: str, show_download: bool) -> None:
+    """Land on the public Trust Center release page and reveal the VEX-applied posture."""
+    page.goto(public_url)
+    page.wait_for_load_state("networkidle")
+
+    posture_heading = page.locator("h4:has-text('Vulnerability Posture')")
+    posture_heading.wait_for(state="visible", timeout=15_000)
+    _smooth_scroll(page, posture_heading, 2000)
+
+    suppression_note = page.locator("text=suppressed by VEX").first
+    suppression_note.wait_for(state="visible", timeout=10_000)
+    _smooth_scroll(page, suppression_note, 3000)
+
+    if show_download:
+        vex_download = page.locator("a[title='Download latest VEX (CycloneDX)']").first
+        vex_download.wait_for(state="visible", timeout=10_000)
+        _smooth_scroll(page, vex_download, 1200)
+        vex_download.hover()
+        pace(page, 2500)
+
+
 @pytest.mark.django_db(transaction=True)
 def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: None) -> None:
     page = recording_page
@@ -241,6 +363,7 @@ def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: Non
 
     component = vex_release["component"]
     release = vex_release["release"]
+    run = vex_release["run"]
     product = vex_release["product"]
     component_url = reverse("core:component_details", kwargs={"component_id": component.id})
     public_url = reverse(
@@ -253,75 +376,31 @@ def vex_lifecycle(recording_page: Page, vex_release: dict, s3_short_circuit: Non
     # ── 1. The vulnerability — the component's scan flagged a critical ───
     navigate_to_components(page)
     click_into_row(page, COMPONENT_NAME)
-
-    # The severity summary loads via HTMX (vulnerability trends). Hold on the
-    # critical count card (the red count span, unique to the Critical card) so
-    # viewers see the risk before the VEX is applied. Centre it in the viewport
-    # so the fixed top nav doesn't cover it, and let the chart settle first.
     critical_card = page.locator("span.text-xl.font-bold.text-red-600").first
     critical_card.wait_for(state="visible", timeout=15_000)
     pace(page, 1500)
     _smooth_scroll(page, critical_card, 4000)
 
-    # ── 2. Upload the hand-authored VEX ──────────────────────────────────
-    upload_header = page.locator("#upload-sbom button").first
-    upload_header.wait_for(state="visible", timeout=15_000)
-    _smooth_scroll(page, upload_header, 1200)
-    hover_and_click(page, upload_header)
-    pace(page, 1200)
-
-    helper_text = page.locator("#upload-sbom").locator("text=SBOM, VEX, CBOM").first
-    helper_text.wait_for(state="visible", timeout=10_000)
-    _smooth_scroll(page, helper_text, 2000)
-
-    file_input = page.locator("#upload-sbom input[type='file']")
-    with page.expect_response(
-        lambda r: "/api/v1/sboms/upload-file/" in r.url and r.status == 201,
-        timeout=15_000,
-    ):
-        file_input.set_input_files(
-            files=[
-                {
-                    "name": "compression-core-2.1.0.vex.cdx.json",
-                    "mimeType": "application/json",
-                    "buffer": VEX_FILE_BYTES,
-                }
-            ]
-        )
-
-    # The uploader accepts the VEX (201). The component's BOMs table lists only
-    # SBOM-type artifacts, so the VEX doesn't appear there — its effect shows as
-    # the suppression below. Hold on the upload landing.
-    pace(page, 2500)
-
-    # ── 3. Suppression — re-annotate via the real engine (see _apply_vex) ─
-    _apply_vex(component, release, vex_release["run"])
+    # ── 2. VEX v1 — show the file, upload it, watch the critical clear ───
+    _show_vex_file(page, VEX_V1, "CycloneDX VEX · version 1 — clears the critical", 5500)
 
     page.goto(component_url)
     page.wait_for_load_state("networkidle")
-    critical_card.wait_for(state="visible", timeout=15_000)
-    pace(page, 1500)
-    # The critical is gone from the counts now (0).
-    _smooth_scroll(page, critical_card, 4000)
+    pace(page, 800)
+    _upload_vex(page, VEX_V1)
 
-    # ── 4. Publish — the VEX-applied posture on the Trust Center ─────────
-    page.goto(public_url)
+    _apply_vex(component, release, run, VEX_V1)
+    _show_component_posture(page, component_url)  # critical now 0
+    _show_trust_center(page, public_url, show_download=False)  # 1 finding suppressed
+
+    # ── 3. VEX v2 — re-issue a newer version that also clears the high ───
+    _show_vex_file(page, VEX_V2, "CycloneDX VEX · version 2 — re-issued, also clears the high", 5500)
+
+    page.goto(component_url)
     page.wait_for_load_state("networkidle")
+    pace(page, 800)
+    _upload_vex(page, VEX_V2)
 
-    posture_heading = page.locator("h4:has-text('Vulnerability Posture')")
-    posture_heading.wait_for(state="visible", timeout=15_000)
-    _smooth_scroll(page, posture_heading, 2000)
-
-    suppression_note = page.locator("text=suppressed by VEX").first
-    suppression_note.wait_for(state="visible", timeout=10_000)
-    _smooth_scroll(page, suppression_note, 2500)
-
-    suppressed_cve = page.locator(f"span:text-is('{SUPPRESSED_CVE}')").first
-    suppressed_cve.wait_for(state="visible", timeout=10_000)
-    _smooth_scroll(page, suppressed_cve, 3000)
-
-    vex_download = page.locator("a[title='Download latest VEX (CycloneDX)']").first
-    vex_download.wait_for(state="visible", timeout=10_000)
-    _smooth_scroll(page, vex_download, 1200)
-    vex_download.hover()
-    pace(page, 2500)
+    _apply_vex(component, release, run, VEX_V2)
+    _show_component_posture(page, component_url)  # critical and high now 0
+    _show_trust_center(page, public_url, show_download=True)  # 2 findings suppressed
