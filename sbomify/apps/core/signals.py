@@ -233,6 +233,15 @@ def pin_latest_vex_on_sbom_artifact_added(sender: Any, instance: Any, created: A
     if not created or not instance.sbom_id:
         return
 
+    from sbomify.apps.core.models import _suppress_collection_signals
+
+    # Bulk operations (refresh_latest_artifacts, add_artifact_to_latest_release)
+    # manage every artifact slot themselves, VEX included; auto-pinning here
+    # mid-bulk would race their own VEX create into a (release, sbom) unique
+    # violation and abort the surrounding transaction.
+    if _suppress_collection_signals.get(False):
+        return
+
     try:
         from sbomify.apps.core.services.vex_pins import ensure_latest_vex_pinned
         from sbomify.apps.sboms.models import SBOM

@@ -610,6 +610,7 @@ class DependencyTrackPlugin(AssessmentPlugin):
 
         component = version_row.sbom.component
         normalized = self._normalized_vex(doc)
+        s3 = S3Client("SBOMS")
 
         newest = (
             SBOMModel.objects.filter(component=component, bom_type=SBOMModel.BomType.VEX.value)
@@ -618,14 +619,14 @@ class DependencyTrackPlugin(AssessmentPlugin):
         )
         if newest is not None and newest.sbom_filename:
             try:
-                existing_bytes = S3Client("SBOMS").get_sbom_data(newest.sbom_filename)
+                existing_bytes = s3.get_sbom_data(newest.sbom_filename)
                 if existing_bytes and self._normalized_vex(json.loads(existing_bytes)) == normalized:
                     return
             except Exception:
                 logger.debug("[DT] Could not load existing VEX %s for dedup; storing fresh", newest.id, exc_info=True)
 
         payload = json.dumps(doc, indent=2).encode()
-        filename = S3Client("SBOMS").upload_sbom(payload)
+        filename = s3.upload_sbom(payload)
         metadata_component = (doc.get("metadata") or {}).get("component") or {}
         vex = SBOMModel.objects.create(
             component=component,

@@ -233,3 +233,43 @@ class TestReleaseVexAutopin:
 
         assert not ensure_latest_vex_pinned(release, component)
         assert release.artifacts.count() == 1
+
+
+@pytest.mark.django_db
+def test_refresh_latest_artifacts_with_vex_component(sample_team_with_owner_member):
+    """Bulk latest-release maintenance must not collide with the auto-pin signal.
+
+    refresh_latest_artifacts adds the component's VEX slot itself (under
+    suppressed collection signals); if the auto-pin signal ran mid-bulk it
+    would create the same (release, sbom) row first and abort the transaction
+    with a unique violation.
+    """
+    team = sample_team_with_owner_member.team
+    component = Component.objects.create(name="bulk-refresh-c", team=team)
+    SBOM.objects.create(
+        name="app",
+        version="1",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="a.json",
+        component=component,
+    )
+    SBOM.objects.create(
+        name="app-vex",
+        version="1",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="v.json",
+        component=component,
+        bom_type=SBOM.BomType.VEX.value,
+    )
+    from sbomify.apps.core.models import Product
+
+    product = Product.objects.create(name="bulk-refresh-p", team=team)
+    component.products.add(product)
+    release = Release.get_or_create_latest_release(product)
+
+    release.refresh_latest_artifacts()
+
+    types = sorted(release.artifacts.values_list("sbom__bom_type", flat=True))
+    assert "vex" in types and "sbom" in types
