@@ -273,3 +273,6 @@ def test_refresh_latest_artifacts_with_vex_component(sample_team_with_owner_memb
 
     types = sorted(release.artifacts.values_list("sbom__bom_type", flat=True))
     assert "vex" in types and "sbom" in types
+    # Maintenance-created pins are sbomify-managed: the VEX slot stays
+    # re-pointable by refresh_vex_pins instead of reading as a manual snapshot.
+    assert release.artifacts.filter(sbom__bom_type=SBOM.BomType.VEX.value, auto_pinned=True).exists()
