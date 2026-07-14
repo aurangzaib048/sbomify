@@ -4212,6 +4212,12 @@ def list_component_sboms(
             # discard the losers — >100s for a component with hundreds of SBOM
             # versions. Phase 1 picks the winning run ids touching no JSON;
             # phase 2 annotates just those winners.
+            #
+            # The ids are materialised deliberately: passed lazily to ``id__in``,
+            # Django strips the subquery's ORDER BY, and DISTINCT ON without its
+            # ORDER BY returns an arbitrary row per group instead of the latest.
+            # The list is bounded by (sboms x plugins), the same magnitude as the
+            # ``sbom_ids`` IN-list already used above.
             winner_ids = list(
                 AssessmentRun.objects.filter(sbom_id__in=sbom_ids)
                 # -id breaks created_at ties deterministically (newest row wins),
@@ -4222,7 +4228,12 @@ def list_component_sboms(
                 .values_list("id", flat=True)
             )
             latest_runs = list(
-                AssessmentRun.objects.filter(id__in=winner_ids).defer("result").annotate(**RESULT_SUMMARY_ANNOTATIONS)
+                AssessmentRun.objects.filter(id__in=winner_ids)
+                .defer("result")
+                .annotate(**RESULT_SUMMARY_ANNOTATIONS)
+                # id__in has undefined row order; keep the per-SBOM plugin lists
+                # stable across requests.
+                .order_by("sbom_id", "plugin_name")
             )
             for run in latest_runs:
                 # Rebuild the small summary slice from the SQL annotations so the
