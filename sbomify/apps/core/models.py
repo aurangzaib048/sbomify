@@ -661,9 +661,10 @@ class ReleaseArtifact(models.Model):
     auto_pinned = models.BooleanField(
         default=False,
         help_text=(
-            "Pinned by sbomify to track the component's newest VEX. Auto pins are "
-            "re-pointed when a newer VEX appears; a manually pinned VEX is an "
-            "authoritative snapshot and is never replaced automatically."
+            "Pinned automatically by sbomify (latest-release maintenance, or "
+            "newest-VEX tracking on other releases). Only auto-pinned VEX pins "
+            "are ever re-pointed when a newer VEX appears; a manually pinned "
+            "artifact is never replaced automatically."
         ),
     )
 

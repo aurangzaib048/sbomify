@@ -591,7 +591,12 @@ class DependencyTrackPlugin(AssessmentPlugin):
         callers treat any failure as non-fatal.
         """
         version_uuid = str(version_row.dt_project_version_uuid)
-        doc = client.get_project_vex(version_uuid)
+        raw = client.get_project_vex(version_uuid)
+        try:
+            doc = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("[DT] VEX export for project %s is not valid JSON; skipping sync", version_uuid)
+            return
         if not isinstance(doc, dict):
             return
 
@@ -625,8 +630,9 @@ class DependencyTrackPlugin(AssessmentPlugin):
             except Exception:
                 logger.debug("[DT] Could not load existing VEX %s for dedup; storing fresh", newest.id, exc_info=True)
 
-        payload = json.dumps(doc, indent=2).encode()
-        filename = s3.upload_sbom(payload)
+        # Store the raw response bytes so the artifact is byte-for-byte what
+        # Dependency Track produced — sbomify never rewrites security artifacts.
+        filename = s3.upload_sbom(raw)
         metadata_component = (doc.get("metadata") or {}).get("component") or {}
         vex = SBOMModel.objects.create(
             component=component,
