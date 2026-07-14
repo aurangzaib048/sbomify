@@ -80,10 +80,22 @@ class TestResultColumns:
     def test_update_fields_without_result_does_not_write_columns(self, sbom: SBOM) -> None:
         run = self._make_run(sbom, {"summary": {"total_findings": 5}})
         AssessmentRun.objects.filter(id=run.id).update(result_summary=None, result_skipped=None)
+        run.result_summary = None
         run.status = "failed"
         run.save(update_fields=["status"])
+        # not recomputed in memory either — a status-only save must not touch result
+        assert run.result_summary is None
         run.refresh_from_db()
         assert run.result_summary is None
+
+    def test_save_on_deferred_instance_does_not_refetch_result(self, sbom: SBOM) -> None:
+        run = self._make_run(sbom, {"summary": {"total_findings": 5}})
+        deferred = AssessmentRun.objects.only("id", "status").get(id=run.id)
+        deferred.status = "failed"
+        deferred.save()
+        assert "result" in deferred.get_deferred_fields()
+        run.refresh_from_db()
+        assert run.result_summary == {"total_findings": 5}
 
 
 @pytest.mark.django_db

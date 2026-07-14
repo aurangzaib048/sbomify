@@ -3,13 +3,15 @@
 New rows get these columns populated in ``AssessmentRun.save``; rows written
 before the columns existed have them NULL, which makes the dashboards fall
 back to reading the multi-MB ``result`` blob. This command sweeps those rows
-in small keyset-paginated batches — row locks only, no table lock — so it is
-safe to run on a live instance and can be interrupted and re-run at any time.
+in small keyset-paginated batches — each batch locks just its own rows for
+the read/compute/write cycle, never the table — so it is safe to run on a
+live instance and can be interrupted and re-run at any time.
 """
 
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from sbomify.apps.plugins.models import AssessmentRun
 
@@ -42,12 +44,18 @@ class Command(BaseCommand):
             )
             if last_id is not None:
                 queryset = queryset.filter(id__gt=last_id)
-            batch = list(queryset[:batch_size])
-            if not batch:
-                break
-            for run in batch:
-                run._populate_result_columns()
-            AssessmentRun.objects.bulk_update(batch, ["result_summary", "result_skipped"])
+            # Lock the batch rows for the read/compute/write cycle so a
+            # concurrent result rewrite (e.g. VEX re-annotation) can't land
+            # between the read and the bulk_update and be clobbered with
+            # values derived from the stale blob. Writers queue for at most
+            # one small batch's duration.
+            with transaction.atomic():
+                batch = list(queryset.select_for_update()[:batch_size])
+                if not batch:
+                    break
+                for run in batch:
+                    run._populate_result_columns()
+                AssessmentRun.objects.bulk_update(batch, ["result_summary", "result_skipped"])
             last_id = batch[-1].id
             total += len(batch)
             self.stdout.write(f"backfilled {total} rows (last id {last_id})")

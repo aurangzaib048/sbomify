@@ -388,12 +388,17 @@ class AssessmentRun(models.Model):
         orchestrator's completion update, the VEX re-annotation), so the
         columns can never drift. When the caller narrows ``update_fields``
         to include ``result``, the derived columns are added so a result
-        rewrite can't leave them stale.
+        rewrite can't leave them stale. Saves that don't write ``result``
+        (e.g. status-only updates, deferred-field instances) leave the
+        columns untouched — recomputing there would be wasted work and, on
+        a deferred instance, would silently refetch the multi-MB blob.
         """
-        self._populate_result_columns()
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and "result" in update_fields:
-            kwargs["update_fields"] = list(set(update_fields) | {"result_summary", "result_skipped"})
+        writes_result = update_fields is None or "result" in update_fields
+        if writes_result and "result" not in self.get_deferred_fields():
+            self._populate_result_columns()
+            if update_fields is not None:
+                kwargs["update_fields"] = list(set(update_fields) | {"result_summary", "result_skipped"})
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
