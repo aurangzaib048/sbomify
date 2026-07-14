@@ -9,7 +9,7 @@ safe to run on a live instance and can be interrupted and re-run at any time.
 
 from typing import Any
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from sbomify.apps.plugins.models import AssessmentRun
 
@@ -27,6 +27,8 @@ class Command(BaseCommand):
 
     def handle(self, *args: Any, **options: Any) -> None:
         batch_size: int = options["batch_size"]
+        if batch_size < 1:
+            raise CommandError("--batch-size must be >= 1")
         last_id = None
         total = 0
         while True:

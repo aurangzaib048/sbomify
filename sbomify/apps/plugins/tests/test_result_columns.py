@@ -4,6 +4,7 @@ from io import StringIO
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 
 from sbomify.apps.billing.models import BillingPlan
 from sbomify.apps.core.models import Component
@@ -139,6 +140,11 @@ class TestBackfillResultSummaries:
         no_result.refresh_from_db()
         assert no_result.result_summary is None
         assert "done:" in out.getvalue()
+
+    @pytest.mark.parametrize("bad_size", ["0", "-5"])
+    def test_rejects_non_positive_batch_size(self, bad_size: str) -> None:
+        with pytest.raises(CommandError, match="batch-size"):
+            call_command("backfill_result_summaries", "--batch-size", bad_size)
 
     def test_leaves_already_populated_rows_untouched(self, sbom: SBOM) -> None:
         run = AssessmentRun.objects.create(
