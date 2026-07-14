@@ -218,6 +218,51 @@ def bump_collection_version_on_artifact_added(sender: Any, instance: Any, create
         logger.error("Error bumping collection version for release %s", instance.release_id, exc_info=True)
 
 
+@receiver(post_save, sender="core.ReleaseArtifact")
+def pin_latest_vex_on_sbom_artifact_added(sender: Any, instance: Any, created: Any, **kwargs: Any) -> Any:
+    """When a component's SBOM is pinned to a release, pin its newest VEX too.
+
+    Covers every path that attaches SBOM artifacts (the Add Artifact dialog,
+    the GitHub action's release tagging, latest-release maintenance) so a
+    release carries the component's exploitability statements without a manual
+    pin. A *manually* pinned VEX is a deliberate snapshot: it evicts any auto
+    pin for the same component and is never replaced automatically. Acts only
+    on bom_type='sbom' and manual bom_type='vex' rows — the auto pin this
+    creates matches neither branch, so it can't recurse.
+    """
+    if not created or not instance.sbom_id:
+        return
+
+    from sbomify.apps.core.models import _suppress_collection_signals
+
+    # Bulk operations (refresh_latest_artifacts, add_artifact_to_latest_release)
+    # manage every artifact slot themselves, VEX included; auto-pinning here
+    # mid-bulk would race their own VEX create into a (release, sbom) unique
+    # violation and abort the surrounding transaction.
+    if _suppress_collection_signals.get(False):
+        return
+
+    try:
+        from sbomify.apps.core.services.vex_pins import ensure_latest_vex_pinned
+        from sbomify.apps.sboms.models import SBOM
+
+        sbom = SBOM.objects.select_related("component").filter(id=instance.sbom_id).first()
+        if sbom is None:
+            return
+        if sbom.bom_type == SBOM.BomType.SBOM.value:
+            ensure_latest_vex_pinned(instance.release, sbom.component)
+        elif sbom.bom_type == SBOM.BomType.VEX.value and not instance.auto_pinned:
+            # A hand-pinned VEX supersedes whatever sbomify auto-pinned for
+            # this component on this release.
+            instance.release.artifacts.filter(
+                sbom__component=sbom.component,
+                sbom__bom_type=SBOM.BomType.VEX.value,
+                auto_pinned=True,
+            ).exclude(pk=instance.pk).delete()
+    except Exception:
+        logger.error("Error auto-pinning VEX for release %s", instance.release_id, exc_info=True)
+
+
 @receiver(post_delete, sender="core.ReleaseArtifact")
 def bump_collection_version_on_artifact_removed(sender: Any, instance: Any, **kwargs: Any) -> Any:
     """Bump the collection version when an artifact is removed from a release."""
