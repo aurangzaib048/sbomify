@@ -655,6 +655,15 @@ class ReleaseArtifact(models.Model):
         help_text="Document artifact included in this release",
     )
 
+    auto_pinned = models.BooleanField(
+        default=False,
+        help_text=(
+            "Pinned by sbomify to track the component's newest VEX. Auto pins are "
+            "re-pointed when a newer VEX appears; a manually pinned VEX is an "
+            "authoritative snapshot and is never replaced automatically."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
