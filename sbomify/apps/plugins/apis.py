@@ -175,11 +175,16 @@ def _run_to_schema(
     }
     try:
         return AssessmentRunSchema(**fields)
-    except PydanticValidationError:
+    except PydanticValidationError as e:
         # A result blob that predates (or drifted from) the current schema must
         # not fail the whole response — every batch caller serializes many runs,
         # so one bad row would blank the assessments for the entire SBOM.
         # Degrade this run to result=None; its status/plugin metadata still show.
+        # Only the result payload gets this treatment: a validation failure on
+        # any other field is a real bug and must surface, not be blamed on the
+        # blob and re-raised from the second construction with a confusing trace.
+        if not all(err.get("loc", (None,))[0] == "result" for err in e.errors()):
+            raise
         logger.warning(
             "AssessmentRun %s (plugin %s) has a result that fails schema validation; serialising without it",
             run.id,

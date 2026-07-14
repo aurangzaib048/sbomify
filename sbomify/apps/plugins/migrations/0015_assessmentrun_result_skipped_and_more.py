@@ -5,15 +5,27 @@ import django.db.models.functions.comparison
 from django.db import migrations, models
 
 
+def _set_result_compression_lz4(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute("ALTER TABLE plugins_assessment_runs ALTER COLUMN result SET COMPRESSION lz4")
+
+
+def _set_result_compression_pglz(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute("ALTER TABLE plugins_assessment_runs ALTER COLUMN result SET COMPRESSION pglz")
+
+
 class Migration(migrations.Migration):
     """Materialise the hot slices of ``result`` and speed up remaining blob reads.
 
     The two ``AddField``s are Postgres STORED generated columns; adding them
     rewrites the table once (computing values for existing rows) under an
     ACCESS EXCLUSIVE lock — a one-off pass roughly equal to de-TOASTing every
-    blob once. The lz4 ALTER is catalog-only (no rewrite): rows written from
-    now on decompress ~2-5x faster than pglz; existing rows keep pglz and age
-    out of the hot window naturally.
+    blob once. The lz4 ALTER is catalog-only (no rewrite) and Postgres-only:
+    rows written from now on decompress ~2-5x faster than pglz; existing rows
+    keep pglz and age out of the hot window naturally.
     """
 
     dependencies = [
@@ -21,10 +33,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql="ALTER TABLE plugins_assessment_runs ALTER COLUMN result SET COMPRESSION lz4",
-            reverse_sql="ALTER TABLE plugins_assessment_runs ALTER COLUMN result SET COMPRESSION pglz",
-        ),
+        migrations.RunPython(_set_result_compression_lz4, _set_result_compression_pglz),
         migrations.AddField(
             model_name="assessmentrun",
             name="result_skipped",

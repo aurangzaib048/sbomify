@@ -82,3 +82,28 @@ def test_malformed_result_degrades_that_run_only(sample_team_with_owner_member):
     assert by_plugin["legacy-plugin"]["result"] is None
     assert by_plugin["legacy-plugin"]["status"] == "completed"
     assert data["status_summary"]["total_assessments"] == 2
+
+
+@pytest.mark.django_db
+def test_non_result_validation_error_still_raises(sample_team_with_owner_member):
+    """Only the result payload may degrade; a validation failure on any other
+    field is a real bug and must surface instead of being blamed on the blob."""
+    from pydantic import ValidationError
+
+    from sbomify.apps.plugins.apis import _run_to_schema
+
+    component = Component.objects.create(name="raise-c", team=sample_team_with_owner_member.team)
+    sbom = SBOM.objects.create(
+        name="app",
+        version="1.0.0",
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="a.json",
+        component=component,
+    )
+    run = _make_run(sbom, "osv", VALID_RESULT)
+    # An unsaved-style hole outside `result`: created_at is required by the schema.
+    run.created_at = None
+
+    with pytest.raises(ValidationError):
+        _run_to_schema(run, {})
