@@ -25,6 +25,9 @@ from sbomify.apps.plugins.public_assessment_utils import get_sbom_passing_assess
 from sbomify.apps.sboms.services.sboms import get_sbom_detail
 from sbomify.apps.teams.branding import build_branding_context
 from sbomify.apps.teams.permissions import GuestAccessBlockedMixin
+from sbomify.logging import getLogger
+
+logger = getLogger(__name__)
 
 
 class ComponentItemPublicView(View):
@@ -169,7 +172,9 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 # Use mode='json' to ensure datetime objects are serialized as ISO strings
                 assessment_runs = assessment_response.model_dump(mode="json")
             except Exception:
-                # If assessment fetch fails, continue without it
+                # Degrade to no assessments section rather than failing the page,
+                # but leave a trace — a silent None here hides real data problems.
+                logger.exception("Failed to fetch assessments for SBOM %s; rendering without them", item_id)
                 assessment_runs = None
 
         elif item_type == "documents":

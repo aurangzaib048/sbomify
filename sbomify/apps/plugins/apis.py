@@ -8,11 +8,13 @@ from django.http import HttpRequest
 from ninja import Router
 from ninja.decorators import decorate_view
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from sbomify.apps.access_tokens.auth import optional_auth
 from sbomify.apps.core.authz import can
 from sbomify.apps.sboms.models import SBOM
 from sbomify.apps.teams.models import Member, Team
+from sbomify.logging import getLogger
 
 from .models import AssessmentRun, RegisteredPlugin, TeamPluginSettings
 from .schemas import (
@@ -22,6 +24,8 @@ from .schemas import (
     SBOMAssessmentsResponse,
 )
 from .sdk.enums import RunStatus
+
+logger = getLogger(__name__)
 
 router = Router(tags=["plugins"])
 
@@ -152,23 +156,44 @@ def _run_to_schema(
     release_ids = [str(rel.id) for rel in releases]
     release_names = [rel.name for rel in releases]
 
-    return AssessmentRunSchema(
-        id=str(run.id),
-        sbom_id=str(run.sbom_id),
-        release_ids=release_ids,
-        release_names=release_names,
-        plugin_name=run.plugin_name,
-        plugin_version=run.plugin_version,
-        plugin_display_name=display_name,
-        category=run.category,
-        run_reason=run.run_reason,
-        status=run.status,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        error_message=run.error_message or None,
-        result=run.result,
-        created_at=run.created_at,
-    )
+    fields: dict[str, Any] = {
+        "id": str(run.id),
+        "sbom_id": str(run.sbom_id),
+        "release_ids": release_ids,
+        "release_names": release_names,
+        "plugin_name": run.plugin_name,
+        "plugin_version": run.plugin_version,
+        "plugin_display_name": display_name,
+        "category": run.category,
+        "run_reason": run.run_reason,
+        "status": run.status,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+        "error_message": run.error_message or None,
+        "result": run.result,
+        "created_at": run.created_at,
+    }
+    try:
+        return AssessmentRunSchema(**fields)
+    except PydanticValidationError as e:
+        # A result blob that predates (or drifted from) the current schema must
+        # not fail the whole response — every batch caller serializes many runs,
+        # so one bad row would blank the assessments for the entire SBOM.
+        # Degrade this run to result=None; its status/plugin metadata still show.
+        # Only the result payload gets this treatment: a validation failure on
+        # any other field is a real bug and must surface, not be blamed on the
+        # blob and re-raised from the second construction with a confusing trace.
+        # ``loc`` can be present-but-empty (model-level errors), so guard with
+        # ``or`` rather than a dict default before indexing.
+        if not all((err.get("loc") or (None,))[0] == "result" for err in e.errors()):
+            raise
+        logger.warning(
+            "AssessmentRun %s (plugin %s) has a result that fails schema validation; serialising without it",
+            run.id,
+            run.plugin_name,
+        )
+        fields["result"] = None
+        return AssessmentRunSchema(**fields)
 
 
 def _compute_status_summary(runs: list[AssessmentRun]) -> AssessmentStatusSummary:

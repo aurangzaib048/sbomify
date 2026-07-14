@@ -432,6 +432,7 @@ class ReleaseArtifactSchema(BaseModel):
     sbom_format: str | None = None
     sbom_format_version: str | None = None
     sbom_version: str | None = None
+    bom_type: str | None = Field(None, description="BOM type of an sbom artifact: 'sbom', 'vex', 'cbom', ...")
     document_type: str | None = None
     document_version: str | None = None
     component_slug: str | None = None
@@ -447,6 +448,7 @@ class AvailableArtifactSchema(BaseModel):
     format: str | None = None
     format_version: str | None = None
     version: str | None = None
+    bom_type: str | None = Field(None, description="BOM type of an sbom artifact: 'sbom', 'vex', 'cbom', ...")
     document_type: str | None = None
     created_at: str
 
