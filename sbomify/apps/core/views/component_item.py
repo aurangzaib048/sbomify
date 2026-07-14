@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from django.conf import settings
@@ -26,8 +25,9 @@ from sbomify.apps.plugins.public_assessment_utils import get_sbom_passing_assess
 from sbomify.apps.sboms.services.sboms import get_sbom_detail
 from sbomify.apps.teams.branding import build_branding_context
 from sbomify.apps.teams.permissions import GuestAccessBlockedMixin
+from sbomify.logging import getLogger
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 class ComponentItemPublicView(View):

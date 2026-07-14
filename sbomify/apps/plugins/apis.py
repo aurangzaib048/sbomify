@@ -1,6 +1,5 @@
 """API endpoints for the plugins framework."""
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +14,7 @@ from sbomify.apps.access_tokens.auth import optional_auth
 from sbomify.apps.core.authz import can
 from sbomify.apps.sboms.models import SBOM
 from sbomify.apps.teams.models import Member, Team
+from sbomify.logging import getLogger
 
 from .models import AssessmentRun, RegisteredPlugin, TeamPluginSettings
 from .schemas import (
@@ -25,7 +25,7 @@ from .schemas import (
 )
 from .sdk.enums import RunStatus
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 router = Router(tags=["plugins"])
 
