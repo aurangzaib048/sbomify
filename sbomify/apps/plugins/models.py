@@ -9,7 +9,6 @@ from typing import Any
 
 from django.apps import apps
 from django.db import models
-from django.db.models.fields.json import KeyTransform
 
 from .sdk.enums import AssessmentCategory, RunReason, RunStatus
 
@@ -335,31 +334,24 @@ class AssessmentRun(models.Model):
         null=True,
         help_text="Assessment result following AssessmentResult schema",
     )
-    # Database-computed copies of the small hot slices of ``result``. The blob
-    # routinely runs to multiple MB (the findings array), and every JSON-path
-    # read of it forces Postgres to de-TOAST the whole value — the dashboards
-    # only need these slices. Stored generated columns are computed once at
-    # write and stay inline in the heap tuple, so reads that select them never
-    # touch the blob's TOAST data at all. ``result`` itself stays untouched.
-    result_summary = models.GeneratedField(
-        expression=KeyTransform("summary", "result"),
-        output_field=models.JSONField(null=True),
-        db_persist=True,
-        help_text="result.summary, materialised at write time for blob-free reads",
+    # Application-maintained copies of the small hot slices of ``result``. The
+    # blob routinely runs to multiple MB (the findings array), and every
+    # JSON-path read of it forces Postgres to de-TOAST the whole value — the
+    # dashboards only need these slices. Plain columns (populated in ``save``,
+    # never by a table-rewriting generated expression, so adding them was
+    # instant even on very large tables) stay inline in the heap tuple, and
+    # reads that select them never touch the blob's TOAST data. ``result``
+    # itself stays untouched. Legacy rows are filled by the
+    # ``backfill_result_summaries`` management command.
+    result_summary = models.JSONField(
+        null=True,
+        editable=False,
+        help_text="result.summary, copied at write time for blob-free reads",
     )
-    # jsonb equality instead of a text-to-boolean Cast: a cast errors at write
-    # (and during the backfilling table rewrite) on any non-boolean value a
-    # plugin ever stored at metadata.skipped, whereas equality just yields NULL.
-    result_skipped = models.GeneratedField(
-        expression=models.Case(
-            models.When(result__metadata__skipped=True, then=models.Value(True)),
-            models.When(result__metadata__skipped=False, then=models.Value(False)),
-            default=models.Value(None),
-            output_field=models.BooleanField(null=True),
-        ),
-        output_field=models.BooleanField(null=True),
-        db_persist=True,
-        help_text="result.metadata.skipped, materialised at write time for blob-free reads",
+    result_skipped = models.BooleanField(
+        null=True,
+        editable=False,
+        help_text="result.metadata.skipped, copied at write time for blob-free reads",
     )
     result_schema_version = models.CharField(
         max_length=10,
@@ -376,6 +368,33 @@ class AssessmentRun(models.Model):
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def _populate_result_columns(self) -> None:
+        """Copy the hot slices of ``result`` into their dedicated columns."""
+        result = self.result if isinstance(self.result, dict) else {}
+        summary = result.get("summary")
+        self.result_summary = summary if isinstance(summary, dict) else None
+        metadata = result.get("metadata")
+        skipped = metadata.get("skipped") if isinstance(metadata, dict) else None
+        # Tri-state on purpose: only a real JSON boolean lands in the column;
+        # anything else (absent, junk value) reads as "unknown", mirroring how
+        # the old generated column's jsonb-equality expression behaved.
+        self.result_skipped = skipped if isinstance(skipped, bool) else None
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        """Keep ``result_summary``/``result_skipped`` in lockstep with ``result``.
+
+        Every production write path goes through ``save`` (creates, the
+        orchestrator's completion update, the VEX re-annotation), so the
+        columns can never drift. When the caller narrows ``update_fields``
+        to include ``result``, the derived columns are added so a result
+        rewrite can't leave them stale.
+        """
+        self._populate_result_columns()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "result" in update_fields:
+            kwargs["update_fields"] = list(set(update_fields) | {"result_summary", "result_skipped"})
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         """Return string representation."""
