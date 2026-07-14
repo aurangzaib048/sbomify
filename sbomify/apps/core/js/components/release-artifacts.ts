@@ -294,7 +294,9 @@ export function registerReleaseArtifacts() {
                 }
 
                 if (this.availableTypeFilter) {
-                    filtered = filtered.filter((a: AvailableArtifact) => a.artifact_type === this.availableTypeFilter);
+                    filtered = filtered.filter(
+                        (a: AvailableArtifact) => this.getAvailableArtifactType(a) === this.availableTypeFilter
+                    );
                 }
 
                 if (this.availableComponentFilter) {
@@ -313,8 +315,8 @@ export function registerReleaseArtifacts() {
 
                     switch (sortColumn) {
                         case 'type':
-                            aVal = a.artifact_type || '';
-                            bVal = b.artifact_type || '';
+                            aVal = this.getAvailableArtifactType(a);
+                            bVal = this.getAvailableArtifactType(b);
                             break;
                         case 'name':
                             aVal = a.name.toLowerCase();
@@ -495,6 +497,13 @@ export function registerReleaseArtifacts() {
             },
 
             // Available artifact methods
+            getAvailableArtifactType(artifact: AvailableArtifact): string {
+                if (artifact.artifact_type === 'sbom') {
+                    return artifact.bom_type === 'vex' ? 'vex' : 'sbom';
+                }
+                return artifact.artifact_type;
+            },
+
             getAvailableTypeIcon(artifact: AvailableArtifact): string {
                 if (artifact.artifact_type === 'sbom') {
                     return artifact.bom_type === 'vex' ? 'fas fa-file-contract' : 'fas fa-file-code';

@@ -183,7 +183,9 @@ def _run_to_schema(
         # Only the result payload gets this treatment: a validation failure on
         # any other field is a real bug and must surface, not be blamed on the
         # blob and re-raised from the second construction with a confusing trace.
-        if not all(err.get("loc", (None,))[0] == "result" for err in e.errors()):
+        # ``loc`` can be present-but-empty (model-level errors), so guard with
+        # ``or`` rather than a dict default before indexing.
+        if not all((err.get("loc") or (None,))[0] == "result" for err in e.errors()):
             raise
         logger.warning(
             "AssessmentRun %s (plugin %s) has a result that fails schema validation; serialising without it",

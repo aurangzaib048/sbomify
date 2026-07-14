@@ -9,8 +9,7 @@ from typing import Any
 
 from django.apps import apps
 from django.db import models
-from django.db.models.fields.json import KeyTextTransform, KeyTransform
-from django.db.models.functions import Cast
+from django.db.models.fields.json import KeyTransform
 
 from .sdk.enums import AssessmentCategory, RunReason, RunStatus
 
@@ -348,8 +347,16 @@ class AssessmentRun(models.Model):
         db_persist=True,
         help_text="result.summary, materialised at write time for blob-free reads",
     )
+    # jsonb equality instead of a text-to-boolean Cast: a cast errors at write
+    # (and during the backfilling table rewrite) on any non-boolean value a
+    # plugin ever stored at metadata.skipped, whereas equality just yields NULL.
     result_skipped = models.GeneratedField(
-        expression=Cast(KeyTextTransform("skipped", KeyTransform("metadata", "result")), models.BooleanField()),
+        expression=models.Case(
+            models.When(result__metadata__skipped=True, then=models.Value(True)),
+            models.When(result__metadata__skipped=False, then=models.Value(False)),
+            default=models.Value(None),
+            output_field=models.BooleanField(null=True),
+        ),
         output_field=models.BooleanField(null=True),
         db_persist=True,
         help_text="result.metadata.skipped, materialised at write time for blob-free reads",
