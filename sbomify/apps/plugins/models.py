@@ -9,6 +9,8 @@ from typing import Any
 
 from django.apps import apps
 from django.db import models
+from django.db.models.fields.json import KeyTextTransform, KeyTransform
+from django.db.models.functions import Cast
 
 from .sdk.enums import AssessmentCategory, RunReason, RunStatus
 
@@ -333,6 +335,24 @@ class AssessmentRun(models.Model):
     result = models.JSONField(
         null=True,
         help_text="Assessment result following AssessmentResult schema",
+    )
+    # Database-computed copies of the small hot slices of ``result``. The blob
+    # routinely runs to multiple MB (the findings array), and every JSON-path
+    # read of it forces Postgres to de-TOAST the whole value — the dashboards
+    # only need these slices. Stored generated columns are computed once at
+    # write and stay inline in the heap tuple, so reads that select them never
+    # touch the blob's TOAST data at all. ``result`` itself stays untouched.
+    result_summary = models.GeneratedField(
+        expression=KeyTransform("summary", "result"),
+        output_field=models.JSONField(null=True),
+        db_persist=True,
+        help_text="result.summary, materialised at write time for blob-free reads",
+    )
+    result_skipped = models.GeneratedField(
+        expression=Cast(KeyTextTransform("skipped", KeyTransform("metadata", "result")), models.BooleanField()),
+        output_field=models.BooleanField(null=True),
+        db_persist=True,
+        help_text="result.metadata.skipped, materialised at write time for blob-free reads",
     )
     result_schema_version = models.CharField(
         max_length=10,
