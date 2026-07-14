@@ -2753,6 +2753,7 @@ def _build_release_response(request: HttpRequest, release: Release, include_arti
                         "sbom_format": artifact.sbom.format,
                         "sbom_format_version": artifact.sbom.format_version,
                         "sbom_version": artifact.sbom.version or "",
+                        "bom_type": artifact.sbom.bom_type,
                         "document_type": None,
                         "document_version": None,
                     }
@@ -3380,6 +3381,7 @@ def list_release_artifacts(
                         "sbom_format": artifact.sbom.format,
                         "sbom_format_version": artifact.sbom.format_version,
                         "sbom_version": artifact.sbom.version or "",
+                        "bom_type": artifact.sbom.bom_type,
                         "document_type": None,
                         "document_version": None,
                         "component_slug": artifact.sbom.component.slug,
@@ -3449,6 +3451,7 @@ def list_release_artifacts(
                     "format": sbom.format,
                     "format_version": sbom.format_version,
                     "version": sbom.version or "",
+                    "bom_type": sbom.bom_type,
                     "created_at": sbom.created_at.isoformat(),
                 }
             )
