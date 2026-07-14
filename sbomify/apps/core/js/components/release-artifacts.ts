@@ -470,7 +470,7 @@ export function registerReleaseArtifacts() {
                     case 'sbom':
                         return 'fas fa-file-code';
                     case 'vex':
-                        return 'fas fa-shield-alt';
+                        return 'fas fa-file-contract';
                     case 'document':
                         return 'fas fa-file-alt';
                     default:
@@ -497,7 +497,7 @@ export function registerReleaseArtifacts() {
             // Available artifact methods
             getAvailableTypeIcon(artifact: AvailableArtifact): string {
                 if (artifact.artifact_type === 'sbom') {
-                    return artifact.bom_type === 'vex' ? 'fas fa-shield-alt' : 'fas fa-file-code';
+                    return artifact.bom_type === 'vex' ? 'fas fa-file-contract' : 'fas fa-file-code';
                 }
                 if (artifact.artifact_type === 'document') return 'fas fa-file-alt';
                 return 'fas fa-file';
