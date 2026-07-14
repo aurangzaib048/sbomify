@@ -3,6 +3,18 @@
 from django.db import migrations, models
 
 
+def _mark_latest_release_pins_auto(apps, schema_editor):
+    """Existing latest-release artifacts are sbomify-managed.
+
+    They predate the flag, so they'd otherwise read as manual pins and
+    ensure_latest_vex_pinned would refuse to re-point their VEX slots. Manual
+    artifact management is rejected on latest releases, so every existing row
+    there was created by sbomify's own maintenance.
+    """
+    ReleaseArtifact = apps.get_model("core", "ReleaseArtifact")
+    ReleaseArtifact.objects.filter(release__is_latest=True).update(auto_pinned=True)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -18,4 +30,5 @@ class Migration(migrations.Migration):
                 help_text="Pinned by sbomify to track the component's newest VEX. Auto pins are re-pointed when a newer VEX appears; a manually pinned VEX is an authoritative snapshot and is never replaced automatically.",
             ),
         ),
+        migrations.RunPython(_mark_latest_release_pins_auto, migrations.RunPython.noop),
     ]
