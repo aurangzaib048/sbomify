@@ -1,5 +1,6 @@
 """API endpoints for the plugins framework."""
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -8,6 +9,7 @@ from django.http import HttpRequest
 from ninja import Router
 from ninja.decorators import decorate_view
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from sbomify.apps.access_tokens.auth import optional_auth
 from sbomify.apps.core.authz import can
@@ -22,6 +24,8 @@ from .schemas import (
     SBOMAssessmentsResponse,
 )
 from .sdk.enums import RunStatus
+
+logger = logging.getLogger(__name__)
 
 router = Router(tags=["plugins"])
 
@@ -152,23 +156,37 @@ def _run_to_schema(
     release_ids = [str(rel.id) for rel in releases]
     release_names = [rel.name for rel in releases]
 
-    return AssessmentRunSchema(
-        id=str(run.id),
-        sbom_id=str(run.sbom_id),
-        release_ids=release_ids,
-        release_names=release_names,
-        plugin_name=run.plugin_name,
-        plugin_version=run.plugin_version,
-        plugin_display_name=display_name,
-        category=run.category,
-        run_reason=run.run_reason,
-        status=run.status,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        error_message=run.error_message or None,
-        result=run.result,
-        created_at=run.created_at,
-    )
+    fields: dict[str, Any] = {
+        "id": str(run.id),
+        "sbom_id": str(run.sbom_id),
+        "release_ids": release_ids,
+        "release_names": release_names,
+        "plugin_name": run.plugin_name,
+        "plugin_version": run.plugin_version,
+        "plugin_display_name": display_name,
+        "category": run.category,
+        "run_reason": run.run_reason,
+        "status": run.status,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+        "error_message": run.error_message or None,
+        "result": run.result,
+        "created_at": run.created_at,
+    }
+    try:
+        return AssessmentRunSchema(**fields)
+    except PydanticValidationError:
+        # A result blob that predates (or drifted from) the current schema must
+        # not fail the whole response — every batch caller serializes many runs,
+        # so one bad row would blank the assessments for the entire SBOM.
+        # Degrade this run to result=None; its status/plugin metadata still show.
+        logger.warning(
+            "AssessmentRun %s (plugin %s) has a result that fails schema validation; serialising without it",
+            run.id,
+            run.plugin_name,
+        )
+        fields["result"] = None
+        return AssessmentRunSchema(**fields)
 
 
 def _compute_status_summary(runs: list[AssessmentRun]) -> AssessmentStatusSummary:
