@@ -557,6 +557,15 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
     try:
         from sbomify.apps.vulnerability_scanning.vex_formats import looks_like_xml, parse_vex_bytes
 
+        # Same ceiling as the file-upload endpoint: Content-Length fails fast
+        # before the body is read, len() backstops chunked/absent headers.
+        max_size_mb = SBOM_MAX_UPLOAD_SIZE // (1024 * 1024)
+        declared = request.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > SBOM_MAX_UPLOAD_SIZE:
+            return 400, {"detail": f"Document exceeds the {max_size_mb}MB limit"}
+        if len(request.body) > SBOM_MAX_UPLOAD_SIZE:
+            return 400, {"detail": f"Document exceeds the {max_size_mb}MB limit"}
+
         document = parse_vex_bytes(request.body)
         if document is None:
             return 400, {"detail": "Invalid VEX: not a JSON or CycloneDX XML document"}
