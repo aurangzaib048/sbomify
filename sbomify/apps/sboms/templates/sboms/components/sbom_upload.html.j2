@@ -7,7 +7,7 @@
                 :aria-expanded="expanded"
                 @click="expanded = !expanded">
             <h4 class="text-lg font-semibold text-text m-0 flex items-center gap-2">
-                <i class="fas fa-upload text-primary" aria-hidden="true"></i>Upload SBOM File
+                <i class="fas fa-upload text-primary" aria-hidden="true"></i>Upload Artifact
                 <i class="fas ml-2 transition-transform"
                    :class="expanded ? 'fa-chevron-up' : 'fa-chevron-down'"
                    aria-hidden="true"></i>
@@ -21,11 +21,22 @@
                     <strong>Recommended:</strong> Use the CI/CD Integration section below for automated SBOM uploads. Manual uploads are useful for one-time uploads, testing, or when automated workflows aren't available.
                 </div>
             </div>
+            <!-- Artifact Type -->
+            <div class="mb-4 flex items-center gap-3">
+                <label for="upload-bom-type" class="text-text text-sm font-medium">Artifact type</label>
+                <select id="upload-bom-type"
+                        class="tw-form-select w-auto"
+                        x-model="bomType"
+                        :disabled="isUploading">
+                    <option value="sbom">SBOM</option>
+                    <option value="vex">VEX</option>
+                </select>
+            </div>
             <!-- Upload Area -->
             <div class="border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer"
                  :class="{ 'border-primary bg-primary/5': isDragOver, 'border-border hover:border-primary/50': !isDragOver && !isUploading, 'border-border opacity-75': isUploading }"
                  role="button"
-                 aria-label="Upload SBOM file by dropping or clicking"
+                 aria-label="Upload artifact file by dropping or clicking"
                  :aria-busy="isUploading"
                  tabindex="0"
                  @drop.prevent="!isUploading && handleDrop($event)"
@@ -42,7 +53,7 @@
                             <i class="fas fa-cloud-upload-alt text-3xl text-primary"></i>
                         </div>
                         <p class="text-text mb-2">
-                            <strong>Drop your SBOM file here</strong> or
+                            <strong>Drop your <span x-text="bomTypeLabel"></span> file here</strong> or
                             <span class="text-primary underline">click to browse</span>
                         </p>
                         <input type="file"
@@ -51,16 +62,16 @@
                                class="hidden"
                                @change="handleFileSelect($event)"
                                @click.stop>
-                        <p class="text-text-muted text-sm m-0">
-                            Supports CycloneDX (.json, .cdx) — SBOM, VEX, CBOM, and other BOM types; and SPDX (.json, .spdx) SBOMs
-                        </p>
+                        <p class="text-text-muted text-sm m-0">SBOMs: CycloneDX (.json, .cdx) or SPDX (.json, .spdx). VEX: CycloneDX only.</p>
                     </div>
                 </template>
                 <!-- Uploading state -->
                 <template x-if="isUploading">
                     <div class="text-center">
                         {% include "components/tw/spinner.html.j2" with size="lg" class="mx-auto mb-4" %}
-                        <p class="text-text m-0">Uploading and processing SBOM...</p>
+                        <p class="text-text m-0">
+                            Uploading and processing <span x-text="bomTypeLabel"></span>...
+                        </p>
                     </div>
                 </template>
             </div>

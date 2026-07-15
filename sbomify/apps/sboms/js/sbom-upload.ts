@@ -11,7 +11,9 @@ interface SbomUploadState {
     isDragOver: boolean
     isUploading: boolean
     componentId: string
+    bomType: string
     abortController: AbortController | null
+    readonly bomTypeLabel: string
     handleDrop: (event: DragEvent) => void
     handleFileSelect: (event: Event) => void
     validateFile: (file: File) => string | null
@@ -25,7 +27,12 @@ export function registerSbomUpload(): void {
         isDragOver: false,
         isUploading: false,
         componentId: componentId,
+        bomType: 'sbom',
         abortController: null,
+
+        get bomTypeLabel(): string {
+            return this.bomType === 'vex' ? 'VEX' : 'SBOM'
+        },
 
         validateFile(file: File): string | null {
             if (file.size > MAX_SBOM_SIZE) {
@@ -65,7 +72,7 @@ export function registerSbomUpload(): void {
 
                 const csrfToken = getCsrfToken()
 
-                const response = await fetch(`/api/v1/sboms/upload-file/${this.componentId}`, {
+                const response = await fetch(`/api/v1/sboms/upload-file/${this.componentId}?bom_type=${encodeURIComponent(this.bomType)}`, {
                     method: 'POST',
                     body: formData,
                     headers: {
@@ -86,7 +93,7 @@ export function registerSbomUpload(): void {
                 }
 
                 if (response.ok) {
-                    showSuccess('SBOM uploaded successfully! Reloading page...')
+                    showSuccess(`${this.bomTypeLabel} uploaded successfully! Reloading page...`)
                     window.dispatchEvent(new CustomEvent('sbom-uploaded'))
                 } else {
                     const errorMessage = (data.detail as string) || `Upload failed with status ${response.status}`

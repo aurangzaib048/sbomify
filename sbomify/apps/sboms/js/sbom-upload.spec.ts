@@ -244,12 +244,19 @@ describe('SBOM Upload Business Logic', () => {
 
     describe('Upload Workflow', () => {
         test('should construct correct API endpoint', () => {
-            const buildEndpoint = (componentId: string): string => {
-                return `/api/v1/sboms/upload-file/${componentId}`
+            const buildEndpoint = (componentId: string, bomType: string = 'sbom'): string => {
+                return `/api/v1/sboms/upload-file/${componentId}?bom_type=${encodeURIComponent(bomType)}`
             }
 
-            expect(buildEndpoint('comp-123')).toBe('/api/v1/sboms/upload-file/comp-123')
-            expect(buildEndpoint('my-component')).toBe('/api/v1/sboms/upload-file/my-component')
+            expect(buildEndpoint('comp-123')).toBe('/api/v1/sboms/upload-file/comp-123?bom_type=sbom')
+            expect(buildEndpoint('my-component', 'vex')).toBe('/api/v1/sboms/upload-file/my-component?bom_type=vex')
+        })
+
+        test('should label the artifact type for user-facing messages', () => {
+            const bomTypeLabel = (bomType: string): string => (bomType === 'vex' ? 'VEX' : 'SBOM')
+
+            expect(bomTypeLabel('sbom')).toBe('SBOM')
+            expect(bomTypeLabel('vex')).toBe('VEX')
         })
 
         test('should build FormData correctly', () => {
