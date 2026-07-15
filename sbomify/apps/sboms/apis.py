@@ -547,7 +547,7 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
     try:
         try:
             document = json.loads(request.body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return 400, {"detail": "Invalid JSON"}
 
         vex_format = detect_vex_format(document)
