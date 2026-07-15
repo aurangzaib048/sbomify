@@ -20,7 +20,8 @@ export function validateUploadFile(file: File, bomType: UploadBomType): string |
         return 'File size must be 100MB or smaller'
     }
 
-    const fileExtension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+    const dotIndex = file.name.lastIndexOf('.')
+    const fileExtension = dotIndex >= 0 ? file.name.toLowerCase().slice(dotIndex) : '';
     const hasValidType = ALLOWED_MIME_TYPES.includes(file.type);
     const hasValidExtension = ALLOWED_EXTENSIONS.includes(fileExtension);
 
