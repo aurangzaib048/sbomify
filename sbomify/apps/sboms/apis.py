@@ -94,7 +94,9 @@ def _store_external_vex(
 
     if vex_format == VEX_FORMAT_OPENVEX:
         context = openvex_context(document) or ""
-        _, _, format_version = context.rpartition("/ns/")
+        _, separator, suffix = context.rpartition("/ns/")
+        # v0.0.1 documents use the bare namespace with no version suffix.
+        format_version = suffix if separator else "v0.0.1"
         version = str(document.get("version") or "")
     else:
         meta = document.get("document") or {}
