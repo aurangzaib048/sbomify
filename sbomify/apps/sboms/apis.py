@@ -545,6 +545,11 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
             return 400, {"detail": "Invalid JSON"}
 
         vex_format = detect_vex_format(document)
+        # The session upload flow treats any document with specVersion as
+        # CycloneDX even without the bomFormat marker; stay equally lenient
+        # here and let the CycloneDX schema validation give the real verdict.
+        if vex_format is None and isinstance(document, dict) and "specVersion" in document:
+            vex_format = VEX_FORMAT_CYCLONEDX
         if vex_format is None:
             return 400, {
                 "detail": "Unrecognized VEX format. Must be CycloneDX, OpenVEX, or CSAF (csaf_vex).",
