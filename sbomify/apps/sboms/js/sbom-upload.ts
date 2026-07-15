@@ -1,12 +1,7 @@
 import Alpine from '../../core/js/alpine-init'
 import { showSuccess, showError } from '../../core/js/alerts'
 import { getCsrfToken } from '../../core/js/csrf'
-
-const MAX_SBOM_SIZE = 100 * 1024 * 1024;
-const ALLOWED_MIME_TYPES = ['application/json', 'text/plain'];
-const ALLOWED_EXTENSIONS = ['.json', '.spdx', '.cdx'];
-
-type UploadBomType = 'sbom' | 'vex'
+import { bomTypeLabel, buildUploadEndpoint, validateUploadFile, type UploadBomType } from './sbom-upload-helpers'
 
 interface SbomUploadState {
     expanded: boolean
@@ -33,28 +28,11 @@ export function registerSbomUpload(): void {
         abortController: null,
 
         get bomTypeLabel(): string {
-            return this.bomType === 'vex' ? 'VEX' : 'SBOM'
+            return bomTypeLabel(this.bomType)
         },
 
         validateFile(file: File): string | null {
-            if (file.size > MAX_SBOM_SIZE) {
-                return 'File size must be 100MB or smaller'
-            }
-
-            const fileExtension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
-            const hasValidType = ALLOWED_MIME_TYPES.includes(file.type);
-            const hasValidExtension = ALLOWED_EXTENSIONS.includes(fileExtension);
-
-            if (!hasValidType && !hasValidExtension) {
-                const allowed = this.bomType === 'vex' ? '.json, .cdx' : '.json, .spdx, .cdx'
-                return `Please select a valid ${this.bomTypeLabel} file (${allowed})`
-            }
-
-            if (this.bomType === 'vex' && fileExtension === '.spdx') {
-                return 'VEX documents must be CycloneDX (.json or .cdx)'
-            }
-
-            return null
+            return validateUploadFile(file, this.bomType)
         },
 
         async uploadFile(file: File): Promise<void> {
@@ -79,7 +57,7 @@ export function registerSbomUpload(): void {
 
                 const csrfToken = getCsrfToken()
 
-                const response = await fetch(`/api/v1/sboms/upload-file/${this.componentId}?bom_type=${encodeURIComponent(this.bomType)}`, {
+                const response = await fetch(buildUploadEndpoint(this.componentId, this.bomType), {
                     method: 'POST',
                     body: formData,
                     headers: {
