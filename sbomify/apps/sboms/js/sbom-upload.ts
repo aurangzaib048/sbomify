@@ -169,12 +169,14 @@ export function registerSbomUpload(): void {
             }
             this.isPreviewing = true
             try {
-                const body = await file.text()
+                // Raw bytes, not file.text(): the server sniffs JSON vs XML
+                // itself, and a decode/re-encode round-trip would corrupt
+                // non-UTF-8 XML and double the memory for large files.
                 const response = await fetch(buildPreviewEndpoint(this.componentId), {
                     method: 'POST',
-                    body,
+                    body: file,
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': file.type || 'application/octet-stream',
                         'X-CSRFToken': getCsrfToken()
                     }
                 })

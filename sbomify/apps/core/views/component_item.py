@@ -117,7 +117,10 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
 
     def get(self, request: HttpRequest, component_id: str, item_type: str, item_id: str) -> HttpResponse:
         # Fetch the component for context (needed for title and other template elements)
-        status_code, component = get_component(request, component_id)
+        # return_instance gives the access-checked model in one query; the
+        # template reads attributes/methods off it directly. Error responses
+        # are dicts regardless of the flag.
+        status_code, component = get_component(request, component_id, return_instance=True)
         if status_code != 200:
             return error_response(
                 request, HttpResponse(status=status_code, content=component.get("detail", "Unknown error"))
@@ -190,10 +193,8 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
             return error_response(request, HttpResponseNotFound("Unknown component type"))
 
         from sbomify.apps.core.authz import can
-        from sbomify.apps.core.models import Component as ComponentModel
 
-        component_obj = ComponentModel.objects.filter(id=component_id).select_related("team").first()
-        can_triage = bool(component_obj and can(request, "artifact:publish_vex", component_obj))
+        can_triage = can(request, "artifact:publish_vex", component)
 
         return render(
             request,
@@ -207,6 +208,6 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 "vulnerability_summary": vulnerability_summary,
                 "assessment_runs": assessment_runs,
                 "can_triage": can_triage,
-                "team_key": component_obj.team.key if component_obj else None,
+                "team_key": component.team.key,
             },
         )
