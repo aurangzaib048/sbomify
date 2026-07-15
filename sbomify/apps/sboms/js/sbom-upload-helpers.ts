@@ -1,4 +1,4 @@
-export const MAX_SBOM_SIZE = 100 * 1024 * 1024;
+export const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 export const ALLOWED_MIME_TYPES = ['application/json', 'text/plain'];
 export const ALLOWED_EXTENSIONS = ['.json', '.spdx', '.cdx'];
 
@@ -16,7 +16,7 @@ export function buildUploadEndpoint(componentId: string, bomType: UploadBomType)
 }
 
 export function validateUploadFile(file: File, bomType: UploadBomType): string | null {
-    if (file.size > MAX_SBOM_SIZE) {
+    if (file.size > MAX_UPLOAD_SIZE) {
         return 'File size must be 100MB or smaller'
     }
 
