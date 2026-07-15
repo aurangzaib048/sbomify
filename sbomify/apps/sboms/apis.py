@@ -97,12 +97,14 @@ def _store_external_vex(
         _, separator, suffix = context.rpartition("/ns/")
         # v0.0.1 documents use the bare namespace with no version suffix.
         format_version = suffix if separator else "v0.0.1"
-        version = str(document.get("version") or "")
+        raw_version = document.get("version")
     else:
         meta = document.get("document") or {}
         format_version = str(meta.get("csaf_version") or "")
         tracking = meta.get("tracking")
-        version = str(tracking.get("version") or "") if isinstance(tracking, dict) else ""
+        raw_version = tracking.get("version") if isinstance(tracking, dict) else None
+    # Explicit None-check: a falsy-but-present version (e.g. 0) is still a version.
+    version = "" if raw_version is None else str(raw_version)
 
     s3 = S3Client("SBOMS")
     filename = s3.upload_sbom(file_content)
