@@ -256,11 +256,14 @@ describe('SBOM Upload Business Logic', () => {
 
         test('should reject SPDX files when uploading a VEX', () => {
             const spdxFile = createMockFile('doc.spdx', 1024, 'application/json')
+            const spdxJsonFile = createMockFile('doc.spdx.json', 1024, 'application/json')
             const cdxFile = createMockFile('doc.vex.cdx.json', 1024, 'application/json')
 
             expect(validateUploadFile(spdxFile, 'vex')).toContain('CycloneDX')
+            expect(validateUploadFile(spdxJsonFile, 'vex')).toContain('CycloneDX')
             expect(validateUploadFile(cdxFile, 'vex')).toBeNull()
             expect(validateUploadFile(spdxFile, 'sbom')).toBeNull()
+            expect(validateUploadFile(spdxJsonFile, 'sbom')).toBeNull()
         })
 
         test('should name the selected type in the invalid-file message', () => {

@@ -26,7 +26,9 @@ export function validateUploadFile(file: File, bomType: UploadBomType): string |
         return `Please select a valid ${bomTypeLabel(bomType)} file (${allowed})`
     }
 
-    if (bomType === 'vex' && fileExtension === '.spdx') {
+    // Catch both bare ".spdx" and the common ".spdx.json" naming. The server
+    // inspects the content either way; this just fails obvious cases early.
+    if (bomType === 'vex' && /\.spdx(\.|$)/.test(file.name.toLowerCase())) {
         return 'VEX documents must be CycloneDX (.json or .cdx)'
     }
 
