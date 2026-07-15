@@ -521,8 +521,8 @@ def sbom_upload_cyclonedx(
 
         return 201, {"id": sbom.id}
 
-    except Exception as e:
-        log.error(f"Error processing CycloneDX BOM upload: {str(e)}")
+    except Exception:
+        log.exception("Error processing CycloneDX BOM upload")
         return 400, {"detail": "Invalid request"}
 
 
