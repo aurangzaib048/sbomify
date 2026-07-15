@@ -65,6 +65,7 @@ dependencies = [
     # WeasyPrint (libpango, libjpeg, libopenjp2, libffi) are added in
     # the Dockerfile's python-common-code stage.
     "weasyprint>=68.0,<70",
+    "defusedxml>=0.7.1",
 ]
 
 [project.urls]
@@ -90,6 +91,7 @@ dev = [
     "types-gunicorn>=25.1.0,<27",
     "types-channels>=4.3.0,<5",
     "types-requests>=2.32.0,<3",
+    "types-defusedxml>=0.7.0.20260504",
 ]
 test = [
     "pytest>=9.0.3,<10",

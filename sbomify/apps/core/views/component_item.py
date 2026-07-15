@@ -189,6 +189,12 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
         else:
             return error_response(request, HttpResponseNotFound("Unknown component type"))
 
+        from sbomify.apps.core.authz import can
+        from sbomify.apps.core.models import Component as ComponentModel
+
+        component_obj = ComponentModel.objects.filter(id=component_id).select_related("team").first()
+        can_triage = bool(component_obj and can(request, "artifact:publish_vex", component_obj))
+
         return render(
             request,
             "core/component_item.html.j2",
@@ -200,5 +206,7 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 "component_id": component_id,
                 "vulnerability_summary": vulnerability_summary,
                 "assessment_runs": assessment_runs,
+                "can_triage": can_triage,
+                "team_key": component_obj.team.key if component_obj else None,
             },
         )

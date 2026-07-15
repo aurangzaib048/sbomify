@@ -58,12 +58,12 @@
                         </p>
                         <input type="file"
                                x-ref="fileInput"
-                               :accept="bomType === 'vex' ? '.json,.cdx' : '.json,.spdx,.cdx'"
+                               :accept="bomType === 'vex' ? '.json,.cdx,.xml' : '.json,.spdx,.cdx'"
                                class="hidden"
                                @change="handleFileSelect($event)"
                                @click.stop>
                         <p class="text-text-muted text-sm m-0">
-                            SBOMs: CycloneDX (.json, .cdx) or SPDX (.json, .spdx). VEX: CycloneDX, OpenVEX, or CSAF (.json, .cdx).
+                            SBOMs: CycloneDX (.json, .cdx) or SPDX (.json, .spdx). VEX: CycloneDX (JSON or XML), OpenVEX, or CSAF.
                         </p>
                     </div>
                 </template>
@@ -77,6 +77,58 @@
                     </div>
                 </template>
             </div>
+            <!-- VEX dry-run preview -->
+            <template x-if="isPreviewing">
+                <div class="mt-4 text-center text-text-muted">
+                    {% include "components/tw/spinner.html.j2" with size="sm" class="mx-auto mb-2" %}
+                    Checking what this VEX would change…
+                </div>
+            </template>
+            <template x-if="preview">
+                <div class="mt-4 border border-border rounded-xl p-4">
+                    <h5 class="font-semibold text-text mb-3">
+                        <i class="fas fa-flask text-primary mr-1"></i>Preview — nothing stored yet
+                    </h5>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 text-center">
+                        <div class="bg-info/10 p-2 rounded-lg">
+                            <div class="font-bold text-info" x-text="preview.would_suppress"></div>
+                            <small class="text-text-muted">Would suppress</small>
+                        </div>
+                        <div class="bg-border/30 p-2 rounded-lg">
+                            <div class="font-bold text-text" x-text="preview.already_suppressed"></div>
+                            <small class="text-text-muted">Already suppressed</small>
+                        </div>
+                        <div class="bg-warning/10 p-2 rounded-lg">
+                            <div class="font-bold text-warning" x-text="preview.unmatched_statements"></div>
+                            <small class="text-text-muted">Statements matching nothing</small>
+                        </div>
+                        <div class="bg-border/30 p-2 rounded-lg">
+                            <div class="font-bold text-text" x-text="preview.findings_checked"></div>
+                            <small class="text-text-muted">Findings checked</small>
+                        </div>
+                    </div>
+                    <template x-if="preview.matched.length">
+                        <ul class="text-sm text-text-muted mb-3 space-y-1">
+                            <template x-for="match in preview.matched.slice(0, 8)"
+                                      :key="match.id + (match.package || '')">
+                                <li>
+                                    <span class="font-mono" x-text="match.id"></span>
+                                    <template x-if="match.package">
+                                        <span> — <span x-text="match.package"></span><template x-if="match.version"><span x-text="'@' + match.version"></span></template></span>
+                                    </template>
+                                    <span class="text-info" x-text="' → ' + match.state"></span>
+                                </li>
+                            </template>
+                        </ul>
+                    </template>
+                    <div class="flex gap-2 justify-end">
+                        <button type="button" class="tw-btn-secondary" @click="cancelPreview()">Cancel</button>
+                        <button type="button" class="tw-btn-primary" @click="applyPreview()">
+                            <i class="fas fa-upload mr-1"></i>Apply this VEX
+                        </button>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 </div>

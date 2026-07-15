@@ -1,6 +1,6 @@
 export const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
-export const ALLOWED_MIME_TYPES = ['application/json', 'text/plain'];
-export const ALLOWED_EXTENSIONS = ['.json', '.spdx', '.cdx'];
+export const ALLOWED_MIME_TYPES = ['application/json', 'text/plain', 'text/xml', 'application/xml'];
+export const ALLOWED_EXTENSIONS = ['.json', '.spdx', '.cdx', '.xml'];
 
 export type UploadBomType = 'sbom' | 'vex'
 
@@ -25,15 +25,24 @@ export function validateUploadFile(file: File, bomType: UploadBomType): string |
     const hasValidExtension = ALLOWED_EXTENSIONS.includes(fileExtension);
 
     if (!hasValidType && !hasValidExtension) {
-        const allowed = bomType === 'vex' ? '.json, .cdx' : '.json, .spdx, .cdx'
+        const allowed = bomType === 'vex' ? '.json, .cdx, .xml' : '.json, .spdx, .cdx'
         return `Please select a valid ${bomTypeLabel(bomType)} file (${allowed})`
+    }
+
+    // XML is only meaningful for CycloneDX VEX; SBOM uploads are JSON formats.
+    if (bomType === 'sbom' && fileExtension === '.xml') {
+        return 'XML uploads are supported for VEX only; SBOMs must be CycloneDX or SPDX JSON'
     }
 
     // Catch both bare ".spdx" and the common ".spdx.json" naming. The server
     // inspects the content either way; this just fails obvious cases early.
     if (bomType === 'vex' && /\.spdx(\.|$)/.test(file.name.toLowerCase())) {
-        return 'SPDX files are SBOM-only; a VEX must be CycloneDX, OpenVEX, or CSAF (.json, .cdx)'
+        return 'SPDX files are SBOM-only; a VEX must be CycloneDX, OpenVEX, or CSAF (.json, .cdx, .xml)'
     }
 
     return null
+}
+
+export function buildPreviewEndpoint(componentId: string): string {
+    return `/api/v1/vulnerability-scanning/components/${componentId}/vex-preview`
 }

@@ -270,7 +270,7 @@ describe('SBOM Upload Business Logic', () => {
         test('should name the selected type in the invalid-file message', () => {
             const badFile = createMockFile('archive.tar', 1024, 'application/x-tar')
 
-            expect(validateUploadFile(badFile, 'vex')).toBe('Please select a valid VEX file (.json, .cdx)')
+            expect(validateUploadFile(badFile, 'vex')).toBe('Please select a valid VEX file (.json, .cdx, .xml)')
             expect(validateUploadFile(badFile, 'sbom')).toBe('Please select a valid SBOM file (.json, .spdx, .cdx)')
         })
 

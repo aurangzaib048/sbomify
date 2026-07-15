@@ -20,6 +20,13 @@ class FindingSchema(BaseModel):
     aliases: list[str] | None = None
     remediation: str | None = None
     metadata: dict[str, Any] | None = None
+    # VEX triage annotations (set by annotate_findings_with_vex on stored results)
+    analysis_state: str | None = None
+    analysis_justification: str | None = None
+    analysis_detail: str | None = None
+    # In CISA's Known Exploited Vulnerabilities catalog; stamped at serialization
+    # time from the cached KEV feed, never stored.
+    kev: bool = False
 
     @field_validator("aliases", mode="before")
     @classmethod

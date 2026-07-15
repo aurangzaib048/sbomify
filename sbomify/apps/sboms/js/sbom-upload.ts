@@ -1,18 +1,35 @@
 import Alpine from '../../core/js/alpine-init'
 import { showSuccess, showError } from '../../core/js/alerts'
 import { getCsrfToken } from '../../core/js/csrf'
-import { bomTypeLabel, buildUploadEndpoint, validateUploadFile, type UploadBomType } from './sbom-upload-helpers'
+import { bomTypeLabel, buildPreviewEndpoint, buildUploadEndpoint, validateUploadFile, type UploadBomType } from './sbom-upload-helpers'
+
+interface VexPreview {
+    format: string
+    suppressing_statements: number
+    findings_checked: number
+    would_suppress: number
+    already_suppressed: number
+    unmatched_statements: number
+    matched: Array<{ id: string; package: string | null; version: string | null; state: string }>
+}
 
 interface SbomUploadState {
     expanded: boolean
     isDragOver: boolean
     isUploading: boolean
+    isPreviewing: boolean
     componentId: string
     bomType: UploadBomType
+    preview: VexPreview | null
+    pendingFile: File | null
     abortController: AbortController | null
     readonly bomTypeLabel: string
     handleDrop: (event: DragEvent) => void
     handleFileSelect: (event: Event) => void
+    handleFile: (file: File) => void
+    runPreview: (file: File) => Promise<void>
+    applyPreview: () => Promise<void>
+    cancelPreview: () => void
     validateFile: (file: File) => string | null
     uploadFile: (file: File) => Promise<void>
     cleanup: () => void
@@ -23,8 +40,11 @@ export function registerSbomUpload(): void {
         expanded: !hasSboms,
         isDragOver: false,
         isUploading: false,
+        isPreviewing: false,
         componentId: componentId,
         bomType: 'sbom' as UploadBomType,
+        preview: null,
+        pendingFile: null,
         abortController: null,
 
         get bomTypeLabel(): string {
@@ -110,7 +130,7 @@ export function registerSbomUpload(): void {
 
             const files = event.dataTransfer?.files;
             if (files?.[0]) {
-                this.uploadFile(files[0]);
+                this.handleFile(files[0]);
             }
         },
 
@@ -125,9 +145,65 @@ export function registerSbomUpload(): void {
 
             const files = target.files;
             if (files?.[0]) {
-                this.uploadFile(files[0]);
+                this.handleFile(files[0]);
             }
             target.value = '';
+        },
+
+        handleFile(file: File): void {
+            // A VEX changes which findings the whole workspace sees as open, so
+            // it gets a dry-run preview before anything is stored. SBOMs upload
+            // directly as before.
+            if (this.bomType === 'vex') {
+                this.runPreview(file);
+            } else {
+                this.uploadFile(file);
+            }
+        },
+
+        async runPreview(file: File): Promise<void> {
+            const validationError = this.validateFile(file)
+            if (validationError) {
+                showError(validationError)
+                return
+            }
+            this.isPreviewing = true
+            try {
+                const body = await file.text()
+                const response = await fetch(buildPreviewEndpoint(this.componentId), {
+                    method: 'POST',
+                    body,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCsrfToken()
+                    }
+                })
+                const data = await response.json().catch(() => ({}))
+                if (!response.ok) {
+                    showError((data.detail as string) || `Preview failed with status ${response.status}`)
+                    return
+                }
+                this.preview = data as VexPreview
+                this.pendingFile = file
+            } catch (error) {
+                showError(error instanceof Error ? `Preview failed: ${error.message}` : 'Preview failed')
+            } finally {
+                this.isPreviewing = false
+            }
+        },
+
+        async applyPreview(): Promise<void> {
+            const file = this.pendingFile
+            this.preview = null
+            this.pendingFile = null
+            if (file) {
+                await this.uploadFile(file)
+            }
+        },
+
+        cancelPreview(): void {
+            this.preview = null
+            this.pendingFile = null
         },
 
         cleanup(): void {

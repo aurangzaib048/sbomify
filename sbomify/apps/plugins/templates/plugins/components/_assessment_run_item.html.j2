@@ -105,6 +105,13 @@
                                                 <div class="font-bold text-text">{{ security_total }}</div>
                                                 <small class="text-text-muted">Total</small>
                                             </div>
+                                            {% if run.result.summary.suppressed_count %}
+                                                <div class="bg-info/10 p-3 rounded-lg text-center"
+                                                     title="Findings suppressed by VEX (not_affected / false_positive)">
+                                                    <div class="font-bold text-info">{{ run.result.summary.suppressed_count }}</div>
+                                                    <small class="text-text-muted">VEX suppressed</small>
+                                                </div>
+                                            {% endif %}
                                         </div>
                                     </div>
                                 {% endif %}
@@ -145,6 +152,25 @@
                                                             {# CVSS score #}
                                                             {% if finding.cvss_score %}
                                                                 <span class="px-2 py-0.5 text-xs font-semibold rounded bg-surface text-text-muted border border-border">CVSS: {{ finding.cvss_score }}</span>
+                                                            {% endif %}
+                                                            {# CISA KEV: confirmed exploited in the wild #}
+                                                            {% if finding.kev %}
+                                                                <span class="px-2 py-0.5 text-xs font-semibold uppercase tracking-wide rounded bg-danger text-white"
+                                                                      title="In CISA's Known Exploited Vulnerabilities catalog">KEV</span>
+                                                            {% endif %}
+                                                            {# VEX analysis state #}
+                                                            {% if finding.analysis_state %}
+                                                                <span class="px-2 py-0.5 text-xs font-semibold rounded bg-info/10 text-info border border-info/30"
+                                                                      title="{{ finding.analysis_justification|default:'' }} {{ finding.analysis_detail|default:'' }}">
+                                                                    <i class="fas fa-clipboard-check mr-0.5"></i>{{ finding.analysis_state }}
+                                                                </span>
+                                                            {% endif %}
+                                                            {% if can_triage and run.category == 'security' %}
+                                                                <button type="button"
+                                                                        class="px-2 py-0.5 text-xs rounded border border-border text-text-muted hover:text-primary hover:border-primary"
+                                                                        @click="$dispatch('open-triage', { id: '{{ finding.id|escapejs }}', purl: '{{ finding.component.purl|default:''|escapejs }}', state: '{{ finding.analysis_state|default:''|escapejs }}', justification: '{{ finding.analysis_justification|default:''|escapejs }}', detail: '{{ finding.analysis_detail|default:''|escapejs }}' })">
+                                                                    <i class="fas fa-stethoscope mr-1"></i>Triage
+                                                                </button>
                                                             {% endif %}
                                                         </div>
                                                         <div class="finding-description">{{ finding.title }}</div>

@@ -90,7 +90,11 @@ def _store_external_vex(
     VEX documents are re-issued continuously and the latest wins by
     ``created_at``.
     """
-    from sbomify.apps.vulnerability_scanning.vex_formats import VEX_FORMAT_OPENVEX, openvex_context
+    from sbomify.apps.vulnerability_scanning.vex_formats import (
+        VEX_FORMAT_CSAF,
+        VEX_FORMAT_OPENVEX,
+        openvex_context,
+    )
 
     if vex_format == VEX_FORMAT_OPENVEX:
         context = openvex_context(document) or ""
@@ -98,11 +102,17 @@ def _store_external_vex(
         # v0.0.1 documents use the bare namespace with no version suffix.
         format_version = suffix if separator else "v0.0.1"
         raw_version = document.get("version")
-    else:
+    elif vex_format == VEX_FORMAT_CSAF:
         meta = document.get("document") or {}
         format_version = str(meta.get("csaf_version") or "")
         tracking = meta.get("tracking")
         raw_version = tracking.get("version") if isinstance(tracking, dict) else None
+    else:
+        # CycloneDX delivered as XML: stored verbatim like the other external
+        # formats — the partial XML-to-dict conversion cannot round-trip the
+        # JSON schema validation the JSON path applies.
+        format_version = str(document.get("specVersion") or "")
+        raw_version = document.get("version")
     # Explicit None-check: a falsy-but-present version (e.g. 0) is still a version.
     version = "" if raw_version is None else str(raw_version)
 
@@ -545,10 +555,11 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
     )
 
     try:
-        try:
-            document = json.loads(request.body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return 400, {"detail": "Invalid JSON"}
+        from sbomify.apps.vulnerability_scanning.vex_formats import parse_vex_bytes
+
+        document = parse_vex_bytes(request.body)
+        if document is None:
+            return 400, {"detail": "Invalid VEX: not a JSON or CycloneDX XML document"}
 
         vex_format = detect_vex_format(document)
         # The session upload flow treats any document with specVersion as
@@ -561,7 +572,8 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
                 "detail": "Unrecognized VEX format. Must be CycloneDX, OpenVEX, or CSAF (csaf_vex).",
                 "error_code": ErrorCode.VALIDATION_ERROR,
             }
-        if vex_format == VEX_FORMAT_CYCLONEDX:
+        is_xml = request.body.lstrip()[:1] == b"<"
+        if vex_format == VEX_FORMAT_CYCLONEDX and not is_xml:
             return sbom_upload_cyclonedx(request, component_id, bom_type=SBOM.BomType.VEX.value)
 
         component = Component.objects.filter(id=component_id).first()
@@ -1091,25 +1103,33 @@ def sbom_upload_file(
         file_content = bytes(buffer)
         sha256_hash = sha256.hexdigest()
 
+        # VEX arrives in three formats and two encodings (JSON, CycloneDX XML);
+        # OpenVEX, CSAF, and XML-encoded CycloneDX are stored verbatim here,
+        # while JSON CycloneDX VEX continues through the schema-validating
+        # CycloneDX branch below.
+        if bom_type == SBOM.BomType.VEX.value:
+            from sbomify.apps.vulnerability_scanning.vex_formats import (
+                VEX_FORMAT_CSAF,
+                VEX_FORMAT_CYCLONEDX,
+                VEX_FORMAT_OPENVEX,
+                detect_vex_format,
+                parse_vex_bytes,
+            )
+
+            document = parse_vex_bytes(file_content)
+            if document is None:
+                return 400, {"detail": "Invalid VEX: not a JSON or CycloneDX XML document"}
+            vex_format = detect_vex_format(document)
+            is_xml = file_content.lstrip()[:1] == b"<"
+            if vex_format in (VEX_FORMAT_OPENVEX, VEX_FORMAT_CSAF) or (is_xml and vex_format == VEX_FORMAT_CYCLONEDX):
+                return _store_external_vex(
+                    component, document, file_content, sha256_hash, vex_format, source="manual_upload"
+                )
+
         try:
             sbom_data = json.loads(file_content.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return 400, {"detail": "Invalid JSON file or encoding"}
-
-        # VEX arrives in three formats; OpenVEX and CSAF are stored here and
-        # CycloneDX VEX continues through the CycloneDX branch below.
-        if bom_type == SBOM.BomType.VEX.value:
-            from sbomify.apps.vulnerability_scanning.vex_formats import (
-                VEX_FORMAT_CSAF,
-                VEX_FORMAT_OPENVEX,
-                detect_vex_format,
-            )
-
-            vex_format = detect_vex_format(sbom_data)
-            if vex_format in (VEX_FORMAT_OPENVEX, VEX_FORMAT_CSAF):
-                return _store_external_vex(
-                    component, sbom_data, file_content, sha256_hash, vex_format, source="manual_upload"
-                )
 
         # Determine format and process accordingly
         from sbomify.apps.plugins.builtins._spdx3_helpers import is_spdx3

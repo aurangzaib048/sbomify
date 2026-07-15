@@ -205,6 +205,9 @@
             {% if assessment_runs %}
                 <div>
                     {% include 'plugins/components/assessment_results_card.html.j2' with sbom_id=item.id assessment_runs=assessment_runs %}
+                    {% if can_triage %}
+                        {% include 'plugins/components/triage_modal.html.j2' %}
+                    {% endif %}
                 </div>
             {% endif %}
             {# Danger Zone #}
