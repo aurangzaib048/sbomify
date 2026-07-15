@@ -18,7 +18,7 @@
             <div class="flex items-start gap-3 p-4 bg-info/10 rounded-lg mb-4">
                 <i class="fas fa-info-circle text-info mt-0.5"></i>
                 <div class="text-text text-sm">
-                    <strong>Recommended:</strong> Use the CI/CD Integration section below for automated SBOM uploads. Manual uploads are useful for one-time uploads, testing, or when automated workflows aren't available.
+                    <strong>Recommended:</strong> Use the CI/CD Integration section below for automated uploads. Manual uploads are useful for one-time uploads, testing, or when automated workflows aren't available.
                 </div>
             </div>
             <!-- Artifact Type -->
@@ -59,6 +59,7 @@
                         <input type="file"
                                x-ref="fileInput"
                                accept=".json,.spdx,.cdx"
+                               :accept="bomType === 'vex' ? '.json,.cdx' : '.json,.spdx,.cdx'"
                                class="hidden"
                                @change="handleFileSelect($event)"
                                @click.stop>

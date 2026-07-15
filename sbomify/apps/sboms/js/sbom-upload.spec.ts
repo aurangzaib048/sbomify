@@ -259,6 +259,20 @@ describe('SBOM Upload Business Logic', () => {
             expect(bomTypeLabel('vex')).toBe('VEX')
         })
 
+        test('should reject SPDX files when uploading a VEX', () => {
+            const validateForBomType = (bomType: string, fileName: string): string | null => {
+                const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'))
+                if (bomType === 'vex' && ext === '.spdx') {
+                    return 'VEX documents must be CycloneDX (.json or .cdx)'
+                }
+                return null
+            }
+
+            expect(validateForBomType('vex', 'doc.spdx')).toContain('CycloneDX')
+            expect(validateForBomType('vex', 'doc.vex.cdx.json')).toBeNull()
+            expect(validateForBomType('sbom', 'doc.spdx')).toBeNull()
+        })
+
         test('should build FormData correctly', () => {
             const mockFile = createMockFile('sbom.json', 1024, 'application/json')
 

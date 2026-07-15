@@ -6,12 +6,14 @@ const MAX_SBOM_SIZE = 100 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = ['application/json', 'text/plain'];
 const ALLOWED_EXTENSIONS = ['.json', '.spdx', '.cdx'];
 
+type UploadBomType = 'sbom' | 'vex'
+
 interface SbomUploadState {
     expanded: boolean
     isDragOver: boolean
     isUploading: boolean
     componentId: string
-    bomType: string
+    bomType: UploadBomType
     abortController: AbortController | null
     readonly bomTypeLabel: string
     handleDrop: (event: DragEvent) => void
@@ -27,7 +29,7 @@ export function registerSbomUpload(): void {
         isDragOver: false,
         isUploading: false,
         componentId: componentId,
-        bomType: 'sbom',
+        bomType: 'sbom' as UploadBomType,
         abortController: null,
 
         get bomTypeLabel(): string {
@@ -45,6 +47,10 @@ export function registerSbomUpload(): void {
 
             if (!hasValidType && !hasValidExtension) {
                 return 'Please select a valid SBOM file (.json, .spdx, .cdx)'
+            }
+
+            if (this.bomType === 'vex' && fileExtension === '.spdx') {
+                return 'VEX documents must be CycloneDX (.json or .cdx)'
             }
 
             return null
