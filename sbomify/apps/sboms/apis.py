@@ -90,10 +90,10 @@ def _store_external_vex(
     VEX documents are re-issued continuously and the latest wins by
     ``created_at``.
     """
-    from sbomify.apps.vulnerability_scanning.vex_formats import VEX_FORMAT_OPENVEX
+    from sbomify.apps.vulnerability_scanning.vex_formats import VEX_FORMAT_OPENVEX, openvex_context
 
     if vex_format == VEX_FORMAT_OPENVEX:
-        context = document.get("@context") or ""
+        context = openvex_context(document) or ""
         _, _, format_version = context.rpartition("/ns/")
         version = str(document.get("version") or "")
     else:
@@ -566,8 +566,8 @@ def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, d
         sha256_hash = hashlib.sha256(request.body).hexdigest()
         return _store_external_vex(component, document, request.body, sha256_hash, vex_format, source="api")
 
-    except Exception as e:
-        log.error(f"Error processing VEX upload: {str(e)}")
+    except Exception:
+        log.exception("Error processing VEX upload")
         return 400, {"detail": "Invalid request"}
 
 

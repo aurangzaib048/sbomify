@@ -260,8 +260,8 @@ describe('SBOM Upload Business Logic', () => {
             const spdxJsonFile = createMockFile('doc.spdx.json', 1024, 'application/json')
             const cdxFile = createMockFile('doc.vex.cdx.json', 1024, 'application/json')
 
-            expect(validateUploadFile(spdxFile, 'vex')).toContain('CycloneDX')
-            expect(validateUploadFile(spdxJsonFile, 'vex')).toContain('CycloneDX')
+            expect(validateUploadFile(spdxFile, 'vex')).toContain('SPDX files are SBOM-only')
+            expect(validateUploadFile(spdxJsonFile, 'vex')).toContain('SPDX files are SBOM-only')
             expect(validateUploadFile(cdxFile, 'vex')).toBeNull()
             expect(validateUploadFile(spdxFile, 'sbom')).toBeNull()
             expect(validateUploadFile(spdxJsonFile, 'sbom')).toBeNull()
