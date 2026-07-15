@@ -39,6 +39,14 @@ def _update_latest_release_for_sbom(sbom_instance: Any) -> Any:
     # Import here to avoid circular imports
     from sbomify.apps.core.models import Component, Release
 
+    # In-app triage VEX is a component-level overlay, never a release artifact:
+    # pinning it would evict the imported (DT/manual) VEX from the release slot.
+    from sbomify.apps.sboms.models import SBOM
+    from sbomify.apps.vulnerability_scanning.vex import TRIAGE_SOURCE
+
+    if sbom_instance.bom_type == SBOM.BomType.VEX.value and sbom_instance.source == TRIAGE_SOURCE:
+        return
+
     try:
         # Get all products that contain this SBOM's component
         # Cast to core.Component proxy model to access get_products method
