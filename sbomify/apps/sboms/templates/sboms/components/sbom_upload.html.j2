@@ -58,7 +58,6 @@
                         </p>
                         <input type="file"
                                x-ref="fileInput"
-                               accept=".json,.spdx,.cdx"
                                :accept="bomType === 'vex' ? '.json,.cdx' : '.json,.spdx,.cdx'"
                                class="hidden"
                                @change="handleFileSelect($event)"
