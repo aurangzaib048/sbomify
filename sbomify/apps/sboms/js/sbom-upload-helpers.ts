@@ -9,7 +9,10 @@ export function bomTypeLabel(bomType: UploadBomType): string {
 }
 
 export function buildUploadEndpoint(componentId: string, bomType: UploadBomType): string {
-    return `/api/v1/sboms/upload-file/${componentId}?bom_type=${encodeURIComponent(bomType)}`
+    // The default SBOM case must omit bom_type: the server's CBOM
+    // auto-detection only runs when the caller leaves it unset.
+    const base = `/api/v1/sboms/upload-file/${componentId}`
+    return bomType === 'sbom' ? base : `${base}?bom_type=${encodeURIComponent(bomType)}`
 }
 
 export function validateUploadFile(file: File, bomType: UploadBomType): string | null {

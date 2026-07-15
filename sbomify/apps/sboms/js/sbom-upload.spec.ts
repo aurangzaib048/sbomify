@@ -245,7 +245,8 @@ describe('SBOM Upload Business Logic', () => {
 
     describe('Upload Workflow', () => {
         test('should construct correct API endpoint', () => {
-            expect(buildUploadEndpoint('comp-123', 'sbom')).toBe('/api/v1/sboms/upload-file/comp-123?bom_type=sbom')
+            // No bom_type for plain SBOMs — its presence disables server-side CBOM auto-detection.
+            expect(buildUploadEndpoint('comp-123', 'sbom')).toBe('/api/v1/sboms/upload-file/comp-123')
             expect(buildUploadEndpoint('my-component', 'vex')).toBe('/api/v1/sboms/upload-file/my-component?bom_type=vex')
         })
 
