@@ -46,7 +46,8 @@ export function registerSbomUpload(): void {
             const hasValidExtension = ALLOWED_EXTENSIONS.includes(fileExtension);
 
             if (!hasValidType && !hasValidExtension) {
-                return 'Please select a valid SBOM file (.json, .spdx, .cdx)'
+                const allowed = this.bomType === 'vex' ? '.json, .cdx' : '.json, .spdx, .cdx'
+                return `Please select a valid ${this.bomTypeLabel} file (${allowed})`
             }
 
             if (this.bomType === 'vex' && fileExtension === '.spdx') {
