@@ -30,7 +30,9 @@ export function validateUploadFile(file: File, bomType: UploadBomType): string |
     }
 
     // XML is only meaningful for CycloneDX VEX; SBOM uploads are JSON formats.
-    if (bomType === 'sbom' && fileExtension === '.xml') {
+    // Catch by extension AND by MIME (a .cdx file the browser tags as XML).
+    const isXml = fileExtension === '.xml' || file.type === 'application/xml' || file.type === 'text/xml'
+    if (bomType === 'sbom' && isXml) {
         return 'XML uploads are supported for VEX only; SBOMs must be CycloneDX or SPDX JSON'
     }
 

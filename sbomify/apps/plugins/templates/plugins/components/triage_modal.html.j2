@@ -41,7 +41,9 @@ Writes a sbomify-authored VEX through the triage API; requires can_triage
                         <div>
                             <label for="triage-scope" class="block text-sm font-medium text-text mb-1">Applies to</label>
                             <select id="triage-scope" class="tw-form-select w-full" x-model="scope">
-                                <option value="package" x-show="purl" x-text="'This package (' + purl + ')'"></option>
+                                <template x-if="purl">
+                                    <option value="package" x-text="'This package (' + purl + ')'"></option>
+                                </template>
                                 <option value="component">This entire component</option>
                                 <option value="workspace">Every component in this workspace</option>
                             </select>

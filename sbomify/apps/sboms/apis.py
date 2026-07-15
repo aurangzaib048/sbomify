@@ -83,7 +83,10 @@ def _store_external_vex(
     vex_format: str,
     source: str,
 ) -> tuple[int, dict[str, Any]]:
-    """Store an OpenVEX or CSAF VEX document as a ``bom_type=vex`` artifact.
+    """Store a non-JSON-CycloneDX VEX document as a ``bom_type=vex`` artifact.
+
+    Handles OpenVEX, CSAF, and CycloneDX *XML* (all routed here because their
+    bytes cannot round-trip the JSON CycloneDX schema validation).
 
     The raw bytes are stored unmodified (ADR-004); only the identifying
     metadata is read out. Like CycloneDX VEX, no duplicate check applies —
@@ -462,10 +465,12 @@ def sbom_upload_cyclonedx(
         sbom_version = sbom_dict.get("version", "")
         sbom_format = "cyclonedx"
 
-        # Auto-detect CBOM content (#1042): an action-published CBOM arrives with the
-        # default bom_type; tag it cbom so the cbom-gated PQC plugin runs. Only when
-        # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
-        if "bom_type" not in request.GET and _is_cbom(sbom_data):
+        # Auto-detect CBOM content: an action-published CBOM arrives with the
+        # default bom_type; tag it cbom so the cbom-gated PQC plugin runs. Only
+        # when the caller left the type as the default — an explicit bom_type
+        # (e.g. the delegated /artifact/vex/ path passing "vex") is honored so
+        # a crypto-heavy VEX is never re-tagged cbom.
+        if bom_type == SBOM.BomType.SBOM.value and "bom_type" not in request.GET and _is_cbom(sbom_data):
             bom_type = "cbom"
 
         # Extract PURL qualifiers from metadata.component.purl

@@ -324,9 +324,9 @@ def get_sbom_assessments(request: HttpRequest, sbom_id: str) -> SBOMAssessmentsR
     # in a single query so serialization stays O(n) without per-run lookups.
     display_names = _get_plugin_display_names_map({run.plugin_name for run in all_runs})
 
-    from sbomify.apps.vulnerability_scanning.kev import kev_cve_ids
+    from sbomify.apps.vulnerability_scanning.kev import kev_ids_for_serialization
 
-    kev_ids = kev_cve_ids() if any(run.category == "security" for run in all_runs) else frozenset()
+    kev_ids = kev_ids_for_serialization() if any(run.category == "security" for run in all_runs) else frozenset()
 
     return SBOMAssessmentsResponse(
         sbom_id=sbom_id,
