@@ -27,7 +27,7 @@
                 <select id="upload-bom-type"
                         class="tw-form-select w-auto"
                         x-model="bomType"
-                        :disabled="isUploading">
+                        :disabled="isUploading || isPreviewing || !!preview">
                     <option value="sbom">SBOM</option>
                     <option value="vex">VEX</option>
                 </select>

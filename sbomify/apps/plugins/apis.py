@@ -135,13 +135,18 @@ def _result_with_kev(run: AssessmentRun, kev_ids: frozenset[str] | None) -> Any:
         return result
     from sbomify.apps.vulnerability_scanning.kev import finding_in_kev
 
-    return {
-        **result,
-        "findings": [
-            {**finding, "kev": finding_in_kev(finding, kev_ids)} if isinstance(finding, dict) else finding
-            for finding in findings
-        ],
-    }
+    stamped: list[Any] = []
+    changed = False
+    for finding in findings:
+        if isinstance(finding, dict) and finding_in_kev(finding, kev_ids):
+            stamped.append({**finding, "kev": True})
+            changed = True
+        else:
+            # FindingSchema defaults kev=False; untouched findings need no copy.
+            stamped.append(finding)
+    if not changed:
+        return result
+    return {**result, "findings": stamped}
 
 
 def _run_to_schema(
