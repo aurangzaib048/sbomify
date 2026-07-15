@@ -127,7 +127,11 @@ def _store_external_vex(
         _cleanup_orphaned_s3_object(filename)
         raise
 
-    _broadcast_sbom_uploaded(component, sbom)
+    # The row is committed; a broadcast hiccup must not fail the upload.
+    try:
+        _broadcast_sbom_uploaded(component, sbom)
+    except Exception:
+        log.warning("Failed to broadcast SBOM upload notification", exc_info=True)
     schedule_vex_reapply(component.id)
     return 201, {"id": sbom.id}
 
