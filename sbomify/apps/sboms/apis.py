@@ -106,7 +106,8 @@ def _store_external_vex(
         format_version = suffix if separator else "v0.0.1"
         raw_version = document.get("version")
     elif vex_format == VEX_FORMAT_CSAF:
-        meta = document.get("document") or {}
+        raw_meta = document.get("document")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         format_version = str(meta.get("csaf_version") or "")
         tracking = meta.get("tracking")
         raw_version = tracking.get("version") if isinstance(tracking, dict) else None
