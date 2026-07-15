@@ -162,6 +162,10 @@ export function registerSbomUpload(): void {
         },
 
         async runPreview(file: File): Promise<void> {
+            if (this.isPreviewing) {
+                showError('A preview is already running. Please wait.')
+                return
+            }
             const validationError = this.validateFile(file)
             if (validationError) {
                 showError(validationError)
