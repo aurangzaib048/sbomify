@@ -551,9 +551,10 @@ def sbom_upload_cyclonedx(
 def vex_artifact_upload(request: HttpRequest, component_id: str) -> tuple[int, dict[str, Any]]:
     """Upload a VEX document in any supported format for a component.
 
-    The format is detected from the content: CycloneDX VEX is delegated to the
-    CycloneDX artifact flow (schema validation included); OpenVEX and CSAF VEX
-    are stored as received. Anything else is rejected.
+    The format is detected from the content: CycloneDX *JSON* VEX is delegated to
+    the CycloneDX artifact flow (schema validation included); CycloneDX XML,
+    OpenVEX, and CSAF VEX are stored as received without JSON-schema validation.
+    Anything else is rejected.
     """
     from sbomify.apps.vulnerability_scanning.vex_formats import (
         VEX_FORMAT_CYCLONEDX,
