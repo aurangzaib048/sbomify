@@ -252,17 +252,33 @@ class PluginOrchestrator:
             # Best-effort: the scan result is already complete, so a VEX problem
             # (missing S3 object, transient storage error) must never fail the run.
             if result.category == AssessmentCategory.SECURITY:
-                try:
-                    from sbomify.apps.vulnerability_scanning.vex import (
-                        annotate_findings_with_vex,
-                        resolve_vex_statements_for_sbom,
-                    )
+                from sbomify.apps.vulnerability_scanning.vex import (
+                    VexArtifactUnreadable,
+                    annotate_findings_with_vex,
+                    resolve_vex_statements_for_sbom,
+                    strict_vex_reads,
+                )
 
-                    component_id = assessment_run.sbom.component_id
+                component_id = assessment_run.sbom.component_id
+                try:
                     if component_id:
-                        annotate_findings_with_vex(
-                            result, resolve_vex_statements_for_sbom(component_id, assessment_run.sbom_id)
-                        )
+                        with strict_vex_reads():
+                            annotate_findings_with_vex(
+                                result, resolve_vex_statements_for_sbom(component_id, assessment_run.sbom_id)
+                            )
+                except VexArtifactUnreadable:
+                    # A VEX artifact exists but its object could not be read: do not
+                    # silently store an under-suppressed result. Log loud and enqueue
+                    # a reapply so the run self-corrects once storage recovers.
+                    logger.error(
+                        f"[PLUGIN] VEX artifact unreadable for run {assessment_run.id}; "
+                        f"scan stored un-suppressed, scheduling reapply",
+                        exc_info=True,
+                    )
+                    if component_id:
+                        from sbomify.apps.sboms.services.sboms import schedule_vex_reapply
+
+                        schedule_vex_reapply(component_id)
                 except Exception:
                     logger.warning(
                         f"[PLUGIN] VEX annotation failed for run {assessment_run.id}; keeping the scan result",
