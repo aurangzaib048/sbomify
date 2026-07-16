@@ -1,8 +1,10 @@
 """Keep releases' VEX pins pointing at their components' newest VEX.
 
-A VEX is a living judgment document: when a component gets a newer VEX (manual
-upload or Dependency-Track triage sync), every release that ships that
-component's SBOM should serve the new statements — the exploitability of a
+A VEX is a living judgment document: when a component gets a newer imported VEX
+(manual upload or Dependency-Track triage sync), every release that ships that
+component's SBOM should serve the new statements. In-app triage VEX is never
+pinned here — it is a component-level overlay applied on top of the pinned
+imported VEX at resolution time, so it never evicts an imported pin — the exploitability of a
 past release changes when the analysis does, not when the release is cut.
 
 Provenance rule: pins created here are marked ``auto_pinned`` and only ever
@@ -30,10 +32,14 @@ def ensure_latest_vex_pinned(release: Any, component: Any, latest_vex: Any = Non
     """
     from sbomify.apps.core.models import Release, ReleaseArtifact, _suppress_collection_signals
     from sbomify.apps.sboms.models import SBOM
+    from sbomify.apps.vulnerability_scanning.vex import TRIAGE_SOURCE
 
     if latest_vex is None:
         latest_vex = (
-            SBOM.objects.filter(component=component, bom_type=SBOM.BomType.VEX.value).order_by("-created_at").first()
+            SBOM.objects.filter(component=component, bom_type=SBOM.BomType.VEX.value)
+            .exclude(source=TRIAGE_SOURCE)
+            .order_by("-created_at")
+            .first()
         )
     if latest_vex is None:
         return False
@@ -73,13 +79,17 @@ def refresh_vex_pins_for_component(component_id: str) -> int:
     """
     from sbomify.apps.core.models import Component, Release
     from sbomify.apps.sboms.models import SBOM
+    from sbomify.apps.vulnerability_scanning.vex import TRIAGE_SOURCE
 
     component = Component.objects.filter(id=component_id).first()
     if component is None:
         return 0
 
     latest_vex = (
-        SBOM.objects.filter(component=component, bom_type=SBOM.BomType.VEX.value).order_by("-created_at").first()
+        SBOM.objects.filter(component=component, bom_type=SBOM.BomType.VEX.value)
+        .exclude(source=TRIAGE_SOURCE)
+        .order_by("-created_at")
+        .first()
     )
     if latest_vex is None:
         return 0

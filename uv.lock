@@ -2712,6 +2712,7 @@ dependencies = [
     { name = "channels" },
     { name = "channels-redis" },
     { name = "compliance-trestle" },
+    { name = "defusedxml" },
     { name = "dj-database-url" },
     { name = "django" },
     { name = "django-allauth" },
@@ -2767,6 +2768,7 @@ dev = [
     { name = "ruff" },
     { name = "types-boto3" },
     { name = "types-channels" },
+    { name = "types-defusedxml" },
     { name = "types-gunicorn" },
     { name = "types-psycopg2" },
     { name = "types-pyyaml" },
@@ -2789,6 +2791,7 @@ requires-dist = [
     { name = "channels", specifier = ">=4.0.0,<5" },
     { name = "channels-redis", specifier = ">=4.2.0,<5" },
     { name = "compliance-trestle", specifier = ">=4.0.1,<5" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "dj-database-url", specifier = ">=3.0.1,<4" },
     { name = "django", specifier = ">=5.2.14,<7" },
     { name = "django-allauth", specifier = ">=65.11.2,<66" },
@@ -2844,6 +2847,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.0,<0.16" },
     { name = "types-boto3", specifier = ">=1.42.0,<2" },
     { name = "types-channels", specifier = ">=4.3.0,<5" },
+    { name = "types-defusedxml", specifier = ">=0.7.0.20260504" },
     { name = "types-gunicorn", specifier = ">=25.1.0,<27" },
     { name = "types-psycopg2", specifier = ">=2.9.21,<3" },
     { name = "types-pyyaml", specifier = ">=6.0.12,<7" },
@@ -3134,6 +3138,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/3d/e0a164b7eaab18ab2302b7a3d90843824b729d9fe1d7bdbb3769dfc9d77b/types_channels-4.3.0.20250822.tar.gz", hash = "sha256:29a4928fdaed6d444b93b69d44fcdb5a8fe32fa72d6a41016c5d39fa7bd7f474", size = 15357, upload-time = "2025-08-22T03:04:26.444Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/52/4e3094e43d460feacb9051ec4c3498f8272f69d92b772647211478b25079/types_channels-4.3.0.20250822-py3-none-any.whl", hash = "sha256:d3fc0a1467c8cc901686826408c8a673822e07aa79cbe1a6d21946e7e55d9ddf", size = 21125, upload-time = "2025-08-22T03:04:25.539Z" },
+]
+
+[[package]]
+name = "types-defusedxml"
+version = "0.7.0.20260504"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/d2/4553c8fa9cdebfe1e84b950cf790a4d2376a97fa016e43f7c65323fa6c7d/types_defusedxml-0.7.0.20260504.tar.gz", hash = "sha256:2ab2828a3f97111ba1c16cee273ad4124a831fc9198c41bf8368ff6ea48ad300", size = 10729, upload-time = "2026-05-04T05:22:50.192Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bf/2d/8a4b5ba1d732b8bc691f0efbb1c6f77cb5f6f473b2afe181d83d910773c5/types_defusedxml-0.7.0.20260504-py3-none-any.whl", hash = "sha256:a959e3a0a43b93e464bd625d91ec9193a2703ddc10443bdd627792485fae0b10", size = 13467, upload-time = "2026-05-04T05:22:49.319Z" },
 ]
 
 [[package]]

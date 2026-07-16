@@ -121,9 +121,37 @@ def _get_plugin_display_names_map(plugin_names: set[str]) -> dict[str, str]:
     }
 
 
+def _result_with_kev(run: AssessmentRun, kev_ids: frozenset[str] | None) -> Any:
+    """A copy of the run's result with per-finding KEV flags stamped in.
+
+    The stored blob is never mutated; the flag is response-time data from the
+    cached CISA feed. Non-security runs and empty catalogs pass through as-is.
+    """
+    result = run.result
+    if not kev_ids or run.category != "security" or not isinstance(result, dict):
+        return result
+    findings = result.get("findings")
+    if not isinstance(findings, list):
+        return result
+    from sbomify.apps.vulnerability_scanning.kev import finding_in_kev
+
+    # Build a new findings list only once a KEV match is actually found — the
+    # common case (no matches) returns the original result with no allocation.
+    stamped: list[Any] | None = None
+    for i, finding in enumerate(findings):
+        if isinstance(finding, dict) and finding_in_kev(finding, kev_ids):
+            if stamped is None:
+                stamped = list(findings)
+            stamped[i] = {**finding, "kev": True}
+    if stamped is None:
+        return result
+    return {**result, "findings": stamped}
+
+
 def _run_to_schema(
     run: AssessmentRun,
     display_names: dict[str, str] | None = None,
+    kev_ids: frozenset[str] | None = None,
 ) -> AssessmentRunSchema:
     """Convert an AssessmentRun model to schema.
 
@@ -170,7 +198,7 @@ def _run_to_schema(
         "started_at": run.started_at,
         "completed_at": run.completed_at,
         "error_message": run.error_message or None,
-        "result": run.result,
+        "result": _result_with_kev(run, kev_ids),
         "created_at": run.created_at,
     }
     try:
@@ -296,11 +324,15 @@ def get_sbom_assessments(request: HttpRequest, sbom_id: str) -> SBOMAssessmentsR
     # in a single query so serialization stays O(n) without per-run lookups.
     display_names = _get_plugin_display_names_map({run.plugin_name for run in all_runs})
 
+    from sbomify.apps.vulnerability_scanning.kev import kev_ids_for_serialization
+
+    kev_ids = kev_ids_for_serialization() if any(run.category == "security" for run in all_runs) else frozenset()
+
     return SBOMAssessmentsResponse(
         sbom_id=sbom_id,
         status_summary=status_summary,
-        latest_runs=[_run_to_schema(run, display_names) for run in latest_runs],
-        all_runs=[_run_to_schema(run, display_names) for run in all_runs],
+        latest_runs=[_run_to_schema(run, display_names, kev_ids) for run in latest_runs],
+        all_runs=[_run_to_schema(run, display_names, kev_ids) for run in all_runs],
     )
 
 

@@ -1,7 +1,7 @@
 {% extends "core/dashboard_base.htmx.j2" %}
 {% load static %}
 {% load django_vite %}
-{% block title %}{{ component.component_type_display }}: {{ item.name }}{% endblock %}
+{% block title %}{{ component.get_component_type_display }}: {{ item.name }}{% endblock %}
 {% block extra_styles %}
     <link rel="stylesheet"
           href="{% static 'css/component-detailed-private.css' %}">
@@ -205,6 +205,9 @@
             {% if assessment_runs %}
                 <div>
                     {% include 'plugins/components/assessment_results_card.html.j2' with sbom_id=item.id assessment_runs=assessment_runs %}
+                    {% if can_triage %}
+                        {% include 'plugins/components/triage_modal.html.j2' %}
+                    {% endif %}
                 </div>
             {% endif %}
             {# Danger Zone #}

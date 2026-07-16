@@ -4,6 +4,7 @@ from django.views.generic import RedirectView
 
 from sbomify.apps.sboms.views import (
     ComponentCryptoPostureView,
+    ComponentVexDocumentsView,
     SbomCryptoInventoryView,
     SbomDownloadView,
     SbomsTableView,
@@ -72,6 +73,11 @@ urlpatterns: list[URLPattern] = [
         SbomsTableView.as_view(),
         name="sboms_table_public",
         kwargs={"is_public_view": True},
+    ),
+    path(
+        "component/<str:component_id>/vex/",
+        ComponentVexDocumentsView.as_view(),
+        name="component_vex_documents",
     ),
     path(
         "sbom/<str:sbom_id>/crypto-inventory",
