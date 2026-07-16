@@ -24,6 +24,9 @@ class FindingSchema(BaseModel):
     analysis_state: str | None = None
     analysis_justification: str | None = None
     analysis_detail: str | None = None
+    # A product-scoped suppression asserted for a different version of this
+    # package than the one now scanned — still applied, but flagged for re-review.
+    analysis_stale: bool = False
     # In CISA's Known Exploited Vulnerabilities catalog; stamped at serialization
     # time from the cached KEV feed, never stored.
     kev: bool = False

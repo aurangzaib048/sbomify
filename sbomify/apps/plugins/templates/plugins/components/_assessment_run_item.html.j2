@@ -165,6 +165,13 @@
                                                                     <i class="fas fa-clipboard-check mr-0.5"></i>{{ finding.analysis_state }}
                                                                 </span>
                                                             {% endif %}
+                                                            {# Stale: a component-wide suppression asserted for a different version of this package #}
+                                                            {% if finding.analysis_stale %}
+                                                                <span class="px-2 py-0.5 text-xs font-semibold rounded bg-warning/10 text-warning border border-warning/30"
+                                                                      title="This suppression was asserted for a different version of this package — re-review whether it still applies">
+                                                                    <i class="fas fa-triangle-exclamation mr-0.5"></i>re-review
+                                                                </span>
+                                                            {% endif %}
                                                             {% if can_triage and run.category == 'security' %}
                                                                 <button type="button"
                                                                         class="px-2 py-0.5 text-xs rounded border border-border text-text-muted hover:text-primary hover:border-primary"

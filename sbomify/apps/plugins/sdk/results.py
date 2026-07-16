@@ -110,6 +110,10 @@ class Finding:
     analysis_justification: str | None = None
     analysis_response: list[str] | None = None
     analysis_detail: str | None = None
+    # True when a product-scoped (component-wide) suppression was asserted for a
+    # different version of this package than the one now scanned — the decision
+    # still applies but predates the current version and warrants re-review.
+    analysis_stale: bool = False
 
     # Common optional fields
     remediation: str | None = None
