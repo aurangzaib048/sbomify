@@ -113,7 +113,9 @@ class Finding:
     # True when a product-scoped (component-wide) suppression was asserted for a
     # different version of this package than the one now scanned — the decision
     # still applies but predates the current version and warrants re-review.
-    analysis_stale: bool = False
+    # None (not False) so to_dict drops it: only stale findings carry the key,
+    # keeping stored results compact on large scans.
+    analysis_stale: bool | None = None
 
     # Common optional fields
     remediation: str | None = None
