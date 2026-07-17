@@ -70,14 +70,26 @@ class TestTriageVexSync:
             plugin._sync_triage_vex(client, _version_row(sbom))
         return reapply
 
+    def test_sync_is_off_by_default(self, sample_team_with_owner_member):
+        """The hosted DT is a scanner backend, not a VEX source: without the
+        sync_triage_vex config flag, no scan ever reads analysis decisions."""
+        _, sbom = _component_with_sbom(sample_team_with_owner_member.team)
+        plugin = DependencyTrackPlugin()
+        client = MagicMock()
+
+        plugin._sync_triage_vex_safely(client, _version_row(sbom))
+
+        client.get_project_vex.assert_not_called()
+
     def test_permission_403_logs_one_line_without_traceback(self, sample_team_with_owner_member, mocker):
-        """A missing VULNERABILITY_ANALYSIS permission repeats identically on
-        every scan — one actionable line, no traceback spam, scan unaffected."""
+        """With the sync enabled, a missing VULNERABILITY_ANALYSIS permission
+        repeats identically on every scan — one actionable line, no traceback
+        spam, scan unaffected."""
         from sbomify.apps.plugins.builtins import dependency_track as dt_module
         from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
 
         _, sbom = _component_with_sbom(sample_team_with_owner_member.team)
-        plugin = DependencyTrackPlugin()
+        plugin = DependencyTrackPlugin({"sync_triage_vex": True})
         client = MagicMock()
         client.get_project_vex.side_effect = DependencyTrackAPIError("DT API request failed (403):", status_code=403)
         warn = mocker.patch.object(dt_module.logger, "warning")
@@ -94,7 +106,7 @@ class TestTriageVexSync:
         from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
 
         _, sbom = _component_with_sbom(sample_team_with_owner_member.team)
-        plugin = DependencyTrackPlugin()
+        plugin = DependencyTrackPlugin({"sync_triage_vex": True})
         client = MagicMock()
         client.get_project_vex.side_effect = DependencyTrackAPIError("boom", status_code=500)
         warn = mocker.patch.object(dt_module.logger, "warning")
