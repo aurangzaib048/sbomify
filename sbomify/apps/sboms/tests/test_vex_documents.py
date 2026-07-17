@@ -85,6 +85,20 @@ class TestVexDocuments:
         assert "Manual upload" in body
         assert "CVE-TRIAGE" not in body
 
+    def test_gated_component_vex_content_not_leaked_to_unauthorized(self, sample_team_with_owner_member, s3) -> None:
+        """A GATED component is publicly listable, but the VEX's derived CVE
+        ids/states sit behind the same download gate — an unauthorized caller
+        must not read them via the listing (which the download path 403s)."""
+        team = sample_team_with_owner_member.team
+        component = Component.objects.create(
+            name="vex-gated", team=team, component_type="bom", visibility=Component.Visibility.GATED
+        )
+        _store_vex(component, s3, "manual_upload", "CVE-2021-45046", name="g.json")
+
+        # Anonymous: reaches the public-listing gate but not component downloads.
+        response = Client().get(f"/component/{component.id}/vex/")
+        assert "CVE-2021-45046" not in response.content.decode()
+
     def test_empty_state(self, sample_user, sample_team_with_owner_member, s3) -> None:
         team = sample_team_with_owner_member.team
         component = Component.objects.create(name="vex-empty", team=team, component_type="bom")

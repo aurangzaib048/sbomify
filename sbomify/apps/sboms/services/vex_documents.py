@@ -45,6 +45,17 @@ def build_component_vex_context(request: HttpRequest, component_id: str) -> Serv
     if status_code != 200:
         return ServiceResult.failure(component.get("detail", "Unknown error"))
 
+    # get_component returns 200 for PUBLIC and GATED components to any caller (it
+    # is the public-listing gate). Deriving a VEX's suppressed CVE ids/states from
+    # S3 exposes the same content the download path protects, so gate it on
+    # component-download access the way the crypto-inventory and download views do.
+    from sbomify.apps.core.authz import can
+    from sbomify.apps.core.models import Component
+
+    component_obj = Component.objects.filter(pk=component_id).first()
+    if component_obj is None or not can(request, "component:access", component_obj):
+        return ServiceResult.failure("Forbidden", status_code=403)
+
     from sbomify.apps.sboms.models import SBOM
     from sbomify.apps.vulnerability_scanning.vex import (
         TRIAGE_SOURCE,
