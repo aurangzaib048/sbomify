@@ -510,10 +510,7 @@ class DependencyTrackPlugin(AssessmentPlugin):
         # Pull DT's triage decisions back as a VEX so analysts' judgments made
         # in DT reach sbomify without a manual export/upload. Best-effort: a
         # missing permission or endpoint error must never fail the scan.
-        try:
-            self._sync_triage_vex(client, version_row)
-        except Exception:
-            logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
+        self._sync_triage_vex_safely(client, version_row)
 
         now = dj_timezone.now()
         version_row.last_metrics_sync = now
@@ -574,6 +571,29 @@ class DependencyTrackPlugin(AssessmentPlugin):
     # (and vulnerabilities with no analysis at all) mean "not judged yet" —
     # nothing worth publishing as a VEX.
     _VEX_DECISION_STATES = {"not_affected", "false_positive", "resolved", "exploitable"}
+
+    def _sync_triage_vex_safely(self, client: Any, version_row: Any) -> None:
+        """Best-effort wrapper around :meth:`_sync_triage_vex` — a sync failure
+        must never fail the scan. A 403 means the DT API key lacks the
+        VULNERABILITY_ANALYSIS permission: that is server configuration which
+        repeats identically on every scan, so it logs one actionable line
+        instead of a traceback."""
+        from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
+
+        version_uuid = str(version_row.dt_project_version_uuid)
+        try:
+            self._sync_triage_vex(client, version_row)
+        except DependencyTrackAPIError as e:
+            if e.status_code == 403:
+                logger.warning(
+                    "[DT] VEX triage sync skipped for project %s: the DT API key lacks the "
+                    "VULNERABILITY_ANALYSIS permission (403). Grant it to enable triage sync.",
+                    version_uuid,
+                )
+            else:
+                logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
+        except Exception:
+            logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
 
     def _sync_triage_vex(self, client: Any, version_row: Any) -> None:
         """Store DT's triage decisions as the component's VEX artifact.

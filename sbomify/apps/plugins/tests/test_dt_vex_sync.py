@@ -70,6 +70,40 @@ class TestTriageVexSync:
             plugin._sync_triage_vex(client, _version_row(sbom))
         return reapply
 
+    def test_permission_403_logs_one_line_without_traceback(self, sample_team_with_owner_member, mocker):
+        """A missing VULNERABILITY_ANALYSIS permission repeats identically on
+        every scan — one actionable line, no traceback spam, scan unaffected."""
+        from sbomify.apps.plugins.builtins import dependency_track as dt_module
+        from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
+
+        _, sbom = _component_with_sbom(sample_team_with_owner_member.team)
+        plugin = DependencyTrackPlugin()
+        client = MagicMock()
+        client.get_project_vex.side_effect = DependencyTrackAPIError("DT API request failed (403):", status_code=403)
+        warn = mocker.patch.object(dt_module.logger, "warning")
+
+        plugin._sync_triage_vex_safely(client, _version_row(sbom))
+
+        assert warn.call_count == 1
+        args, kwargs = warn.call_args
+        assert "VULNERABILITY_ANALYSIS" in args[0]
+        assert "exc_info" not in kwargs
+
+    def test_unexpected_sync_error_keeps_traceback(self, sample_team_with_owner_member, mocker):
+        from sbomify.apps.plugins.builtins import dependency_track as dt_module
+        from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
+
+        _, sbom = _component_with_sbom(sample_team_with_owner_member.team)
+        plugin = DependencyTrackPlugin()
+        client = MagicMock()
+        client.get_project_vex.side_effect = DependencyTrackAPIError("boom", status_code=500)
+        warn = mocker.patch.object(dt_module.logger, "warning")
+
+        plugin._sync_triage_vex_safely(client, _version_row(sbom))
+
+        assert warn.call_count == 1
+        assert warn.call_args.kwargs.get("exc_info") is True
+
     def test_triaged_export_creates_vex_artifact(self, sample_team_with_owner_member):
         component, sbom = _component_with_sbom(sample_team_with_owner_member.team)
 
