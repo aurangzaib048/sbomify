@@ -112,7 +112,9 @@ class TestDownloadEvents:
 
 
 class TestDeleteEvents:
-    def test_vex_delete_fires_typed_event(self, component, sample_user, mocker, sample_team_with_owner_member) -> None:
+    def test_vex_delete_fires_typed_event(
+        self, component, sample_user, mocker, sample_team_with_owner_member, django_capture_on_commit_callbacks
+    ) -> None:
         from django.test import Client
 
         from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
@@ -124,7 +126,9 @@ class TestDeleteEvents:
 
         client = Client()
         setup_authenticated_client_session(client, sample_team_with_owner_member.team, sample_user)
-        response = client.post(f"/component/{component.id}/vex/", {"_method": "DELETE", "sbom_id": row.id})
+        # The delete event is deferred to transaction commit.
+        with django_capture_on_commit_callbacks(execute=True):
+            response = client.post(f"/component/{component.id}/vex/", {"_method": "DELETE", "sbom_id": row.id})
         assert response.status_code == 200, response.content
         names = [call.args[1] for call in capture_for_request.call_args_list]
         assert "vex:deleted" in names
