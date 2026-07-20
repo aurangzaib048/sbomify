@@ -53,6 +53,8 @@ def delete_sbom_record(request: HttpRequest, sbom_id: str) -> ServiceResult[None
     component_id = str(sbom.component.id)
     sbom_name = sbom.name
     was_vex = sbom.bom_type == SBOM.BomType.VEX.value
+    bom_type = sbom.bom_type
+    source = sbom.source or ""
 
     s3 = S3Client("SBOMS")
     for blob_key in filter(None, [sbom.sbom_filename, sbom.signature_blob_key, sbom.provenance_blob_key]):
@@ -62,6 +64,27 @@ def delete_sbom_record(request: HttpRequest, sbom_id: str) -> ServiceResult[None
             log.warning("Failed to delete S3 object %s: %s", blob_key, exc)
 
     sbom.delete()
+
+    from sbomify.apps.core.analytics import events
+    from sbomify.apps.core.posthog_service import capture_for_request
+
+    # Defer the analytics event to commit: if the delete rolls back (this can run
+    # inside a caller's transaction), an eager capture would record an
+    # irreversible *:deleted for a delete that never happened. Matches the
+    # broadcast below.
+    deleted_event = {
+        "vex": events.VEX_DELETED,
+        "cbom": events.CBOM_DELETED,
+        "hbom": events.HBOM_DELETED,
+    }.get(bom_type, events.SBOM_DELETED)
+    transaction.on_commit(
+        lambda: capture_for_request(
+            request,
+            deleted_event,
+            {"component_id": component_id, "sbom_id": sbom_id, "source": source},
+            team_key=workspace_key or "",
+        )
+    )
 
     # Deleting a VEX retracts its statements: re-annotate the component's stored
     # scans so the suppressed findings surface again.

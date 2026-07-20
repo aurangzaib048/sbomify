@@ -20,17 +20,31 @@ def update_latest_release_on_sbom_created(sender: Any, instance: Any, created: A
 
     _update_latest_release_for_sbom(instance)
 
-    # Track every SBOM upload for retention analytics
+    # Track every artifact upload for retention analytics. VEX/CBOM/HBOM rows
+    # live in the same table; each ships under its own event so a VEX import or
+    # an in-app triage save never reads as an SBOM upload in funnels.
+    from sbomify.apps.core.analytics import events
     from sbomify.apps.core.posthog_service import capture
 
+    event = {
+        "vex": events.VEX_UPLOADED,
+        "cbom": events.CBOM_UPLOADED,
+        "hbom": events.HBOM_UPLOADED,
+    }.get(instance.bom_type, events.SBOM_UPLOADED)
     team = getattr(instance.component, "team", None) if instance.component else None
     team_key = team.key if team else ""
     component_id = getattr(instance.component, "id", "")
     sbom_id = instance.id
+    source = instance.source or ""
     groups = {"workspace": team_key} if team_key else None
     distinct_id = team_key or "system"
     transaction.on_commit(
-        lambda: capture(distinct_id, "sbom:uploaded", {"component_id": component_id, "sbom_id": sbom_id}, groups=groups)
+        lambda: capture(
+            distinct_id,
+            event,
+            {"component_id": component_id, "sbom_id": sbom_id, "source": source},
+            groups=groups,
+        )
     )
 
 
