@@ -71,7 +71,8 @@ class TestDownloadEvents:
             "sbomify.apps.core.object_store.S3Client.get_sbom_data",
             return_value=json.dumps({"bomFormat": "CycloneDX"}).encode(),
         )
-        mocker.patch("sbomify.apps.sboms.views.sbom_download.verify_item_access", return_value=True, create=True)
+        # The owner's session already grants access via check_component_access;
+        # no access mock is needed.
         capture = mocker.patch("sbomify.apps.core.posthog_service.capture")
         mocker.patch("sbomify.apps.core.posthog_service.is_enabled", return_value=True)
 
@@ -82,6 +83,32 @@ class TestDownloadEvents:
         names = [call.args[1] for call in capture.call_args_list]
         assert "vex:downloaded" in names
         assert "sbom:downloaded" not in names
+
+    def test_download_filename_is_sanitized(self, component, sample_user, mocker) -> None:
+        """A CR/LF-bearing artifact name cannot break or inject the
+        Content-Disposition header."""
+        import json
+
+        from django.test import Client
+
+        from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
+
+        row = _store_row(component, "sbom", "api", "1.0.0")
+        row.name = "evil\r\nSet-Cookie: x=y.json"
+        row.save(update_fields=["name"])
+        mocker.patch(
+            "sbomify.apps.core.object_store.S3Client.get_sbom_data",
+            return_value=json.dumps({"bomFormat": "CycloneDX"}).encode(),
+        )
+
+        client = Client()
+        setup_authenticated_client_session(client, component.team, sample_user)
+        response = client.get(f"/sbom/download/{row.id}")
+        assert response.status_code == 200
+        disposition = response["Content-Disposition"]
+        assert "\r" not in disposition and "\n" not in disposition
+        assert "Set-Cookie" not in disposition or "evil-Set-Cookie" in disposition
+        assert disposition.startswith('attachment; filename="')
 
 
 class TestDeleteEvents:

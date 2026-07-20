@@ -1,4 +1,5 @@
 import logging
+import re
 
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseNotFound
 from django.views import View
@@ -90,7 +91,11 @@ class SbomDownloadView(View):
                 return error_response(request, HttpResponseNotFound("SBOM file not found in storage"))
 
             response = HttpResponse(sbom_data, content_type="application/json")
-            response["Content-Disposition"] = "attachment; filename=" + sbom.name
+            # sbom.name is user-controlled: reduce it to an ASCII-safe slug and
+            # quote it so a name with CR/LF/quotes can't break or inject the
+            # header (same approach as the release download filename).
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", sbom.name).strip("-.") or "sbom"
+            response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
 
             from sbomify.apps.core.analytics import events
             from sbomify.apps.core.posthog_service import capture, get_distinct_id, is_enabled
