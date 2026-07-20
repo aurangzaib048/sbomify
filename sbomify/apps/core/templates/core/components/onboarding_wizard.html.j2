@@ -338,10 +338,10 @@
                                     <i class="fas fa-check text-success text-3xl"></i>
                                 </div>
                             </div>
-                            <h1 class="font-display text-2xl sm:text-3xl font-bold text-text mb-3 tracking-tight">Your workspace is ready!</h1>
-                            <p class="text-text-muted text-sm sm:text-base leading-relaxed mb-8">
-                                <strong class="text-text font-medium">{{ company_name }}</strong> is set up. Let's explore what sbomify can do for you.
-                            </p>
+                            <h1 class="font-display text-2xl sm:text-3xl font-bold text-text mb-3 tracking-tight">
+                                {{ company_name|default:"Your workspace" }} is set up
+                            </h1>
+                            <p class="text-text-muted text-sm sm:text-base leading-relaxed mb-8">Let's explore what sbomify can do for you.</p>
                         </div>
                         <!-- Onboarding checklist -->
                         <div class="rounded-xl border border-border/50 divide-y divide-border/50 mb-8">
