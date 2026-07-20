@@ -71,27 +71,27 @@
                   hx-swap="innerHTML"
                   class="ml-11">
                 {% csrf_token %}
-                <div class="flex flex-col sm:flex-row gap-3">
-                    <div class="flex-1">
+                <div class="flex flex-wrap items-start gap-3">
+                    <div class="flex-1 min-w-[16rem]">
                         {% with field=create_access_token_form.description %}
                             <label for="{{ field.id_for_label }}" class="sr-only">Token name</label>
                             <input type="text"
                                    id="{{ field.id_for_label }}"
                                    name="{{ field.html_name }}"
-                                   class="tw-form-input"
+                                   class="tw-form-input w-full"
                                    placeholder="e.g., CI/CD Pipeline Token"
                                    value="{{ field.value|default:'' }}">
                             {% for error in field.errors %}<p class="tw-form-error mt-1">{{ error }}</p>{% endfor %}
                         {% endwith %}
                     </div>
-                    <div class="sm:w-44">
+                    <div class="w-full sm:w-44">
                         {% with field=create_access_token_form.scope %}
                             <label for="{{ field.id_for_label }}" class="sr-only">Access scope</label>
                             {{ field }}
                             {% for error in field.errors %}<p class="tw-form-error mt-1">{{ error }}</p>{% endfor %}
                         {% endwith %}
                     </div>
-                    <div class="sm:w-44">
+                    <div class="w-full sm:w-44">
                         {% with field=create_access_token_form.expires_in_days %}
                             <label for="{{ field.id_for_label }}" class="sr-only">Expiration</label>
                             {{ field }}
