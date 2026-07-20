@@ -197,3 +197,34 @@ class TestReleaseDownloadEvents:
         assert args[1] == "release_vex:downloaded"
         assert args[2]["release_id"] == str(release.id)
         assert kwargs["team_key"] == team.key
+
+    def test_release_cbom_download_captures_vendor_scoped_event(
+        self, component, sample_user, mocker, sample_team_with_owner_member
+    ) -> None:
+        from django.test import Client
+
+        from sbomify.apps.core.models import Product, Release, ReleaseArtifact
+        from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
+        from sbomify.apps.sboms.models import ProductComponent
+
+        team = sample_team_with_owner_member.team
+        product = Product.objects.create(team=team, name="Analytics CBOM Product")
+        ProductComponent.objects.create(product=product, component=component)
+        release = Release.objects.create(product=product, name="v1")
+        cbom_row = _store_row(component, "cbom", "api", "1.0.0")
+        ReleaseArtifact.objects.create(release=release, sbom=cbom_row)
+        mocker.patch(
+            "sbomify.apps.sboms.cbom.build_release_cbom",
+            return_value={"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1},
+        )
+        capture_for_request = mocker.patch("sbomify.apps.core.apis.capture_for_request")
+
+        client = Client()
+        setup_authenticated_client_session(client, team, sample_user)
+        response = client.get(f"/api/v1/releases/{release.id}/cbom/download")
+        assert response.status_code == 200, response.content
+        assert capture_for_request.call_count == 1
+        args, kwargs = capture_for_request.call_args
+        assert args[1] == "release_cbom:downloaded"
+        assert args[2]["release_id"] == str(release.id)
+        assert kwargs["team_key"] == team.key

@@ -491,7 +491,7 @@ RELEASE_SBOM_DOWNLOADED = _register(
     EventSpec(
         name="release_sbom:downloaded",
         description="The merged release-level SBOM was downloaded (Trust Center or API).",
-        distinct_id_kind="user",
+        distinct_id_kind="workspace",
         properties={
             "release_id": "The release's ID.",
             "product_id": "Owning product's ID.",
@@ -504,7 +504,7 @@ RELEASE_VEX_DOWNLOADED = _register(
     EventSpec(
         name="release_vex:downloaded",
         description="The merged release-level VEX was downloaded (Trust Center or API).",
-        distinct_id_kind="user",
+        distinct_id_kind="workspace",
         properties={
             "release_id": "The release's ID.",
             "product_id": "Owning product's ID.",
@@ -516,7 +516,7 @@ RELEASE_CBOM_DOWNLOADED = _register(
     EventSpec(
         name="release_cbom:downloaded",
         description="The merged release-level CBOM was downloaded (Trust Center or API).",
-        distinct_id_kind="user",
+        distinct_id_kind="workspace",
         properties={
             "release_id": "The release's ID.",
             "product_id": "Owning product's ID.",
