@@ -110,14 +110,14 @@
                                                                 <input type="checkbox"
                                                                        name="plugin_config_{{ plugin.name }}_{{ field.key }}"
                                                                        id="plugin_config_{{ plugin.name }}_{{ field.key }}"
-                                                                       class="tw-toggle"
+                                                                       class="tw-checkbox"
                                                                        value="true"
                                                                        checked>
                                                             {% else %}
                                                                 <input type="checkbox"
                                                                        name="plugin_config_{{ plugin.name }}_{{ field.key }}"
                                                                        id="plugin_config_{{ plugin.name }}_{{ field.key }}"
-                                                                       class="tw-toggle"
+                                                                       class="tw-checkbox"
                                                                        value="true">
                                                             {% endif %}
                                                         {% elif field.type == "number" %}
@@ -145,7 +145,7 @@
                                            name="enabled_plugins"
                                            value="{{ plugin.name }}"
                                            id="plugin-{{ plugin.name }}"
-                                           class="tw-toggle"
+                                           class="tw-checkbox"
                                            x-model="enabled"
                                            {% if plugin.requires_upgrade %}disabled{% endif %}>
                                 </div>

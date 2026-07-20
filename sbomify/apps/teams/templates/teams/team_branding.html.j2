@@ -167,7 +167,7 @@
                         <input type="checkbox"
                                id="branding-enabled-toggle"
                                {% if branding_info.branding_enabled|default_if_none:False %}checked{% endif %}
-                               class="tw-toggle"
+                               class="tw-checkbox"
                                x-model="localBrandingInfo.branding_enabled">
                     </label>
                     <input type="hidden"
