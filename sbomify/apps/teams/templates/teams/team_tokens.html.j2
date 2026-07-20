@@ -140,8 +140,9 @@
                                     class="tw-btn-danger tw-btn-sm"
                                     x-show="selected.length"
                                     x-cloak
-                                    x-text="`Revoke selected (${selected.length})`"
-                                    @click="showBulkModal = true"></button>
+                                    @click="showBulkModal = true">
+                                <span x-text="`Revoke selected (${selected.length})`">Revoke selected</span>
+                            </button>
                             <button type="button"
                                     class="tw-btn-ghost tw-btn-sm text-danger hover:bg-danger/10"
                                     @click="showRevokeAllModal = true">Revoke all</button>
