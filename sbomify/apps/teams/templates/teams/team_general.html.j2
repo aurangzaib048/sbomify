@@ -8,30 +8,13 @@
      x-data="teamGeneral($el.dataset.teamName)">
     {# Card Header #}
     <div class="px-6 py-4 border-b border-border">
-        <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                    <i class="fas fa-sliders-h text-primary"></i>
-                </div>
-                <div>
-                    <h5 class="text-lg font-semibold text-text m-0">General Settings</h5>
-                    <p class="text-text-muted text-sm m-0">Manage your workspace's basic information</p>
-                </div>
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                <i class="fas fa-sliders-h text-primary"></i>
             </div>
-            <div class="flex items-center gap-2">
-                <button x-show="hasUnsavedChanges()"
-                        type="button"
-                        class="tw-btn-secondary tw-btn-sm"
-                        @click="$dispatch('refreshTeamGeneral')">
-                    <i class="fas fa-undo mr-2"></i>Cancel
-                </button>
-                <button type="submit"
-                        id="team-general-save-btn"
-                        form="team-general-form"
-                        class="tw-btn-primary tw-btn-sm"
-                        :disabled="!hasUnsavedChanges()">
-                    <i class="fas fa-save mr-2"></i>Save Changes
-                </button>
+            <div>
+                <h5 class="text-lg font-semibold text-text m-0">General Settings</h5>
+                <p class="text-text-muted text-sm m-0">Manage your workspace's basic information</p>
             </div>
         </div>
     </div>
@@ -66,6 +49,21 @@
                            required>
                     <p class="tw-form-hint">Maximum 255 characters</p>
                 </div>
+            </div>
+            {# Save sits below the name field it applies to, above the danger zone. #}
+            <div class="flex items-center justify-end gap-2 mt-6 pt-6 border-t border-border">
+                <button x-show="hasUnsavedChanges()"
+                        type="button"
+                        class="tw-btn-secondary tw-btn-sm"
+                        @click="$dispatch('refreshTeamGeneral')">
+                    <i class="fas fa-undo mr-2"></i>Cancel
+                </button>
+                <button type="submit"
+                        id="team-general-save-btn"
+                        class="tw-btn-primary tw-btn-sm"
+                        :disabled="!hasUnsavedChanges()">
+                    <i class="fas fa-save mr-2"></i>Save Changes
+                </button>
             </div>
         </form>
         {# Default Workspace Section #}
