@@ -45,7 +45,17 @@ class TeamPluginSettingsView(TeamRoleRequiredMixin, LoginRequiredMixin, View):
         # divider is dropped. Sort so regroup produces contiguous category blocks in
         # a stable, sensible order.
         category_order = {"compliance": 0, "security": 1, "attestation": 2}
-        plugins.sort(key=lambda p: (category_order.get(p.get("category", ""), 99), p.get("display_name", "")))
+        # Include the category string in the key so every plugin sharing a category is
+        # contiguous — {% regroup %} only groups adjacent rows, and two different unknown
+        # categories both fall back to 99, which would otherwise interleave and split a
+        # category across two section headers.
+        plugins.sort(
+            key=lambda p: (
+                category_order.get(p.get("category", ""), 99),
+                p.get("category", ""),
+                p.get("display_name", ""),
+            )
+        )
 
         return render(
             request,
