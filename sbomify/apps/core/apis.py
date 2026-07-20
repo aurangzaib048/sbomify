@@ -21,6 +21,7 @@ from sbomify.apps.access_tokens.auth import PersonalAccessTokenAuth, optional_au
 from sbomify.apps.billing.config import is_billing_enabled
 from sbomify.apps.billing.models import BillingPlan
 from sbomify.apps.billing.stripe_cache import get_subscription_cancel_at_period_end, invalidate_subscription_cache
+from sbomify.apps.core.analytics import events
 from sbomify.apps.core.authz import can
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.core.posthog_service import capture_for_request
@@ -3152,7 +3153,7 @@ def download_release(
         - spdx: 2.3 (default)
     """
     try:
-        release = Release.objects.select_related("product").get(pk=release_id)
+        release = Release.objects.select_related("product", "product__team").get(pk=release_id)
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
@@ -3199,6 +3200,18 @@ def download_release(
             response = HttpResponse(sbom_content, content_type="application/json")
             response["Content-Disposition"] = f'attachment; filename="{filename}"'
 
+            # Vendor-scoped, like the release VEX/CBOM downloads: the pull of a
+            # release's merged SBOM is the vendor's value signal.
+            capture_for_request(
+                request,
+                events.RELEASE_SBOM_DOWNLOADED,
+                {
+                    "release_id": str(release.id),
+                    "product_id": str(release.product_id),
+                    "format": format_lower,
+                },
+                team_key=release.product.team.key or "",
+            )
             return response
 
     except ValueError as e:
@@ -3228,7 +3241,7 @@ def download_release_vex(request: HttpRequest, release_id: str) -> Any:
     SBOM download: open for a public product, otherwise authenticated with release read access.
     """
     try:
-        release = Release.objects.select_related("product").get(pk=release_id)
+        release = Release.objects.select_related("product", "product__team").get(pk=release_id)
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
@@ -3262,6 +3275,14 @@ def download_release_vex(request: HttpRequest, release_id: str) -> Any:
     filename = _download_filename(release.product.name, release.name, ".vex.cdx.json")
     response = HttpResponse(content, content_type="application/json")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    # Attributed to the vendor workspace: "your release VEX was pulled" is the
+    # value signal, and the consumer may well be anonymous (public Trust Center).
+    capture_for_request(
+        request,
+        events.RELEASE_VEX_DOWNLOADED,
+        {"release_id": str(release.id), "product_id": str(release.product_id)},
+        team_key=release.product.team.key or "",
+    )
     return response
 
 
@@ -3280,7 +3301,7 @@ def download_release_cbom(request: HttpRequest, release_id: str) -> Any:
     for a public product, otherwise authenticated with release read access.
     """
     try:
-        release = Release.objects.select_related("product").get(pk=release_id)
+        release = Release.objects.select_related("product", "product__team").get(pk=release_id)
     except Release.DoesNotExist:
         return 404, {"detail": "Release not found", "error_code": ErrorCode.RELEASE_NOT_FOUND}
 
@@ -3313,6 +3334,12 @@ def download_release_cbom(request: HttpRequest, release_id: str) -> Any:
     filename = _download_filename(release.product.name, release.name, ".cbom.cdx.json")
     response = HttpResponse(content, content_type="application/json")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    capture_for_request(
+        request,
+        events.RELEASE_CBOM_DOWNLOADED,
+        {"release_id": str(release.id), "product_id": str(release.product_id)},
+        team_key=release.product.team.key or "",
+    )
     return response
 
 

@@ -92,6 +92,7 @@ class SbomDownloadView(View):
             response = HttpResponse(sbom_data, content_type="application/json")
             response["Content-Disposition"] = "attachment; filename=" + sbom.name
 
+            from sbomify.apps.core.analytics import events
             from sbomify.apps.core.posthog_service import capture, get_distinct_id, is_enabled
 
             if is_enabled():
@@ -99,9 +100,16 @@ class SbomDownloadView(View):
                 if distinct_id != "anonymous":
                     team_obj = getattr(component, "team", None)
                     team_key = team_obj.key if team_obj else ""
+                    # VEX/CBOM/HBOM rows share this download path; each ships
+                    # under its own event.
+                    event = {
+                        "vex": events.VEX_DOWNLOADED,
+                        "cbom": events.CBOM_DOWNLOADED,
+                        "hbom": events.HBOM_DOWNLOADED,
+                    }.get(sbom.bom_type, events.SBOM_DOWNLOADED)
                     capture(
                         distinct_id,
-                        "sbom:downloaded",
+                        event,
                         {"sbom_id": sbom_id, "component_id": str(component.id)},
                         groups={"workspace": team_key} if team_key else None,
                         request=request,
