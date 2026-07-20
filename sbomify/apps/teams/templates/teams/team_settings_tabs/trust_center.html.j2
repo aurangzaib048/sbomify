@@ -28,6 +28,7 @@
                        type="checkbox"
                        name="is_public"
                        value="true"
+                       aria-label="Make workspace publicly visible"
                        class="tw-checkbox"
                        {% if team.is_public %}checked{% endif %}
                        {% if not is_owner %}disabled{% endif %}
@@ -179,6 +180,7 @@
                            type="checkbox"
                            name="tea_enabled"
                            value="true"
+                           aria-label="Enable Transparency Exchange API"
                            class="tw-checkbox"
                            {% if team_obj.tea_enabled %}checked{% endif %}
                            {% if not is_owner %}disabled{% endif %}
@@ -296,6 +298,7 @@
                            type="checkbox"
                            name="security_txt_enabled"
                            value="true"
+                           aria-label="Enable security.txt"
                            class="tw-checkbox"
                            {% if security_txt_config.enabled %}checked{% endif %}
                            {% if not is_owner %}disabled{% endif %}
