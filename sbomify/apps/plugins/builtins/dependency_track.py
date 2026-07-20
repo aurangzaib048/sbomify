@@ -507,13 +507,11 @@ class DependencyTrackPlugin(AssessmentPlugin):
         vulnerabilities_response = client.get_project_vulnerabilities(version_uuid)
         vulnerabilities = vulnerabilities_response.get("content", [])
 
-        # Pull DT's triage decisions back as a VEX so analysts' judgments made
-        # in DT reach sbomify without a manual export/upload. Best-effort: a
-        # missing permission or endpoint error must never fail the scan.
-        try:
-            self._sync_triage_vex(client, version_row)
-        except Exception:
-            logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
+        # Opt-in: pull DT's triage decisions back as a VEX so analysts'
+        # judgments made in DT reach sbomify without a manual export/upload.
+        # Off by default — the hosted DT is a scanner backend, not a VEX
+        # source. Best-effort when on: a failure must never fail the scan.
+        self._sync_triage_vex_safely(client, version_row)
 
         now = dj_timezone.now()
         version_row.last_metrics_sync = now
@@ -574,6 +572,38 @@ class DependencyTrackPlugin(AssessmentPlugin):
     # (and vulnerabilities with no analysis at all) mean "not judged yet" —
     # nothing worth publishing as a VEX.
     _VEX_DECISION_STATES = {"not_affected", "false_positive", "resolved", "exploitable"}
+
+    def _sync_triage_vex_safely(self, client: Any, version_row: Any) -> None:
+        """Best-effort wrapper around :meth:`_sync_triage_vex` — a sync failure
+        must never fail the scan.
+
+        Opt-in via the plugin config flag ``sync_triage_vex`` (default off):
+        the hosted DT is a scanner backend, not a VEX source, so sbomify does
+        not read analysis decisions out of it unless a workspace explicitly
+        turns the sync on (bring-your-own-DT, where the analyst triages in DT
+        and wants those decisions back). When enabled, the DT API key must
+        hold the VULNERABILITY_ANALYSIS permission; a 403 is server
+        configuration that repeats identically on every scan, so it logs one
+        actionable line instead of a traceback."""
+        if not self.config.get("sync_triage_vex"):
+            return
+
+        from sbomify.apps.vulnerability_scanning.clients import DependencyTrackAPIError
+
+        version_uuid = str(version_row.dt_project_version_uuid)
+        try:
+            self._sync_triage_vex(client, version_row)
+        except DependencyTrackAPIError as e:
+            if e.status_code == 403:
+                logger.warning(
+                    "[DT] VEX triage sync skipped for project %s: the DT API key lacks the "
+                    "VULNERABILITY_ANALYSIS permission (403). Grant it to enable triage sync.",
+                    version_uuid,
+                )
+            else:
+                logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
+        except Exception:
+            logger.warning("[DT] VEX triage sync failed for project %s", version_uuid, exc_info=True)
 
     def _sync_triage_vex(self, client: Any, version_row: Any) -> None:
         """Store DT's triage decisions as the component's VEX artifact.
