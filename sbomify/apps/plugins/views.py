@@ -45,14 +45,15 @@ class TeamPluginSettingsView(TeamRoleRequiredMixin, LoginRequiredMixin, View):
         # divider is dropped. Sort so regroup produces contiguous category blocks in
         # a stable, sensible order.
         category_order = {"compliance": 0, "security": 1, "attestation": 2}
-        # Include the category string in the key so every plugin sharing a category is
-        # contiguous — {% regroup %} only groups adjacent rows, and two different unknown
-        # categories both fall back to 99, which would otherwise interleave and split a
-        # category across two section headers.
+        # Group by category for {% regroup %} (which only groups adjacent rows, so the
+        # category string keeps same-category plugins contiguous even when two unknown
+        # categories both fall back to 99). Within a category, preserve the API's ordering:
+        # accessible plugins before upgrade-gated ones, then by display name.
         plugins.sort(
             key=lambda p: (
                 category_order.get(p.get("category", ""), 99),
                 p.get("category", ""),
+                p.get("requires_upgrade", False),
                 p.get("display_name", ""),
             )
         )
