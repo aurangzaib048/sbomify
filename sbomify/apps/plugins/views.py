@@ -35,14 +35,17 @@ class TeamPluginSettingsView(TeamRoleRequiredMixin, LoginRequiredMixin, View):
         # Pre-compute values for Django template compatibility
         enabled_plugins = plugin_settings.get("enabled_plugins", [])
         plugin_configs = plugin_settings.get("plugin_configs", {})
-        shown_divider = False
-        for plugin in plugin_settings.get("available_plugins", []):
-            plugin["show_upgrade_divider"] = not shown_divider and plugin.get("requires_upgrade", False)
-            if plugin["show_upgrade_divider"]:
-                shown_divider = True
+        plugins = plugin_settings.get("available_plugins", [])
+        for plugin in plugins:
             plugin["is_enabled"] = plugin["name"] in enabled_plugins and plugin.get("has_access", False)
             for field in plugin.get("config_schema") or []:
                 field["current_value"] = plugin_configs.get(plugin["name"], {}).get(field.get("key", ""), "")
+        # Group into category sections in the template. The per-plugin "<plan>+ Plan"
+        # badge conveys plan gating, so the previous global "Requires Plan Upgrade"
+        # divider is dropped. Sort so regroup produces contiguous category blocks in
+        # a stable, sensible order.
+        category_order = {"compliance": 0, "security": 1, "attestation": 2}
+        plugins.sort(key=lambda p: (category_order.get(p.get("category", ""), 99), p.get("display_name", "")))
 
         return render(
             request,
