@@ -12,17 +12,6 @@
                     <p class="text-text-muted text-sm m-0">Configure which assessment plugins run on your SBOMs</p>
                 </div>
             </div>
-            {% if plugin_settings.available_plugins %}
-                <div class="flex items-center gap-3">
-                    <span id="plugin-settings-spinner"
-                          class="htmx-indicator tw-spinner tw-spinner-sm"></span>
-                    <button type="submit"
-                            form="plugin-settings-form"
-                            class="tw-btn-primary tw-btn-sm">
-                        <i class="fas fa-save mr-2"></i>Save
-                    </button>
-                </div>
-            {% endif %}
         </div>
     </div>
     <div class="p-6">
@@ -158,6 +147,14 @@
                     <div class="tw-alert-content">
                         <p class="text-sm m-0">Enabled plugins will automatically assess new SBOM uploads.</p>
                     </div>
+                </div>
+                {# Save sits at the bottom right, below the fields it applies to. #}
+                <div class="flex items-center justify-end gap-3 mt-6 pt-6 border-t border-border">
+                    <span id="plugin-settings-spinner"
+                          class="htmx-indicator tw-spinner tw-spinner-sm"></span>
+                    <button type="submit" class="tw-btn-primary">
+                        <i class="fas fa-save mr-2"></i>Save
+                    </button>
                 </div>
             {% else %}
                 <div class="tw-empty-state py-12">
