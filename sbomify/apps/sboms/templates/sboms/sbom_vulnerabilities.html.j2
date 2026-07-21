@@ -109,7 +109,8 @@
                                             </thead>
                                             <tbody>
                                                 {% for pkg_vuln_info in result.packages %}
-                                                    <tr class="align-top">
+                                                    {# Package row stays compact; its vulnerabilities span the full width in the row below. #}
+                                                    <tr>
                                                         <td class="px-4 py-4">
                                                             <span class="font-semibold text-text">{{ pkg_vuln_info.package.name }}</span>
                                                         </td>
@@ -121,112 +122,118 @@
                                                         </td>
                                                         <td class="px-4 py-4">
                                                             {% if pkg_vuln_info.vulnerabilities %}
-                                                                {% for vuln in pkg_vuln_info.vulnerabilities %}
-                                                                    <div class="p-4 mb-3 bg-surface border border-border rounded-lg hover:shadow-sm transition-shadow {% if forloop.last %}mb-0{% endif %}">
-                                                                        <div class="flex flex-wrap justify-between items-start gap-2 mb-2">
-                                                                            <div class="flex-1">
-                                                                                {# Vulnerability ID with smart links #}
-                                                                                {% if vuln.source == "Dependency Track" %}
-                                                                                    {% if vuln.id|slice:":4" == "CVE-" %}
-                                                                                        <a href="https://www.cve.org/CVERecord?id={{ vuln.id }}"
-                                                                                           target="_blank"
-                                                                                           class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
-                                                                                            <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
-                                                                                        </a>
-                                                                                    {% elif vuln.id|slice:":5" == "GHSA-" %}
-                                                                                        <a href="https://github.com/advisories/{{ vuln.id }}"
-                                                                                           target="_blank"
-                                                                                           class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
-                                                                                            <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
-                                                                                        </a>
-                                                                                    {% else %}
-                                                                                        <span class="text-text font-semibold inline-flex items-center gap-1">
-                                                                                            <i class="fas fa-bug text-xs"></i>{{ vuln.id }}
-                                                                                        </span>
-                                                                                    {% endif %}
-                                                                                {% else %}
-                                                                                    <a href="https://osv.dev/vulnerability/{{ vuln.id }}"
-                                                                                       target="_blank"
-                                                                                       class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
-                                                                                        <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
-                                                                                    </a>
-                                                                                {% endif %}
-                                                                                {% if vuln.aliases %}<div class="text-xs text-text-muted mt-1">Aliases: {{ vuln.aliases|join:", " }}</div>{% endif %}
-                                                                            </div>
-                                                                            <div class="flex items-center gap-2">
-                                                                                {# Severity Badge #}
-                                                                                {% if vuln.severity and vuln.severity != 'unknown' %}
-                                                                                    {% if vuln.severity|lower == 'critical' %}
-                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-danger/10 text-danger border border-danger/30">{{ vuln.severity|upper }}</span>
-                                                                                    {% elif vuln.severity|lower == 'high' %}
-                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-warning/10 text-warning border border-warning/30">{{ vuln.severity|upper }}</span>
-                                                                                    {% elif vuln.severity|lower == 'medium' %}
-                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">{{ vuln.severity|upper }}</span>
-                                                                                    {% elif vuln.severity|lower == 'low' %}
-                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-success/10 text-success border border-success/30">{{ vuln.severity|upper }}</span>
-                                                                                    {% else %}
-                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-surface text-text-muted border border-border">{{ vuln.severity|upper }}</span>
-                                                                                    {% endif %}
-                                                                                {% else %}
-                                                                                    <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">MEDIUM</span>
-                                                                                {% endif %}
-                                                                                {# CVSS Score #}
-                                                                                {% if vuln.cvss_score %}
-                                                                                    <span class="px-2 py-1 text-xs font-semibold rounded bg-surface text-text-muted border border-border">CVSS: {{ vuln.cvss_score }}</span>
-                                                                                {% endif %}
-                                                                            </div>
-                                                                        </div>
-                                                                        {# Summary #}
-                                                                        {% if vuln.summary or vuln.details %}
-                                                                            <p class="text-sm text-text-muted leading-relaxed mb-2">
-                                                                                {{ vuln.summary|default_if_none:vuln.details|truncatewords:50 }}
-                                                                            </p>
-                                                                        {% endif %}
-                                                                        {# References #}
-                                                                        {% if vuln.references and vuln.references|length > 0 %}
-                                                                            <div class="mt-2">
-                                                                                {% if vuln.references|length <= 3 %}
-                                                                                    <span class="text-xs text-text-muted">References:</span>
-                                                                                    {% for ref in vuln.references %}
-                                                                                        {% if ref and ref != "" %}
-                                                                                            <a href="{{ ref }}"
-                                                                                               target="_blank"
-                                                                                               class="inline-flex items-center gap-1 text-xs text-primary hover:underline mr-2">
-                                                                                                <i class="fas fa-external-link-alt"></i>Reference
-                                                                                            </a>
-                                                                                        {% endif %}
-                                                                                    {% endfor %}
-                                                                                {% else %}
-                                                                                    <details class="group">
-                                                                                        <summary class="cursor-pointer text-xs text-text-muted select-none py-1 hover:bg-background rounded inline-flex items-center gap-1">
-                                                                                            <i class="fas fa-chevron-right transition-transform group-open:rotate-90"></i>
-                                                                                            {{ vuln.references|length }} References (click to expand)
-                                                                                        </summary>
-                                                                                        <div class="mt-2 pl-4 border-l-2 border-border">
-                                                                                            {% for ref in vuln.references %}
-                                                                                                {% if ref and ref != "" %}
-                                                                                                    <a href="{{ ref }}"
-                                                                                                       target="_blank"
-                                                                                                       class="block text-xs text-primary hover:underline mb-1">
-                                                                                                        <i class="fas fa-external-link-alt mr-1"></i>{{ ref|truncatechars:60 }}
-                                                                                                    </a>
-                                                                                                {% endif %}
-                                                                                            {% endfor %}
-                                                                                        </div>
-                                                                                    </details>
-                                                                                {% endif %}
-                                                                            </div>
-                                                                        {% endif %}
-                                                                    </div>
-                                                                {% endfor %}
+                                                                <span class="text-sm font-medium text-text">{{ pkg_vuln_info.vulnerabilities|length }} vulnerabilit{{ pkg_vuln_info.vulnerabilities|length|pluralize:"y,ies" }}</span>
                                                             {% else %}
-                                                                <div class="text-center py-4 px-4 bg-success/5 border border-success/20 rounded-lg">
-                                                                    <i class="fas fa-shield-alt text-2xl text-success mb-2"></i>
-                                                                    <div class="text-success text-sm">No vulnerabilities found for this package</div>
-                                                                </div>
+                                                                <span class="inline-flex items-center gap-1 text-success text-sm"><i class="fas fa-shield-alt"></i>None</span>
                                                             {% endif %}
                                                         </td>
                                                     </tr>
+                                                    {% if pkg_vuln_info.vulnerabilities %}
+                                                        <tr>
+                                                            <td colspan="4" class="px-4 pb-5 pt-0">
+                                                                <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                                                                    {% for vuln in pkg_vuln_info.vulnerabilities %}
+                                                                        <div class="p-4 bg-surface border border-border rounded-lg hover:shadow-sm transition-shadow">
+                                                                            <div class="flex flex-wrap justify-between items-start gap-2 mb-2">
+                                                                                <div class="flex-1">
+                                                                                    {# Vulnerability ID with smart links #}
+                                                                                    {% if vuln.source == "Dependency Track" %}
+                                                                                        {% if vuln.id|slice:":4" == "CVE-" %}
+                                                                                            <a href="https://www.cve.org/CVERecord?id={{ vuln.id }}"
+                                                                                               target="_blank"
+                                                                                               class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
+                                                                                                <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
+                                                                                            </a>
+                                                                                        {% elif vuln.id|slice:":5" == "GHSA-" %}
+                                                                                            <a href="https://github.com/advisories/{{ vuln.id }}"
+                                                                                               target="_blank"
+                                                                                               class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
+                                                                                                <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
+                                                                                            </a>
+                                                                                        {% else %}
+                                                                                            <span class="text-text font-semibold inline-flex items-center gap-1">
+                                                                                                <i class="fas fa-bug text-xs"></i>{{ vuln.id }}
+                                                                                            </span>
+                                                                                        {% endif %}
+                                                                                    {% else %}
+                                                                                        <a href="https://osv.dev/vulnerability/{{ vuln.id }}"
+                                                                                           target="_blank"
+                                                                                           class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
+                                                                                            <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
+                                                                                        </a>
+                                                                                    {% endif %}
+                                                                                    {% if vuln.aliases %}<div class="text-xs text-text-muted mt-1">Aliases: {{ vuln.aliases|join:", " }}</div>{% endif %}
+                                                                                </div>
+                                                                                <div class="flex items-center gap-2">
+                                                                                    {# Severity Badge #}
+                                                                                    {% if vuln.severity and vuln.severity != 'unknown' %}
+                                                                                        {% if vuln.severity|lower == 'critical' %}
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-danger/10 text-danger border border-danger/30">{{ vuln.severity|upper }}</span>
+                                                                                        {% elif vuln.severity|lower == 'high' %}
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-warning/10 text-warning border border-warning/30">{{ vuln.severity|upper }}</span>
+                                                                                        {% elif vuln.severity|lower == 'medium' %}
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">{{ vuln.severity|upper }}</span>
+                                                                                        {% elif vuln.severity|lower == 'low' %}
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-success/10 text-success border border-success/30">{{ vuln.severity|upper }}</span>
+                                                                                        {% else %}
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-surface text-text-muted border border-border">{{ vuln.severity|upper }}</span>
+                                                                                        {% endif %}
+                                                                                    {% else %}
+                                                                                        <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">MEDIUM</span>
+                                                                                    {% endif %}
+                                                                                    {# CVSS Score #}
+                                                                                    {% if vuln.cvss_score %}
+                                                                                        <span class="px-2 py-1 text-xs font-semibold rounded bg-surface text-text-muted border border-border">CVSS: {{ vuln.cvss_score }}</span>
+                                                                                    {% endif %}
+                                                                                </div>
+                                                                            </div>
+                                                                            {# Summary #}
+                                                                            {% if vuln.summary or vuln.details %}
+                                                                                <p class="text-sm text-text-muted leading-relaxed mb-2">
+                                                                                    {{ vuln.summary|default_if_none:vuln.details|truncatewords:50 }}
+                                                                                </p>
+                                                                            {% endif %}
+                                                                            {# References #}
+                                                                            {% if vuln.references and vuln.references|length > 0 %}
+                                                                                <div class="mt-2">
+                                                                                    {% if vuln.references|length <= 3 %}
+                                                                                        <span class="text-xs text-text-muted">References:</span>
+                                                                                        {% for ref in vuln.references %}
+                                                                                            {% if ref and ref != "" %}
+                                                                                                <a href="{{ ref }}"
+                                                                                                   target="_blank"
+                                                                                                   class="inline-flex items-center gap-1 text-xs text-primary hover:underline mr-2">
+                                                                                                    <i class="fas fa-external-link-alt"></i>Reference
+                                                                                                </a>
+                                                                                            {% endif %}
+                                                                                        {% endfor %}
+                                                                                    {% else %}
+                                                                                        <details class="group">
+                                                                                            <summary class="cursor-pointer text-xs text-text-muted select-none py-1 hover:bg-background rounded inline-flex items-center gap-1">
+                                                                                                <i class="fas fa-chevron-right transition-transform group-open:rotate-90"></i>
+                                                                                                {{ vuln.references|length }} References (click to expand)
+                                                                                            </summary>
+                                                                                            <div class="mt-2 pl-4 border-l-2 border-border">
+                                                                                                {% for ref in vuln.references %}
+                                                                                                    {% if ref and ref != "" %}
+                                                                                                        <a href="{{ ref }}"
+                                                                                                           target="_blank"
+                                                                                                           class="block text-xs text-primary hover:underline mb-1">
+                                                                                                            <i class="fas fa-external-link-alt mr-1"></i>{{ ref|truncatechars:60 }}
+                                                                                                        </a>
+                                                                                                    {% endif %}
+                                                                                                {% endfor %}
+                                                                                            </div>
+                                                                                        </details>
+                                                                                    {% endif %}
+                                                                                </div>
+                                                                            {% endif %}
+                                                                        </div>
+                                                                    {% endfor %}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    {% endif %}
                                                 {% endfor %}
                                             </tbody>
                                         </table>
