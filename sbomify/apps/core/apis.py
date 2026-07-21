@@ -4079,8 +4079,17 @@ def list_component_sboms(
     component_id: str,
     page: int = Query(1),  # type: ignore[type-arg]
     page_size: int = Query(15),  # type: ignore[type-arg]
+    version: str | None = None,
+    format: str | None = None,
 ) -> Any:
-    """List all SBOMs for a specific component with pagination."""
+    """List all SBOMs for a specific component with pagination.
+
+    Optional `version` and `format` query parameters narrow the result to
+    exact matches (no prefix or fuzzy matching — 'v1.2.3' and '1.2.3' are
+    distinct versions). Filters are applied before pagination, so a filtered
+    miss returns an empty first page and a hit returns the newest match first.
+    Omitting both parameters returns the full, unfiltered listing.
+    """
     try:
         component = Component.objects.get(pk=component_id)
     except Component.DoesNotExist:
@@ -4132,9 +4141,12 @@ def list_component_sboms(
         from sbomify.apps.sboms.models import SBOM
 
         try:
-            sboms_queryset = SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM).order_by(
-                "-created_at"
-            )
+            sboms_queryset = SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
+            if version is not None:
+                sboms_queryset = sboms_queryset.filter(version=version)
+            if format is not None:
+                sboms_queryset = sboms_queryset.filter(format=format)
+            sboms_queryset = sboms_queryset.order_by("-created_at")
             # Apply pagination
             paginated_sboms, pagination_meta = _paginate_queryset(sboms_queryset, page, page_size)
         except (DatabaseError, OperationalError) as db_err:
