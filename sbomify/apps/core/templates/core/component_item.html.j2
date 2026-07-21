@@ -67,12 +67,6 @@
                         {% endif %}
                         <i class="fas fa-download"></i>
                     </a>
-                    {% if not is_vex and not is_cbom %}
-                        <a href="{% url 'sboms:sbom_vulnerabilities' item.id %}"
-                           class="tw-btn-outline-warning inline-flex items-center gap-2 no-underline">
-                            <i class="fas fa-shield-alt"></i>Vulnerabilities
-                        </a>
-                    {% endif %}
                 {% elif item_type == 'documents' %}
                     <a href="{% url 'documents:document_download' item.id %}"
                        class="tw-btn-primary inline-flex items-center gap-2 no-underline">
@@ -169,13 +163,18 @@
             {# Vulnerability Summary Section #}
             {% if vulnerability_summary %}
                 <div class="tw-card">
-                    <div class="px-6 py-4 border-b border-border">
+                    <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-3">
                         <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
                             <i class="fas fa-shield-alt text-primary"></i>
                             Vulnerability Scan
                             <span class="text-sm font-normal text-text-muted ml-2">{{ vulnerability_summary.scan_date|date:"M d, Y" }}</span>
                             <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-border/50 text-text-muted">{{ vulnerability_summary.provider|upper }}</span>
                         </h4>
+                        <a href="{% url 'sboms:sbom_vulnerabilities' item.id %}"
+                           class="tw-btn-secondary text-sm no-underline inline-flex items-center gap-2 flex-shrink-0">
+                            <i class="fas fa-shield-alt"></i>Vulnerabilities
+                            <i class="fas fa-arrow-right text-xs" aria-hidden="true"></i>
+                        </a>
                     </div>
                     <div class="p-6">
                         <div class="flex flex-wrap items-center gap-x-6 gap-y-3">
