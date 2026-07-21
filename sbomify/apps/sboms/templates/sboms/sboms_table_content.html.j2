@@ -103,7 +103,7 @@
                         <tr class="hover:bg-background/50 transition-colors"
                             x-data="{ get bomType() { return item.sbom.bom_type || 'sbom' } }">
                             <td class="break-all">
-                                <a :href="'{% if is_public_view %}{% url 'core:component_item_public' component_id=component_id item_type='sboms' item_id='SBOM_ID' %}{% else %}{% url 'core:component_item' component_id=component_id item_type='sboms' item_id='SBOM_ID' %}{% endif %}'.replace('SBOM_ID', item.sbom.id)"
+                                <a :href="(item.sbom.bom_type === 'vex' ? '{% if is_public_view %}{% url 'core:component_item_public' component_id=component_id item_type='vex' item_id='SBOM_ID' %}{% else %}{% url 'core:component_item' component_id=component_id item_type='vex' item_id='SBOM_ID' %}{% endif %}' : item.sbom.bom_type === 'cbom' ? '{% if is_public_view %}{% url 'core:component_item_public' component_id=component_id item_type='cbom' item_id='SBOM_ID' %}{% else %}{% url 'core:component_item' component_id=component_id item_type='cbom' item_id='SBOM_ID' %}{% endif %}' : '{% if is_public_view %}{% url 'core:component_item_public' component_id=component_id item_type='sboms' item_id='SBOM_ID' %}{% else %}{% url 'core:component_item' component_id=component_id item_type='sboms' item_id='SBOM_ID' %}{% endif %}').replace('SBOM_ID', item.sbom.id)"
                                    class="text-primary font-medium hover:underline"
                                    x-text="item.sbom.name"></a>
                                 {% comment %}

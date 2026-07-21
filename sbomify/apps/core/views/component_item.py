@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpRequest, HttpResponse, HttpResponseNotFound, HttpResponseRedirect
 from django.shortcuts import render
+from django.urls import reverse
 from django.views import View
 
 from sbomify.apps.core.apis import _build_item_response, get_component
@@ -47,7 +48,7 @@ class ComponentItemPublicView(View):
                 request, HttpResponse(status=status_code, content=component.get("detail", "Unknown error"))
             )
 
-        if item_type == "sboms":
+        if item_type in ("sboms", "vex", "cbom"):
             result = get_sbom_detail(request, item_id)
             if not result.ok:
                 return error_response(
@@ -129,8 +130,15 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
         vulnerability_summary = None
         assessment_runs = None
         vex_suppressions = None
+        vex_suppression_terms: list[str] = []
+        vex_suppression_states: list[str] = []
 
-        if item_type == "sboms":
+        # VEX and CBOM artifacts are SBOM-backed rows served under their own paths.
+        is_vex = item_type == "vex"
+        is_cbom = item_type == "cbom"
+        is_sbom_backed = item_type in ("sboms", "vex", "cbom")
+
+        if is_sbom_backed:
             result = get_sbom_detail(request, item_id)
             if not result.ok:
                 return error_response(
@@ -139,13 +147,28 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 )
             item = result.value
 
-            # For a VEX artifact, list exactly which vulnerabilities it suppresses.
             from sbomify.apps.sboms.models import SBOM
             from sbomify.apps.vulnerability_scanning.vex import vex_suppression_rows
 
-            vex_row = SBOM.objects.filter(pk=item_id).only("id", "bom_type", "sbom_filename").first()
-            if vex_row and vex_row.bom_type == SBOM.BomType.VEX:
-                vex_suppressions = vex_suppression_rows(vex_row)
+            sbom_row = SBOM.objects.filter(pk=item_id).only("id", "bom_type", "sbom_filename").first()
+            actual_bom_type = sbom_row.bom_type if sbom_row else None
+            # Keep the URL canonical: a VEX opens under /vex/, a CBOM under /cbom/,
+            # everything else under /sboms/. Redirect a mismatched path.
+            canonical_type = {SBOM.BomType.VEX.value: "vex", SBOM.BomType.CBOM.value: "cbom"}.get(
+                actual_bom_type or "", "sboms"
+            )
+            if item_type != canonical_type:
+                return HttpResponseRedirect(
+                    reverse("core:component_item", args=[component_id, canonical_type, item_id])
+                )
+
+            # For a VEX artifact, list exactly which vulnerabilities it suppresses.
+            if actual_bom_type == SBOM.BomType.VEX:
+                vex_suppressions = vex_suppression_rows(sbom_row)
+                vex_suppression_terms = [
+                    f"{r['id']} {r['package']} {r['state']} {r['justification']}".lower() for r in vex_suppressions
+                ]
+                vex_suppression_states = [r["state"] for r in vex_suppressions]
             # Get latest vulnerability scan for this SBOM from AssessmentRun
             component_id_from_item = item.get("component_id") or component_id  # type: ignore[union-attr]
             latest_scan = (
@@ -217,6 +240,11 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 "vulnerability_summary": vulnerability_summary,
                 "assessment_runs": assessment_runs,
                 "vex_suppressions": vex_suppressions,
+                "vex_suppression_terms": vex_suppression_terms,
+                "vex_suppression_states": vex_suppression_states,
+                "is_vex": is_vex,
+                "is_cbom": is_cbom,
+                "is_sbom_backed": is_sbom_backed,
                 "can_triage": can_triage,
                 "team_key": component.team.key,
             },
