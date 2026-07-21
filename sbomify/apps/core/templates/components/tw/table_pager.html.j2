@@ -1,5 +1,5 @@
 {# Compact table pager — expects `currentPage`, `totalPages` in the Alpine scope. #}
-<div class="flex items-center gap-2" x-show="totalPages > 1">
+<div class="flex items-center gap-2">
     <button type="button"
             class="tw-btn-secondary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
             :disabled="currentPage === 1"
