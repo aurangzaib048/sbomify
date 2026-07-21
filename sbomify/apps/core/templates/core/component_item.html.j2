@@ -263,8 +263,15 @@
                                                        class="font-medium text-primary hover:underline inline-flex items-center gap-1">
                                                         {{ s.id }}<i class="fas fa-external-link-alt text-[0.65rem]"></i>
                                                     </a>
+                                                {% elif s.id == "Unknown" %}
+                                                    <span class="font-medium text-text-muted">{{ s.id }}</span>
                                                 {% else %}
-                                                    <span class="font-medium text-text">{{ s.id }}</span>
+                                                    <a href="https://osv.dev/vulnerability/{{ s.id }}"
+                                                       target="_blank"
+                                                       rel="noopener"
+                                                       class="font-medium text-primary hover:underline inline-flex items-center gap-1">
+                                                        {{ s.id }}<i class="fas fa-external-link-alt text-[0.65rem]"></i>
+                                                    </a>
                                                 {% endif %}
                                             </td>
                                             <td class="text-text">{{ s.package }}</td>
