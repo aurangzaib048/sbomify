@@ -96,31 +96,29 @@
                                 </h5>
                                 {% if result.packages %}
                                     <div class="overflow-x-auto">
-                                        <table class="tw-table w-full">
+                                        <table class="tw-table w-full table-fixed">
                                             <thead>
                                                 <tr>
-                                                    <th class="px-4 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider w-[20%]">Package</th>
-                                                    <th class="px-4 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider w-[15%]">Version</th>
-                                                    <th class="px-4 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider w-[15%]">Ecosystem</th>
-                                                    <th class="px-4 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider w-[50%]">
-                                                        Vulnerabilities
-                                                    </th>
+                                                    <th class="w-1/4">Package</th>
+                                                    <th class="w-1/4">Version</th>
+                                                    <th class="w-1/4">Ecosystem</th>
+                                                    <th class="w-1/4">Vulnerabilities</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {% for pkg_vuln_info in result.packages %}
                                                     {# Package row stays compact; its vulnerabilities span the full width in the row below. #}
                                                     <tr>
-                                                        <td class="px-4 py-4">
+                                                        <td>
                                                             <span class="font-semibold text-text">{{ pkg_vuln_info.package.name }}</span>
                                                         </td>
-                                                        <td class="px-4 py-4">
+                                                        <td>
                                                             <span class="font-mono text-sm px-2 py-1 bg-background rounded">{{ pkg_vuln_info.package.version }}</span>
                                                         </td>
-                                                        <td class="px-4 py-4">
+                                                        <td>
                                                             <span class="tw-badge-secondary">{{ pkg_vuln_info.package.ecosystem }}</span>
                                                         </td>
-                                                        <td class="px-4 py-4">
+                                                        <td>
                                                             {% if pkg_vuln_info.vulnerabilities %}
                                                                 <span class="text-sm font-medium text-text">{{ pkg_vuln_info.vulnerabilities|length }} vulnerabilit{{ pkg_vuln_info.vulnerabilities|length|pluralize:"y,ies" }}</span>
                                                             {% else %}

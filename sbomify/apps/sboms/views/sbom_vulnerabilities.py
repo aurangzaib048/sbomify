@@ -113,6 +113,15 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
 
                         packages_dict[package_key]["vulnerabilities"].append(template_vuln)
 
+                    # Worst first: severity rank, then CVSS descending within a rank.
+                    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                    for package in packages_dict.values():
+                        package["vulnerabilities"].sort(
+                            key=lambda v: (
+                                severity_rank.get((v.get("severity") or "").lower(), 5),
+                                -(v.get("cvss_score") or 0),
+                            )
+                        )
                     vulnerabilities_data["results"][0]["packages"] = list(packages_dict.values())
 
                 # Check for error metadata
