@@ -1,5 +1,7 @@
 {% load static %}
-<div x-cloak x-data="dangerZone()">
+<div x-cloak
+     x-data="dangerZone()"
+     @delete-component.window="showDeleteModal = true">
     <div class="tw-dangerzone-card">
         <div class="tw-card-header cursor-pointer select-none"
              role="button"

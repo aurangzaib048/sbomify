@@ -4,7 +4,7 @@
     {% else %}
         false
     {% endif %}
-    })" @metadata-saved="refreshDisplay()" @close-metadata-editor.window="isEditing = false">
+    })" @metadata-saved="refreshDisplay()" @close-metadata-editor.window="isEditing = false" @edit-metadata.window="isEditing = true">
     <!-- Display Mode -->
     <template x-if="!isEditing">
         <div class="component-meta-info-display-container"

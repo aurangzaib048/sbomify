@@ -6,7 +6,6 @@
           href="{% static 'css/components/vulnerability-trends.css' %}">
 {% endblock %}
 {% block content_after_header %}
-    <div>{% include "core/components/component_meta_info.html.j2" %}</div>
     <!-- Vulnerability Time Series Chart -->
     <div class="tw-card"
          hx-get="{% url 'vulnerability_scanning:vulnerability_trends' %}?component_id={{ component.id }}&hide_recent_scans=true"
@@ -28,8 +27,9 @@
 {% block upload_section %}
     {% if component.has_crud_permissions %}
         <div>{% include "sboms/components/ci_cd_info.html.j2" %}</div>
-        <div>{% include 'sboms/components/sbom_upload.html.j2' with component_id=component.id %}</div>
-        <div hx-get="{% url 'oidc:trusted_publishers' component_id=component.id %}"
+        <div id="upload-section">{% include 'sboms/components/sbom_upload.html.j2' with component_id=component.id %}</div>
+        <div id="trusted-publishers"
+             hx-get="{% url 'oidc:trusted_publishers' component_id=component.id %}"
              hx-trigger="load"
              hx-swap="outerHTML">
             {# placeholder, replaced by the rendered section partial on load #}
@@ -62,6 +62,8 @@
             <div class="tw-card-body text-text-muted text-sm">Loading VEX documents…</div>
         </div>
     </div>
+    {# Component metadata — moved below the artifacts and collapsed by default so the page no longer opens on it (design review p8: "far too much on this page"). Editing opens it from the header ⋮ menu. #}
+    <div id="component-metadata" class="mt-4">{% include "core/components/component_meta_info.html.j2" %}</div>
 {% endblock %}
 {% block scripts_additional %}
     {% vite_asset 'sbomify/apps/sboms/js/main.ts' %}

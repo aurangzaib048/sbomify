@@ -5,7 +5,7 @@
 {% load public_url_tags %}
 {% block title %}sbomify Component: {{ component.name }}{% endblock %}
 {% block content %}
-    <div class="space-y-6">
+    <div class="space-y-6" x-data="{ compMenu: false }">
         {# Page Header - matches product page pattern #}
         <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
             <div class="flex items-start gap-4">
@@ -29,11 +29,73 @@
                     <p class="text-text-muted text-sm m-0 mt-1">{{ component.component_type_display }} Component</p>
                 </div>
             </div>
-            {# Visibility Toggle #}
+            {# Visibility Toggle + meatball menu #}
             {% if component.has_crud_permissions %}
-                <div class="flex-shrink-0">
+                <div class="flex-shrink-0 flex items-center gap-2">
                     {% url 'core:component_details_public' component.id as component_public_url %}
                     {% include 'core/components/component_visibility_selector.html.j2' with component=component component_public_url=component_public_url company_nda_id=company_nda_id gated_visibility_allowed=gated_visibility_allowed team_key=team_key APP_BASE_URL=APP_BASE_URL %}
+                    {# Meatball menu — moves secondary actions off the page body (design review p8/p9) #}
+                    <div class="relative" @keydown.escape.window="compMenu = false">
+                        <button type="button"
+                                class="w-10 h-10 rounded-lg border border-border bg-surface text-text-muted hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center"
+                                @click="compMenu = !compMenu"
+                                :aria-expanded="compMenu"
+                                aria-haspopup="true"
+                                aria-label="More actions">
+                            <i class="fas fa-ellipsis-vertical" aria-hidden="true"></i>
+                        </button>
+                        <div x-show="compMenu"
+                             x-cloak
+                             x-transition
+                             @click.outside="compMenu = false"
+                             class="absolute right-0 top-12 w-60 bg-surface border border-border rounded-xl shadow-lg p-1.5 z-40"
+                             role="menu">
+                            {% block meatball_artifacts %}
+                                <div class="px-2.5 pt-1.5 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Artifacts</div>
+                                <button type="button"
+                                        role="menuitem"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; document.getElementById('upload-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' })">
+                                    <i class="fas fa-upload w-4 text-text-muted" aria-hidden="true"></i>Upload artifact…
+                                </button>
+                                <button type="button"
+                                        role="menuitem"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; document.getElementById('trusted-publishers')?.scrollIntoView({ behavior: 'smooth', block: 'center' })">
+                                    <i class="fas fa-shield-halved w-4 text-text-muted" aria-hidden="true"></i>Trusted publishers…
+                                </button>
+                                <hr class="my-1.5 border-border">
+                            {% endblock %}
+                            <div class="px-2.5 pt-1 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Component</div>
+                            <button type="button"
+                                    role="menuitem"
+                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                    @click="compMenu = false; $dispatch('edit-metadata'); $nextTick(() => document.getElementById('component-metadata')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))">
+                                <i class="fas fa-pen w-4 text-text-muted" aria-hidden="true"></i>Edit metadata…
+                            </button>
+                            {% if component.visibility == 'public' or component.visibility == 'gated' %}
+                                <button type="button"
+                                        role="menuitem"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; $dispatch('copy-url')">
+                                    <i class="fas fa-link w-4 text-text-muted" aria-hidden="true"></i>Copy public URL
+                                </button>
+                                <button type="button"
+                                        role="menuitem"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; $dispatch('copy-badge')">
+                                    <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
+                                </button>
+                            {% endif %}
+                            <hr class="my-1.5 border-border">
+                            <button type="button"
+                                    role="menuitem"
+                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-danger hover:bg-danger/10 text-left"
+                                    @click="compMenu = false; $dispatch('delete-component')">
+                                <i class="fas fa-trash w-4" aria-hidden="true"></i>Delete component…
+                            </button>
+                        </div>
+                    </div>
                 </div>
             {% endif %}
         </div>
