@@ -82,6 +82,7 @@
                                 </span>
                             </button>
                         </th>
+                        {% if not is_public_view %}<th>Vulnerabilities</th>{% endif %}
                         {% if not is_public_view %}<th class="hidden lg:table-cell">Assessments</th>{% endif %}
                         <th :aria-sort="sortColumn === 'created_at' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
                             <button type="button"
@@ -137,6 +138,30 @@
                                       :title="item.sbom.version"></span>
                             </td>
                             {% if not is_public_view %}
+                                <td class="whitespace-nowrap">
+                                    <template x-if="!item.vuln">
+                                        <span class="text-text-muted text-sm">Not scanned</span>
+                                    </template>
+                                    <template x-if="item.vuln && item.vuln.total === 0">
+                                        <span class="tw-badge-success text-xs">Clean</span>
+                                    </template>
+                                    <template x-if="item.vuln && (item.vuln.critical > 0 || item.vuln.high > 0)">
+                                        <div class="flex items-center gap-1.5">
+                                            <template x-if="item.vuln.critical > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-danger/10 text-danger"
+                                                      x-text="item.vuln.critical + ' Critical'"></span>
+                                            </template>
+                                            <template x-if="item.vuln.high > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-warning/10 text-warning"
+                                                      x-text="item.vuln.high + ' High'"></span>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="item.vuln && item.vuln.total > 0 && item.vuln.critical === 0 && item.vuln.high === 0">
+                                        <span class="text-text-muted text-xs"
+                                              x-text="item.vuln.total + ' low/medium'"></span>
+                                    </template>
+                                </td>
                                 <td class="hidden lg:table-cell">
                                     <template x-if="item.assessments && item.assessments.plugins && item.assessments.plugins.length > 0">
                                         <div class="flex flex-wrap items-center gap-1">
@@ -216,7 +241,7 @@
                     </template>
                     <template x-if="paginatedData.length === 0 && search">
                         <tr>
-                            <td colspan="{% if is_public_view %}7{% else %}8{% endif %}"
+                            <td colspan="{% if is_public_view %}7{% else %}9{% endif %}"
                                 class="text-center py-8 text-text-muted">
                                 <i class="fas fa-search text-2xl mb-2 opacity-50"></i>
                                 <p>No BOMs match your search</p>

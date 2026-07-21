@@ -7,9 +7,40 @@ from django.http import HttpRequest
 from sbomify.apps.core.apis import get_component, list_component_sboms
 from sbomify.apps.core.services.results import ServiceResult
 from sbomify.apps.core.utils import number_to_random_token
+from sbomify.apps.plugins.models import AssessmentRun
 from sbomify.apps.sboms.forms import SbomDeleteForm
 from sbomify.apps.sboms.services.sboms import delete_sbom_record
 from sbomify.apps.teams.apis import get_team
+from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
+
+
+def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
+    """Attach each SBOM's latest security-scan severity counts as ``item['vuln']``.
+
+    One batched query over every SBOM in the table. Ordering newest-first per
+    ``sbom_id`` means the first row seen for a given SBOM is its latest run, so
+    the counts read straight off that run (VEX-suppressed findings are already
+    excluded from the stored summary). Rows with no completed security run get
+    ``vuln = None``, which the table renders as "not scanned".
+    """
+    sbom_ids = [item["sbom"]["id"] for item in sbom_items if item.get("sbom", {}).get("id")]
+    if not sbom_ids:
+        return
+
+    # DISTINCT ON (sbom_id) with newest-first ordering returns exactly one row
+    # per SBOM — its latest run — so we never load every historical result blob.
+    latest_runs = (
+        AssessmentRun.objects.filter(sbom_id__in=sbom_ids, category="security", status="completed")
+        .order_by("sbom_id", "-created_at")
+        .distinct("sbom_id")
+        .values("sbom_id", "result")
+    )
+    latest_by_sbom: dict[str, dict[str, int]] = {
+        str(run["sbom_id"]): extract_severity_counts(run["result"]) for run in latest_runs
+    }
+
+    for item in sbom_items:
+        item["vuln"] = latest_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
 
 
 def build_sboms_table_context(
@@ -41,6 +72,9 @@ def build_sboms_table_context(
     # subquery and display-name lookup that the batched API path had already
     # done — ~3 extra queries per row on top of the inner N+1 — and was the
     # dominant slow path on the component detail page.
+
+    if not is_public_view:
+        _attach_vulnerability_counts(sbom_items)
 
     context = {
         "component_id": component_id,
