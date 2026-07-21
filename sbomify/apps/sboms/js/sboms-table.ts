@@ -53,7 +53,7 @@ interface SbomItem {
   assessments?: AssessmentsData | null
 }
 
-type SortColumn = 'name' | 'format' | 'version' | 'created_at'
+type SortColumn = 'name' | 'format' | 'version' | 'created_at' | 'type'
 type SortDirection = 'asc' | 'desc'
 
 export function registerSbomsTable() {
@@ -78,6 +78,11 @@ export function registerSbomsTable() {
         const configuredPageSize = parseInt(alpineThis.$el.dataset.pageSize || '', 10)
         if (!Number.isNaN(configuredPageSize) && configuredPageSize > 0) {
           this.pageSize = configuredPageSize
+        }
+        // The compact card groups by type (BOMs before VEX); the full page stays newest-first.
+        if (alpineThis.$el.dataset.defaultSort === 'type') {
+          this.sortColumn = 'type'
+          this.sortDirection = 'asc'
         }
         containerRef = alpineThis.$el.closest<HTMLElement>('#sboms-table-container')
         if (!containerRef) return
@@ -128,6 +133,20 @@ export function registerSbomsTable() {
           let bVal: string | number
 
           switch (this.sortColumn) {
+            case 'type': {
+              // BOMs lead (SBOM first), VEX trails; newest-first within a group.
+              const rank = (item: SbomItem) => {
+                const bomType = item.sbom.bom_type || 'sbom'
+                return bomType === 'sbom' ? 0 : bomType === 'vex' ? 2 : 1
+              }
+              aVal = rank(a)
+              bVal = rank(b)
+              if (aVal === bVal) {
+                aVal = new Date(b.sbom.created_at).getTime()
+                bVal = new Date(a.sbom.created_at).getTime()
+              }
+              break
+            }
             case 'name':
               aVal = a.sbom.name.toLowerCase()
               bVal = b.sbom.name.toLowerCase()
