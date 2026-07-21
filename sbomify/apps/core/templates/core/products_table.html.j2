@@ -53,7 +53,7 @@
                         </div>
                     </div>
                     <div class="tw-data-table-container">
-                        <table class="tw-table">
+                        <table class="tw-table tw-table-fixed">
                             <thead>
                                 <tr>
                                     <th :aria-sort="sortColumn === 'name' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
@@ -81,7 +81,8 @@
                                             </span>
                                         </button>
                                     </th>
-                                    <th :aria-sort="sortColumn === 'is_public' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
+                                    <th class="tw-cell-end"
+                                        :aria-sort="sortColumn === 'is_public' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
                                         <button type="button"
                                                 class="tw-table-sortable"
                                                 :class="{ 'sorted-asc': sortColumn === 'is_public' && sortDirection === 'asc', 'sorted-desc': sortColumn === 'is_public' && sortDirection === 'desc' }"
@@ -139,7 +140,7 @@
                                                 <span class="text-text-muted text-sm italic">No components</span>
                                             </template>
                                         </td>
-                                        <td>
+                                        <td class="tw-cell-end">
                                             <template x-if="product.is_public">
                                                 <span class="tw-badge-success">
                                                     <i class="fas fa-globe text-[10px] mr-1"></i>

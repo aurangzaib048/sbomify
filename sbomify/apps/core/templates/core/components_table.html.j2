@@ -63,7 +63,7 @@
                         </div>
                     </div>
                     <div class="tw-data-table-container">
-                        <table class="tw-table">
+                        <table class="tw-table tw-table-fixed">
                             <thead>
                                 <tr>
                                     <th :aria-sort="sortColumn === 'name' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
@@ -117,7 +117,8 @@
                                             </span>
                                         </button>
                                     </th>
-                                    <th :aria-sort="sortColumn === 'visibility' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
+                                    <th class="tw-cell-end"
+                                        :aria-sort="sortColumn === 'visibility' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
                                         <button type="button"
                                                 class="tw-table-sortable"
                                                 :class="{ 'sorted-asc': sortColumn === 'visibility' && sortDirection === 'asc', 'sorted-desc': sortColumn === 'visibility' && sortDirection === 'desc' }"
@@ -162,7 +163,7 @@
                                         <td class="hidden lg:table-cell">
                                             <span class="text-text text-sm" x-text="getContentDisplay(component)"></span>
                                         </td>
-                                        <td>
+                                        <td class="tw-cell-end">
                                             <template x-if="component.visibility === 'public'">
                                                 <span class="tw-badge-success">
                                                     <i class="fas fa-globe text-[10px] mr-1"></i>

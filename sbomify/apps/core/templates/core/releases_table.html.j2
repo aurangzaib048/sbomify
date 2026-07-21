@@ -53,7 +53,7 @@
                         </div>
                     </div>
                     <div class="tw-data-table-container">
-                        <table class="tw-table">
+                        <table class="tw-table tw-table-fixed">
                             <thead>
                                 <tr>
                                     <th :aria-sort="sortColumn === 'name' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
@@ -107,7 +107,8 @@
                                             </span>
                                         </button>
                                     </th>
-                                    <th :aria-sort="sortColumn === 'is_public' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
+                                    <th class="tw-cell-end"
+                                        :aria-sort="sortColumn === 'is_public' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
                                         <button type="button"
                                                 class="tw-table-sortable"
                                                 :class="{ 'sorted-asc': sortColumn === 'is_public' && sortDirection === 'asc', 'sorted-desc': sortColumn === 'is_public' && sortDirection === 'desc' }"
@@ -187,7 +188,7 @@
                                                   :title="formatDateFull(release.released_at || release.created_at)"
                                                   x-text="formatDate(release.released_at || release.created_at)"></span>
                                         </td>
-                                        <td>
+                                        <td class="tw-cell-end">
                                             <template x-if="release.is_public">
                                                 <span class="tw-badge-success">
                                                     <i class="fas fa-globe text-[10px] mr-1"></i>
