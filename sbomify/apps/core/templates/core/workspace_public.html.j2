@@ -63,7 +63,7 @@
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {% for component in global_components %}
-                    <div class="bg-card border border-border rounded-xl p-4 flex flex-col gap-2.5 transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
+                    <div class="bg-card border border-border rounded-xl p-3 flex flex-col gap-2 transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
                         <div class="flex justify-between items-start gap-2">
                             <h3 class="text-base font-semibold text-text m-0 leading-tight flex-1">{{ component.name }}</h3>
                             <span class="tw-chip-neutral whitespace-nowrap">{{ component.component_type_display }}</span>
@@ -76,7 +76,7 @@
                                 <i class="fas fa-building" aria-hidden="true"></i>
                                 Organization-Wide
                             </span>
-                            <a class="tw-btn-primary text-sm py-1 px-3 inline-flex items-center"
+                            <a class="text-primary text-sm font-semibold inline-flex items-center hover:underline"
                                href="{% public_url 'core:component_details_public' component_id=component.id component_slug=component.slug %}">
                                 View Details <i class="fas fa-arrow-right ml-1" aria-hidden="true"></i>
                             </a>
@@ -109,7 +109,7 @@
             {% endif %}
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {% for product in products %}
-                    <div class="bg-card border border-border rounded-xl p-4 flex flex-col gap-2.5 transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
+                    <div class="bg-card border border-border rounded-xl p-3 flex flex-col gap-2 transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
                         <div class="flex justify-between items-start gap-2">
                             <h3 class="text-base font-semibold text-text m-0 leading-tight flex-1">{{ product.name }}</h3>
                             <span class="tw-chip-neutral whitespace-nowrap">{{ product.component_count }} Component{{ product.component_count|pluralize }}</span>
@@ -125,7 +125,7 @@
                                     {% endfor %}
                                 {% endif %}
                             </div>
-                            <a class="tw-btn-primary text-sm py-1 px-3 inline-flex items-center"
+                            <a class="text-primary text-sm font-semibold inline-flex items-center hover:underline"
                                href="{% public_url 'core:product_details_public' product_id=product.id product_slug=product.slug %}">
                                 View Details <i class="fas fa-arrow-right ml-1" aria-hidden="true"></i>
                             </a>
