@@ -43,25 +43,17 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
         item["vuln"] = latest_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
 
 
-def _latest_per_type(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep only the newest artifact of each bom_type (latest SBOM, latest VEX, …).
+def _latest_artifacts(sbom_items: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    """Return the newest ``limit`` artifacts for the component card preview.
 
-    The component card shows this compact summary; the full history lives behind
-    the "View all" toggle (``?full=1``).
+    The full history (every SBOM/VEX/CBOM) lives behind the "View all" link
+    (``?full=1``).
     """
-    by_date = sorted(
+    return sorted(
         sbom_items,
         key=lambda x: x["sbom"]["created_at"].timestamp() if x["sbom"].get("created_at") else 0.0,
         reverse=True,
-    )
-    seen: set[str] = set()
-    latest: list[dict[str, Any]] = []
-    for item in by_date:
-        bom_type = item["sbom"].get("bom_type") or "sbom"
-        if bom_type not in seen:
-            seen.add(bom_type)
-            latest.append(item)
-    return latest
+    )[:limit]
 
 
 def build_sboms_table_context(
@@ -99,7 +91,7 @@ def build_sboms_table_context(
     full_view = request.GET.get("full") == "1"
     total_artifact_count = len(sbom_items)
     if not full_view:
-        sbom_items = _latest_per_type(sbom_items)
+        sbom_items = _latest_artifacts(sbom_items)
 
     if not is_public_view:
         _attach_vulnerability_counts(sbom_items)
