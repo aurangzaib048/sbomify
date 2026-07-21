@@ -2295,6 +2295,13 @@ html.no-transitions * {
   text-align: center;
 }
 
+/* text-align doesn't reach a block-level flex container (e.g. a row of
+   pills), so centre those too, keeping cell content aligned with its
+   centred header. */
+.tw-table-fixed td:not(:first-child):not(:last-child) > .flex {
+  justify-content: center;
+}
+
 /* Equal-width columns so a table's columns are evenly distributed rather
    than sized to content. Pair with tw-cell-end on the trailing column. */
 .tw-table-fixed {
