@@ -76,7 +76,11 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         # rather than whichever run happened to complete last.
         from sbomify.apps.plugins.models import AssessmentRun
         from sbomify.apps.sboms.models import SBOM
-        from sbomify.apps.vulnerability_scanning.utils import extract_finding_rows, extract_severity_counts
+        from sbomify.apps.vulnerability_scanning.utils import (
+            extract_finding_rows,
+            extract_severity_counts,
+            merge_findings_by_alias,
+        )
         from sbomify.apps.vulnerability_scanning.vex import load_vex_suppressions
 
         latest_sbom = (
@@ -97,11 +101,21 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             else None
         )
         vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
-        # Flat, severity-sorted findings for the latest SBOM's drill-down table.
-        # Pass the component's VEX so each finding's status resolves live, even
-        # when the stored scan predates the VEX upload.
-        vex_statements = load_vex_suppressions(component_id) if latest_scan_result else []
-        latest_vulns = extract_finding_rows(latest_scan_result, vex_statements) if latest_scan_result else []
+        # Flat, severity-sorted findings for the latest SBOM's drill-down table,
+        # merged across every provider's latest run so aliases auto-resolve (OSV
+        # carries the GHSA↔CVE mapping the DT run lacks). The component's VEX
+        # resolves each finding's status live, even when the stored scan predates
+        # the VEX upload.
+        latest_vulns: list[dict[str, Any]] = []
+        if latest_scan_result:
+            provider_results = list(
+                AssessmentRun.objects.filter(sbom_id=latest_sbom_id, category="security", status="completed")
+                .order_by("plugin_name", "-created_at")
+                .distinct("plugin_name")
+                .values_list("result", flat=True)
+            )
+            vex_statements = load_vex_suppressions(component_id)
+            latest_vulns = extract_finding_rows(merge_findings_by_alias(provider_results), vex_statements)
         # Lowercased "advisory package ecosystem" haystack per finding, so the
         # drill-down's search box can filter client-side without re-fetching.
         latest_vuln_terms = [
