@@ -133,7 +133,7 @@
                                                             <td colspan="4" class="px-4 pb-5 pt-0">
                                                                 <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                                                     {% for vuln in pkg_vuln_info.vulnerabilities %}
-                                                                        <div class="p-4 bg-surface border border-border rounded-lg hover:shadow-sm transition-shadow">
+                                                                        <div class="p-4 bg-surface border border-border rounded-lg hover:shadow-sm transition-shadow min-w-0">
                                                                             <div class="flex flex-wrap justify-between items-start gap-2 mb-2">
                                                                                 <div class="flex-1">
                                                                                     {# Vulnerability ID with smart links #}
@@ -188,10 +188,8 @@
                                                                                 </div>
                                                                             </div>
                                                                             {# Summary #}
-                                                                            {% if vuln.summary or vuln.details %}
-                                                                                <p class="text-sm text-text-muted leading-relaxed mb-2">
-                                                                                    {{ vuln.summary|default_if_none:vuln.details|truncatewords:50 }}
-                                                                                </p>
+                                                                            {% if vuln.summary and ' ' in vuln.summary %}
+                                                                                <p class="text-sm text-text-muted leading-relaxed mb-2 break-words">{{ vuln.summary|truncatechars:200 }}</p>
                                                                             {% endif %}
                                                                             {# References #}
                                                                             {% if vuln.references and vuln.references|length > 0 %}
