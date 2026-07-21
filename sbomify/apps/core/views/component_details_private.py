@@ -98,6 +98,9 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
         # Flat, severity-sorted findings for the latest SBOM's drill-down table.
         latest_vulns = extract_finding_rows(latest_scan_result) if latest_scan_result else []
+        # Lowercased "advisory package ecosystem" haystack per finding, so the
+        # drill-down's search box can filter client-side without re-fetching.
+        latest_vuln_terms = [f"{v['id']} {v['package']} {v['ecosystem']}".lower() for v in latest_vulns]
 
         context = {
             "APP_BASE_URL": settings.APP_BASE_URL,
@@ -110,6 +113,7 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             "team_key": team_key,
             "vuln_summary": vuln_summary,
             "latest_vulns": latest_vulns,
+            "latest_vuln_terms": latest_vuln_terms,
             "latest_vuln_version": latest_sbom["version"] if latest_sbom else None,
             "latest_vuln_sbom_id": latest_sbom_id,
             "document_type_subcategories": document_type_subcategories,
