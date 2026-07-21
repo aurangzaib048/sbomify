@@ -79,10 +79,7 @@
         <div class="tw-card">
             {# Card Header #}
             <div class="px-6 py-4 border-b border-border">
-                <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
-                    <i class="fas fa-bug text-warning"></i>
-                    Scan Results
-                </h4>
+                <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">Scan Results</h4>
             </div>
             {# Card Body #}
             <div class="p-6">
@@ -105,10 +102,16 @@
                                                     <th class="w-1/4">Vulnerabilities</th>
                                                 </tr>
                                             </thead>
-                                            <tbody>
-                                                {% for pkg_vuln_info in result.packages %}
+                                            {% for pkg_vuln_info in result.packages %}
+                                                <tbody x-data="{ open:
+                                                    {% if forloop.first %}
+                                                        true
+                                                    {% else %}
+                                                        false
+                                                    {% endif %}
+                                                    }">
                                                     {# Package row stays compact; its vulnerabilities span the full width in the row below. #}
-                                                    <tr>
+                                                    <tr class="cursor-pointer" @click="open = !open">
                                                         <td>
                                                             <span class="font-semibold text-text">{{ pkg_vuln_info.package.name }}</span>
                                                         </td>
@@ -120,14 +123,16 @@
                                                         </td>
                                                         <td>
                                                             {% if pkg_vuln_info.vulnerabilities %}
-                                                                <span class="text-sm font-medium text-text">{{ pkg_vuln_info.vulnerabilities|length }} vulnerabilit{{ pkg_vuln_info.vulnerabilities|length|pluralize:"y,ies" }}</span>
+                                                                <span class="inline-flex items-center gap-2 text-sm font-medium text-text">{{ pkg_vuln_info.vulnerabilities|length }} vulnerabilit{{ pkg_vuln_info.vulnerabilities|length|pluralize:"y,ies" }}<i class="fas fa-chevron-down text-xs text-text-muted transition-transform"
+   :class="open ? 'rotate-180' : ''"
+   aria-hidden="true"></i></span>
                                                             {% else %}
                                                                 <span class="inline-flex items-center gap-1 text-success text-sm"><i class="fas fa-shield-alt"></i>None</span>
                                                             {% endif %}
                                                         </td>
                                                     </tr>
                                                     {% if pkg_vuln_info.vulnerabilities %}
-                                                        <tr>
+                                                        <tr x-show="open" x-cloak>
                                                             <td colspan="4" class="px-4 pb-5 pt-0">
                                                                 <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                                                     {% for vuln in pkg_vuln_info.vulnerabilities %}
@@ -235,8 +240,8 @@
                                                             </td>
                                                         </tr>
                                                     {% endif %}
-                                                {% endfor %}
-                                            </tbody>
+                                                </tbody>
+                                            {% endfor %}
                                         </table>
                                     </div>
                                 {% else %}
