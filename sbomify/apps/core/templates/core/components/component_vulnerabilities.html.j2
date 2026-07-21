@@ -8,7 +8,6 @@
         <div class="px-6 py-4 border-b border-border cursor-pointer flex items-center justify-between gap-3"
              @click="open = !open">
             <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
-                <i class="fas fa-bug text-warning"></i>
                 Vulnerabilities
                 {% if latest_vuln_version %}
                     <span class="font-normal text-text-muted text-sm">· {{ latest_vuln_version|truncatechars:24 }} (latest)</span>

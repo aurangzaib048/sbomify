@@ -1586,6 +1586,7 @@ html.no-transitions * {
 .tw-badge-danger,
 .tw-badge-accent,
 .tw-badge-info,
+.tw-badge-violet,
 .tw-badge-dot {
   display: inline-flex;
   align-items: center;
@@ -1638,6 +1639,13 @@ html.no-transitions * {
   color: rgb(var(--color-info));
   background-color: rgb(var(--color-info) / 0.12);
   border: 1px solid rgb(var(--color-info) / 0.2);
+}
+
+/* Soft violet — attestation artifacts (VEX); distinct from every severity hue. */
+.tw-badge-violet {
+  color: rgb(var(--color-accent));
+  background-color: rgb(var(--color-accent) / 0.12);
+  border: 1px solid rgb(var(--color-accent) / 0.2);
 }
 
 /* Neutral chip — squared variant for table-like contexts (counts, types).
