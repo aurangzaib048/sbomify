@@ -236,13 +236,12 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 )
                 merged = merge_findings_by_alias([result for _, result in provider_runs])
                 rows = extract_finding_rows(merged, load_vex_suppressions(component_id_from_item))
-                counted = [row for row in rows if not row["vex_suppressed"]]
                 vulnerability_summary = {
-                    "total": len(counted),
-                    "critical": sum(1 for row in counted if row["severity"] == "critical"),
-                    "high": sum(1 for row in counted if row["severity"] == "high"),
-                    "medium": sum(1 for row in counted if row["severity"] == "medium"),
-                    "low": sum(1 for row in counted if row["severity"] == "low"),
+                    "total": len(rows),
+                    "critical": sum(1 for row in rows if row["severity"] == "critical"),
+                    "high": sum(1 for row in rows if row["severity"] == "high"),
+                    "medium": sum(1 for row in rows if row["severity"] == "medium"),
+                    "low": sum(1 for row in rows if row["severity"] == "low"),
                     "provider": ", ".join(sorted({name for name, _ in provider_runs})),
                     "scan_date": latest_scan.created_at,
                 }

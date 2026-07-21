@@ -121,13 +121,12 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         # rates a finding high where DT said medium).
         vuln_summary = None
         if latest_vulns:
-            counted = [v for v in latest_vulns if not v["vex_suppressed"]]
             vuln_summary = {
-                "total": len(counted),
-                "critical": sum(1 for v in counted if v["severity"] == "critical"),
-                "high": sum(1 for v in counted if v["severity"] == "high"),
-                "medium": sum(1 for v in counted if v["severity"] == "medium"),
-                "low": sum(1 for v in counted if v["severity"] == "low"),
+                "total": len(latest_vulns),
+                "critical": sum(1 for v in latest_vulns if v["severity"] == "critical"),
+                "high": sum(1 for v in latest_vulns if v["severity"] == "high"),
+                "medium": sum(1 for v in latest_vulns if v["severity"] == "medium"),
+                "low": sum(1 for v in latest_vulns if v["severity"] == "low"),
             }
         elif latest_scan_result:
             vuln_summary = extract_severity_counts(latest_scan_result)

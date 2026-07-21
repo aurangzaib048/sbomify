@@ -49,13 +49,12 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]], component_id:
             item["vuln"] = None
             continue
         rows = extract_finding_rows(merge_findings_by_alias(provider_results), vex_statements)
-        counted = [row for row in rows if not row["vex_suppressed"]]
         item["vuln"] = {
-            "total": len(counted),
-            "critical": sum(1 for row in counted if row["severity"] == "critical"),
-            "high": sum(1 for row in counted if row["severity"] == "high"),
-            "medium": sum(1 for row in counted if row["severity"] == "medium"),
-            "low": sum(1 for row in counted if row["severity"] == "low"),
+            "total": len(rows),
+            "critical": sum(1 for row in rows if row["severity"] == "critical"),
+            "high": sum(1 for row in rows if row["severity"] == "high"),
+            "medium": sum(1 for row in rows if row["severity"] == "medium"),
+            "low": sum(1 for row in rows if row["severity"] == "low"),
         }
 
 
