@@ -55,20 +55,6 @@
                                 </span>
                             </button>
                         </th>
-                        <th class="hidden md:table-cell">Type</th>
-                        <th class="hidden md:table-cell"
-                            :aria-sort="sortColumn === 'format' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
-                            <button type="button"
-                                    class="tw-table-sortable"
-                                    :class="{ 'sorted-asc': sortColumn === 'format' && sortDirection === 'asc', 'sorted-desc': sortColumn === 'format' && sortDirection === 'desc' }"
-                                    @click="sort('format')">
-                                Format
-                                <span class="tw-table-sort-icon" aria-hidden="true">
-                                    <i class="fas fa-caret-up"></i>
-                                    <i class="fas fa-caret-down"></i>
-                                </span>
-                            </button>
-                        </th>
                         <th class="hidden md:table-cell"
                             :aria-sort="sortColumn === 'version' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'">
                             <button type="button"
@@ -89,14 +75,13 @@
                                     class="tw-table-sortable"
                                     :class="{ 'sorted-asc': sortColumn === 'created_at' && sortDirection === 'asc', 'sorted-desc': sortColumn === 'created_at' && sortDirection === 'desc' }"
                                     @click="sort('created_at')">
-                                Created
+                                Uploaded
                                 <span class="tw-table-sort-icon" aria-hidden="true">
                                     <i class="fas fa-caret-up"></i>
                                     <i class="fas fa-caret-down"></i>
                                 </span>
                             </button>
                         </th>
-                        <th class="hidden lg:table-cell">Releases</th>
                         <th class="text-center">Actions</th>
                     </tr>
                 </thead>
@@ -121,16 +106,6 @@
                                           x-text="'v' + (item.sbom.version.length > 16 ? item.sbom.version.slice(0, 16) + '…' : item.sbom.version)"
                                           :title="item.sbom.version"></span>
                                 </div>
-                            </td>
-                            <td class="hidden md:table-cell">
-                                <span class="tw-badge text-xs"
-                                      :class="{ 'tw-badge-info': bomType === 'sbom', 'tw-badge-warning': bomType === 'vex', 'tw-badge-success': bomType === 'cbom', 'tw-badge-secondary': !['sbom','vex','cbom'].includes(bomType) }"
-                                      x-text="bomType.toUpperCase()"></span>
-                            </td>
-                            <td class="hidden md:table-cell">
-                                <span class="tw-sbom-format"
-                                      :class="item.sbom.format.toLowerCase().includes('cyclonedx') ? 'tw-sbom-format-cyclonedx' : 'tw-sbom-format-spdx'"
-                                      x-text="(item.sbom.format_display || item.sbom.format).toUpperCase() + ' ' + item.sbom.format_version"></span>
                             </td>
                             <td class="hidden md:table-cell">
                                 <span class="font-mono text-sm text-text"
@@ -205,22 +180,9 @@
                             {% endif %}
                             <td class="text-text text-sm whitespace-nowrap">
                                 <span x-text="new Date(item.sbom.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })"></span>
-                            </td>
-                            <td class="hidden lg:table-cell">
-                                <template x-if="item.releases && item.releases.length > 0">
-                                    <div class="flex flex-wrap gap-1">
-                                        <template x-for="release in item.releases.slice(0, 2)" :key="release.id">
-                                            <span class="tw-badge-secondary text-xs" x-text="release.name"></span>
-                                        </template>
-                                        <template x-if="item.releases.length > 2">
-                                            <span class="tw-badge-secondary text-xs"
-                                                  x-text="'+' + (item.releases.length - 2)"></span>
-                                        </template>
-                                    </div>
-                                </template>
-                                <template x-if="!item.releases || item.releases.length === 0">
-                                    <span class="text-text-muted">—</span>
-                                </template>
+                                <div class="text-xs text-text-muted"
+                                     x-text="(item.sbom.format_display || item.sbom.format).toUpperCase() + ' ' + item.sbom.format_version">
+                                </div>
                             </td>
                             <td>
                                 <div class="flex items-center justify-center gap-1">
@@ -241,7 +203,7 @@
                     </template>
                     <template x-if="paginatedData.length === 0 && search">
                         <tr>
-                            <td colspan="{% if is_public_view %}7{% else %}9{% endif %}"
+                            <td colspan="{% if is_public_view %}4{% else %}6{% endif %}"
                                 class="text-center py-8 text-text-muted">
                                 <i class="fas fa-search text-2xl mb-2 opacity-50"></i>
                                 <p>No BOMs match your search</p>
