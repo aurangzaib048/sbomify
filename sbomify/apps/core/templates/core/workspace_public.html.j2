@@ -61,9 +61,9 @@
                     Organization-wide compliance documents, certifications, and security attestations
                 </p>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
                 {% for component in global_components %}
-                    <div class="bg-card border border-border rounded-xl p-4 h-full flex flex-col transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
+                    <div class="bg-card border border-border rounded-xl p-4 flex flex-col transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
                         <div class="flex justify-between items-start mb-2 gap-2">
                             <h3 class="text-lg font-semibold text-text m-0 leading-tight flex-1">{{ component.name }}</h3>
                             <span class="tw-chip-neutral whitespace-nowrap">{{ component.component_type_display }}</span>
@@ -107,9 +107,9 @@
                     </div>
                 </div>
             {% endif %}
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
                 {% for product in products %}
-                    <div class="bg-card border border-border rounded-xl p-4 h-full flex flex-col transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
+                    <div class="bg-card border border-border rounded-xl p-4 flex flex-col transition-all hover:border-primary/30 hover:-translate-y-0.5 hover:shadow-md">
                         <div class="flex justify-between items-start mb-2 gap-2">
                             <h3 class="text-lg font-semibold text-text m-0 leading-tight flex-1">{{ product.name }}</h3>
                             <span class="tw-chip-neutral whitespace-nowrap">{{ product.component_count }} Component{{ product.component_count|pluralize }}</span>
