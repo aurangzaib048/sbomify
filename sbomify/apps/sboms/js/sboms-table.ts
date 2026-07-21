@@ -72,6 +72,11 @@ export function registerSbomsTable() {
 
       init(): void {
         const alpineThis = this as typeof this & { $el: HTMLElement }
+        // The compact card renders 5 per page; the full "View all" page keeps 10.
+        const configuredPageSize = parseInt(alpineThis.$el.dataset.pageSize || '', 10)
+        if (!Number.isNaN(configuredPageSize) && configuredPageSize > 0) {
+          this.pageSize = configuredPageSize
+        }
         containerRef = alpineThis.$el.closest<HTMLElement>('#sboms-table-container')
         if (!containerRef) return
         afterSettleHandler = () => {

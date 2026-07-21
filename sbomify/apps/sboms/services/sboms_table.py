@@ -43,11 +43,14 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
         item["vuln"] = latest_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
 
 
-def _latest_per_type(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep only the newest artifact of each bom_type (latest SBOM, latest VEX, …).
+def _summary_artifacts(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The compact card view: the newest artifact of each non-VEX type, plus
+    *every* VEX.
 
-    The component card shows this compact summary; the full history lives behind
-    the "View all" toggle (``?full=1``).
+    VEX documents are component-scoped — they all apply to the latest scan — so a
+    component with several VEX statements should surface all of them here, not
+    just the newest. The full history (all SBOM versions) lives behind the
+    "View all" toggle (``?full=1``).
     """
     by_date = sorted(
         sbom_items,
@@ -55,13 +58,15 @@ def _latest_per_type(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reverse=True,
     )
     seen: set[str] = set()
-    latest: list[dict[str, Any]] = []
+    summary: list[dict[str, Any]] = []
     for item in by_date:
         bom_type = item["sbom"].get("bom_type") or "sbom"
-        if bom_type not in seen:
+        if bom_type == "vex":
+            summary.append(item)
+        elif bom_type not in seen:
             seen.add(bom_type)
-            latest.append(item)
-    return latest
+            summary.append(item)
+    return summary
 
 
 def build_sboms_table_context(
@@ -99,7 +104,7 @@ def build_sboms_table_context(
     full_view = request.GET.get("full") == "1"
     total_artifact_count = len(sbom_items)
     if not full_view:
-        sbom_items = _latest_per_type(sbom_items)
+        sbom_items = _summary_artifacts(sbom_items)
 
     if not is_public_view:
         _attach_vulnerability_counts(sbom_items)
