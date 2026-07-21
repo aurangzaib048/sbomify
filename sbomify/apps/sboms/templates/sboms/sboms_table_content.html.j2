@@ -10,35 +10,37 @@
     </div>
 {% else %}
     <div class="tw-data-table">
-        <div class="tw-data-table-toolbar">
-            <div class="tw-data-table-toolbar-left">
-                <div class="tw-data-table-search">
-                    <i class="fas fa-search tw-data-table-search-icon"></i>
-                    <label for="sboms-search" class="sr-only">Search artifacts</label>
-                    <input type="search"
-                           id="sboms-search"
-                           x-model="search"
-                           @input="currentPage = 1"
-                           placeholder="Search artifacts..."
-                           class="tw-data-table-search-input">
+        {% if full_view %}
+            <div class="tw-data-table-toolbar">
+                <div class="tw-data-table-toolbar-left">
+                    <div class="tw-data-table-search">
+                        <i class="fas fa-search tw-data-table-search-icon"></i>
+                        <label for="sboms-search" class="sr-only">Search artifacts</label>
+                        <input type="search"
+                               id="sboms-search"
+                               x-model="search"
+                               @input="currentPage = 1"
+                               placeholder="Search artifacts..."
+                               class="tw-data-table-search-input">
+                    </div>
+                </div>
+                <div class="tw-data-table-toolbar-right">
+                    <div class="tw-data-table-page-size">
+                        <span>Show</span>
+                        <label for="sboms-per-page" class="sr-only">Entries per page</label>
+                        <select id="sboms-per-page"
+                                x-model.number="pageSize"
+                                @change="currentPage = 1"
+                                class="tw-data-table-page-size-select">
+                            <template x-for="size in pageSizeOptions" :key="size">
+                                <option :value="size" x-text="size"></option>
+                            </template>
+                        </select>
+                        <span>entries</span>
+                    </div>
                 </div>
             </div>
-            <div class="tw-data-table-toolbar-right">
-                <div class="tw-data-table-page-size">
-                    <span>Show</span>
-                    <label for="sboms-per-page" class="sr-only">Entries per page</label>
-                    <select id="sboms-per-page"
-                            x-model.number="pageSize"
-                            @change="currentPage = 1"
-                            class="tw-data-table-page-size-select">
-                        <template x-for="size in pageSizeOptions" :key="size">
-                            <option :value="size" x-text="size"></option>
-                        </template>
-                    </select>
-                    <span>entries</span>
-                </div>
-            </div>
-        </div>
+        {% endif %}
         <div class="tw-data-table-container">
             <table class="tw-table w-full">
                 <thead>
@@ -221,38 +223,40 @@
                 </tbody>
             </table>
         </div>
-        <div class="tw-data-table-footer">
-            <div class="tw-data-table-info">
-                Showing <strong x-text="startItem"></strong> to <strong x-text="endItem"></strong> of <strong x-text="filteredData.length"></strong> entries
-                <template x-if="search">
-                    <span>(filtered from <strong x-text="allSboms.length"></strong> total)</span>
-                </template>
+        {% if full_view %}
+            <div class="tw-data-table-footer">
+                <div class="tw-data-table-info">
+                    Showing <strong x-text="startItem"></strong> to <strong x-text="endItem"></strong> of <strong x-text="filteredData.length"></strong> entries
+                    <template x-if="search">
+                        <span>(filtered from <strong x-text="allSboms.length"></strong> total)</span>
+                    </template>
+                </div>
+                <nav class="tw-pagination" x-show="totalPages > 1">
+                    <button class="tw-pagination-btn tw-pagination-btn-nav"
+                            :disabled="currentPage === 1"
+                            @click="goToPage(currentPage - 1)"
+                            aria-label="Previous page">
+                        <i class="fas fa-chevron-left" aria-hidden="true"></i>
+                    </button>
+                    <template x-for="page in visiblePages" :key="page">
+                        <template x-if="page === '...'">
+                            <span class="tw-pagination-ellipsis">...</span>
+                        </template>
+                        <template x-if="page !== '...'">
+                            <button class="tw-pagination-btn"
+                                    :class="{ 'tw-pagination-btn-active': currentPage === page }"
+                                    @click="goToPage(page)"
+                                    x-text="page"></button>
+                        </template>
+                    </template>
+                    <button class="tw-pagination-btn tw-pagination-btn-nav"
+                            :disabled="currentPage === totalPages"
+                            @click="goToPage(currentPage + 1)"
+                            aria-label="Next page">
+                        <i class="fas fa-chevron-right" aria-hidden="true"></i>
+                    </button>
+                </nav>
             </div>
-            <nav class="tw-pagination" x-show="totalPages > 1">
-                <button class="tw-pagination-btn tw-pagination-btn-nav"
-                        :disabled="currentPage === 1"
-                        @click="goToPage(currentPage - 1)"
-                        aria-label="Previous page">
-                    <i class="fas fa-chevron-left" aria-hidden="true"></i>
-                </button>
-                <template x-for="page in visiblePages" :key="page">
-                    <template x-if="page === '...'">
-                        <span class="tw-pagination-ellipsis">...</span>
-                    </template>
-                    <template x-if="page !== '...'">
-                        <button class="tw-pagination-btn"
-                                :class="{ 'tw-pagination-btn-active': currentPage === page }"
-                                @click="goToPage(page)"
-                                x-text="page"></button>
-                    </template>
-                </template>
-                <button class="tw-pagination-btn tw-pagination-btn-nav"
-                        :disabled="currentPage === totalPages"
-                        @click="goToPage(currentPage + 1)"
-                        aria-label="Next page">
-                    <i class="fas fa-chevron-right" aria-hidden="true"></i>
-                </button>
-            </nav>
-        </div>
+        {% endif %}
     </div>
 {% endif %}
