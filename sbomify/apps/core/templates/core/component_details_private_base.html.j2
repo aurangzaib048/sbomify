@@ -5,7 +5,9 @@
 {% load public_url_tags %}
 {% block title %}sbomify Component: {{ component.name }}{% endblock %}
 {% block content %}
-    <div class="space-y-6" x-data="{ compMenu: false }">
+    <div class="space-y-6"
+         x-data="{ compMenu: false, visibility: '{{ component.visibility|escapejs }}' }"
+         @public-status-changed.window="if ($event.detail.itemId === '{{ component.id|escapejs }}') visibility = $event.detail.visibility">
         {# Page Header - matches product page pattern #}
         <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
             <div class="flex items-start gap-4">
@@ -67,20 +69,21 @@
                                     @click="compMenu = false; $dispatch('edit-metadata'); $nextTick(() => document.getElementById('component-metadata')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))">
                                 <i class="fas fa-pen w-4 text-text-muted" aria-hidden="true"></i>Edit metadata…
                             </button>
-                            {% if component.visibility == 'public' or component.visibility == 'gated' %}
-                                <button type="button"
-                                        role="menuitem"
-                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                        @click="compMenu = false; $dispatch('copy-url')">
-                                    <i class="fas fa-link w-4 text-text-muted" aria-hidden="true"></i>Copy public URL
-                                </button>
-                                <button type="button"
-                                        role="menuitem"
-                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                        @click="compMenu = false; $dispatch('copy-badge')">
-                                    <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
-                                </button>
-                            {% endif %}
+                            {# Public-only actions; visibility is reactive so these appear/disappear the moment it changes, no reload. #}
+                            <button type="button"
+                                    role="menuitem"
+                                    x-show="visibility === 'public' || visibility === 'gated'"
+                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                    @click="compMenu = false; $dispatch('copy-url')">
+                                <i class="fas fa-link w-4 text-text-muted" aria-hidden="true"></i>Copy public URL
+                            </button>
+                            <button type="button"
+                                    role="menuitem"
+                                    x-show="visibility === 'public' || visibility === 'gated'"
+                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                    @click="compMenu = false; $dispatch('copy-badge')">
+                                <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
+                            </button>
                         </div>
                     </div>
                 </div>
