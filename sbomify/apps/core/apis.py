@@ -4380,7 +4380,6 @@ def list_component_sboms(
                         "version": sbom.version,
                         "created_at": sbom.created_at,
                         "bom_type": sbom.bom_type,
-                        "source": sbom.source,
                     },
                     "has_vulnerabilities_report": sbom_id in vuln_sbom_ids,
                     "releases": releases_by_sbom.get(sbom_id, []),

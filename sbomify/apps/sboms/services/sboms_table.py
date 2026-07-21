@@ -44,32 +44,24 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
 
 
 def _summary_artifacts(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The compact card view: the newest artifact of each non-VEX type, plus the
-    newest VEX *per source*.
+    """The compact card view: the newest artifact of each bom_type (latest SBOM,
+    latest VEX, latest CBOM, …).
 
-    VEX resolution is latest-wins per source (a newer dependency-track export
-    supersedes the older one; an in-app triage document supersedes earlier triage
-    versions), so the card lists exactly the documents that make up the effective
-    posture — one per source — rather than every historical VEX. The full history
-    lives behind the "View all" toggle (``?full=1``).
+    VEX resolution is latest-wins, so the card shows just the newest VEX; the
+    superseded ones (and the full SBOM history) live behind the "View all"
+    toggle (``?full=1``).
     """
     by_date = sorted(
         sbom_items,
         key=lambda x: x["sbom"]["created_at"].timestamp() if x["sbom"].get("created_at") else 0.0,
         reverse=True,
     )
-    seen_types: set[str] = set()
-    seen_vex_sources: set[str] = set()
+    seen: set[str] = set()
     summary: list[dict[str, Any]] = []
     for item in by_date:
         bom_type = item["sbom"].get("bom_type") or "sbom"
-        if bom_type == "vex":
-            source = item["sbom"].get("source") or ""
-            if source not in seen_vex_sources:
-                seen_vex_sources.add(source)
-                summary.append(item)
-        elif bom_type not in seen_types:
-            seen_types.add(bom_type)
+        if bom_type not in seen:
+            seen.add(bom_type)
             summary.append(item)
     return summary
 
