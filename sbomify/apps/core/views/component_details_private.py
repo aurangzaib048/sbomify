@@ -104,7 +104,9 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         latest_vulns = extract_finding_rows(latest_scan_result, vex_statements) if latest_scan_result else []
         # Lowercased "advisory package ecosystem" haystack per finding, so the
         # drill-down's search box can filter client-side without re-fetching.
-        latest_vuln_terms = [f"{v['id']} {v['package']} {v['ecosystem']}".lower() for v in latest_vulns]
+        latest_vuln_terms = [
+            f"{v['id']} {' '.join(v['aliases'])} {v['package']} {v['ecosystem']}".lower() for v in latest_vulns
+        ]
         # Parallel severity list so the drill-down's type/severity dropdown can filter by index.
         latest_vuln_severities = [v["severity"] for v in latest_vulns]
 

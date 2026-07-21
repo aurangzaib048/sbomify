@@ -274,6 +274,7 @@
                                                         {{ s.id }}<i class="fas fa-external-link-alt text-[0.65rem]"></i>
                                                     </a>
                                                 {% endif %}
+                                                {% if s.aliases %}<div class="text-xs text-text-muted mt-1">Aliases: {{ s.aliases|join:", " }}</div>{% endif %}
                                             </td>
                                             <td class="text-text">{{ s.package }}</td>
                                             <td>

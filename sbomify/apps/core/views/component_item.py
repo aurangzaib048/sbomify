@@ -166,7 +166,8 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
             if actual_bom_type == SBOM.BomType.VEX:
                 vex_suppressions = vex_suppression_rows(sbom_row)
                 vex_suppression_terms = [
-                    f"{r['id']} {r['package']} {r['state']} {r['justification']}".lower() for r in vex_suppressions
+                    f"{r['id']} {' '.join(r['aliases'])} {r['package']} {r['state']} {r['justification']}".lower()
+                    for r in vex_suppressions
                 ]
                 vex_suppression_states = [r["state"] for r in vex_suppressions]
             # Get latest vulnerability scan for this SBOM from AssessmentRun
