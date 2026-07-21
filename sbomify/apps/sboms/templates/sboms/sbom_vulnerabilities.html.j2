@@ -187,9 +187,14 @@
                                                                                     {% endif %}
                                                                                 </div>
                                                                             </div>
-                                                                            {# Summary #}
+                                                                            {# Summary. A raw digest (no spaces) is not a real summary; show a muted ellipsis so the card reads as "details incomplete, open the advisory". #}
                                                                             {% if vuln.summary and ' ' in vuln.summary %}
                                                                                 <p class="text-sm text-text-muted leading-relaxed mb-2 break-words">{{ vuln.summary|truncatechars:200 }}</p>
+                                                                            {% else %}
+                                                                                <p class="text-sm text-text-muted mb-2 italic"
+                                                                                   title="No summary provided by the scanner">
+                                                                                    No description provided …
+                                                                                </p>
                                                                             {% endif %}
                                                                             {# References #}
                                                                             {% if vuln.references and vuln.references|length > 0 %}
