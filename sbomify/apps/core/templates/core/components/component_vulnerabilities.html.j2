@@ -13,11 +13,8 @@
                     <span class="font-normal text-text-muted text-sm">· {{ latest_vuln_version|truncatechars:24 }} (latest)</span>
                 {% endif %}
             </h4>
-            <div class="flex items-center gap-3">
-                <span class="text-sm text-text-muted"><span x-text="total"></span> finding<span x-show="total !== 1">s</span></span>
-                <i class="fas fa-chevron-down text-text-muted transition-transform"
-                   :class="open ? 'rotate-180' : ''"></i>
-            </div>
+            <i class="fas fa-chevron-down text-text-muted transition-transform"
+               :class="open ? 'rotate-180' : ''"></i>
         </div>
         <div x-show="open" x-collapse>
             {# Search toolbar #}

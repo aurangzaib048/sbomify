@@ -227,38 +227,28 @@
                 </tbody>
             </table>
         </div>
-        <div class="tw-data-table-footer">
-            <div class="tw-data-table-info">
-                Showing <strong x-text="startItem"></strong> to <strong x-text="endItem"></strong> of <strong x-text="filteredData.length"></strong> entries
-                <template x-if="search">
-                    <span>(filtered from <strong x-text="allSboms.length"></strong> total)</span>
-                </template>
-            </div>
-            <nav class="tw-pagination" x-show="totalPages > 1">
-                <button class="tw-pagination-btn tw-pagination-btn-nav"
+        <div class="px-6 py-3 border-t border-border flex flex-wrap items-center justify-between gap-3">
+            <span class="text-sm text-text-muted">
+                Showing <span x-text="startItem"></span> to <span x-text="endItem"></span> of <span x-text="filteredData.length"></span>
+                <template x-if="search"><span>(filtered from <span x-text="allSboms.length"></span> total)</span></template>
+            </span>
+            <div class="flex items-center gap-2" x-show="totalPages > 1">
+                <button type="button"
+                        class="tw-btn-secondary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         :disabled="currentPage === 1"
                         @click="goToPage(currentPage - 1)"
                         aria-label="Previous page">
-                    <i class="fas fa-chevron-left" aria-hidden="true"></i>
+                    <i class="fas fa-chevron-left text-xs" aria-hidden="true"></i>
                 </button>
-                <template x-for="page in visiblePages" :key="page">
-                    <template x-if="page === '...'">
-                        <span class="tw-pagination-ellipsis">...</span>
-                    </template>
-                    <template x-if="page !== '...'">
-                        <button class="tw-pagination-btn"
-                                :class="{ 'tw-pagination-btn-active': currentPage === page }"
-                                @click="goToPage(page)"
-                                x-text="page"></button>
-                    </template>
-                </template>
-                <button class="tw-pagination-btn tw-pagination-btn-nav"
+                <span class="text-sm text-text-muted">Page <span x-text="currentPage"></span> / <span x-text="totalPages"></span></span>
+                <button type="button"
+                        class="tw-btn-secondary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         :disabled="currentPage === totalPages"
                         @click="goToPage(currentPage + 1)"
                         aria-label="Next page">
-                    <i class="fas fa-chevron-right" aria-hidden="true"></i>
+                    <i class="fas fa-chevron-right text-xs" aria-hidden="true"></i>
                 </button>
-            </nav>
+            </div>
         </div>
     </div>
 {% endif %}
