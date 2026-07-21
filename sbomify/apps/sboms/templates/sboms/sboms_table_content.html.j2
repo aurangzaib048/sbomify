@@ -28,9 +28,9 @@
                         @change="currentPage = 1"
                         class="tw-data-table-page-size-select">
                     <option value="all">All Types</option>
-                    <option value="sbom">SBOM</option>
-                    <option value="vex">VEX</option>
-                    <option value="cbom">CBOM</option>
+                    <template x-for="t in bomTypes" :key="t">
+                        <option :value="t" x-text="t.toUpperCase()"></option>
+                    </template>
                 </select>
             </div>
             {% if full_view %}

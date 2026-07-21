@@ -204,7 +204,7 @@
             {% if vex_suppressions is not None %}
                 {{ vex_suppression_terms|json_script:"vex-suppression-terms" }}
                 {{ vex_suppression_states|json_script:"vex-suppression-states" }}
-                <div x-data="{ search: '', statusFilter: 'all', currentPage: 1, perPage: 10, terms: (window.parseJsonScript('vex-suppression-terms') || []), states: (window.parseJsonScript('vex-suppression-states') || []), get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.statusFilter === 'all' || this.states[i] === this.statusFilter)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); } }"
+                <div x-data="{ search: '', statusFilter: 'all', currentPage: 1, perPage: 10, terms: (window.parseJsonScript('vex-suppression-terms') || []), states: (window.parseJsonScript('vex-suppression-states') || []), get statusOptions() { return [...new Set(this.states)].filter(Boolean).sort(); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.statusFilter === 'all' || this.states[i] === this.statusFilter)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); } }"
                      x-init="$watch('search', () => { currentPage = 1 }); $watch('statusFilter', () => { currentPage = 1 })"
                      class="tw-card">
                     <div class="px-6 py-4 border-b border-border">
@@ -230,8 +230,11 @@
                                     x-model="statusFilter"
                                     class="tw-data-table-page-size-select">
                                 <option value="all">All Statuses</option>
-                                <option value="not_affected">Not affected</option>
-                                <option value="false_positive">False positive</option>
+                                <template x-for="st in statusOptions" :key="st">
+                                    <option :value="st"
+                                            x-text="st.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())">
+                                    </option>
+                                </template>
                             </select>
                         </div>
                         <div class="overflow-x-auto" x-cloak>

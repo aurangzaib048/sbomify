@@ -2,7 +2,7 @@
 {% if latest_vulns %}
     {{ latest_vuln_terms|json_script:"latest-vuln-terms" }}
     {{ latest_vuln_severities|json_script:"latest-vuln-severities" }}
-    <div x-data="{ open: true, search: '', sevFilter: 'all', page: 1, perPage: 5, terms: (window.parseJsonScript('latest-vuln-terms') || []), severities: (window.parseJsonScript('latest-vuln-severities') || []), get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.sevFilter === 'all' || this.severities[i] === this.sevFilter)); }, get total() { return this.filteredIdx.length; }, get pageCount() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.page - 1) * this.perPage, this.page * this.perPage)); }, get startIdx() { return this.total ? (this.page - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.page * this.perPage, this.total); }, }"
+    <div x-data="{ open: true, search: '', sevFilter: 'all', page: 1, perPage: 5, terms: (window.parseJsonScript('latest-vuln-terms') || []), severities: (window.parseJsonScript('latest-vuln-severities') || []), get sevOptions() { const order = ['critical', 'high', 'medium', 'low', 'info']; const present = new Set(this.severities); return order.filter(v => present.has(v)).concat([...present].filter(v => !order.includes(v)).sort()); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.sevFilter === 'all' || this.severities[i] === this.sevFilter)); }, get total() { return this.filteredIdx.length; }, get pageCount() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.page - 1) * this.perPage, this.page * this.perPage)); }, get startIdx() { return this.total ? (this.page - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.page * this.perPage, this.total); }, }"
          x-init="$watch('search', () => { page = 1 }); $watch('sevFilter', () => { page = 1 })"
          class="tw-card">
         <div class="px-6 py-4 border-b border-border cursor-pointer flex items-center justify-between gap-3"
@@ -34,10 +34,9 @@
                         x-model="sevFilter"
                         class="tw-data-table-page-size-select">
                     <option value="all">All Severities</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
+                    <template x-for="v in sevOptions" :key="v">
+                        <option :value="v" x-text="v.charAt(0).toUpperCase() + v.slice(1)"></option>
+                    </template>
                 </select>
             </div>
             <div class="overflow-x-auto" x-cloak>

@@ -83,6 +83,9 @@ export function registerSbomsTable() {
         if (!containerRef) return
         afterSettleHandler = () => {
           this.allSboms = parseJsonScript<SbomItem[]>('sboms-data') || []
+          if (this.typeFilter !== 'all' && !this.bomTypes.includes(this.typeFilter)) {
+            this.typeFilter = 'all'
+          }
           if (this.currentPage > this.totalPages && this.totalPages > 0) {
             this.currentPage = this.totalPages
           }
@@ -96,6 +99,10 @@ export function registerSbomsTable() {
           afterSettleHandler = null
           containerRef = null
         }
+      },
+
+      get bomTypes(): string[] {
+        return [...new Set(this.allSboms.map(item => item.sbom.bom_type || 'sbom'))].sort()
       },
 
       get filteredData(): SbomItem[] {
