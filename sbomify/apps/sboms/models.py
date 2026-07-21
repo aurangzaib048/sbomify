@@ -1054,5 +1054,7 @@ class SBOM(models.Model):
         source_display_map = {
             "api": "API",
             "manual_upload": "Manual Upload",
+            "sbomify-triage": "sbomify Triage",
+            "dependency-track": "Dependency Track",
         }
         return source_display_map.get(self.source or "", self.source or "Unknown")
