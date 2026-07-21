@@ -109,7 +109,19 @@
                                 <td class="px-6 py-4">
                                     {% if vuln.vex_suppressed %}
                                         <span class="text-info"
-                                              title="VEX: {{ vuln.vex_justification|default:'not affected' }}">Not affected · VEX</span>
+                                              title="VEX: {{ vuln.vex_justification|default:'suppressed' }}">
+                                            {% if vuln.vex_state == 'false_positive' %}
+                                                False positive
+                                            {% else %}
+                                                Not affected
+                                            {% endif %}
+                                            ·
+                                            {% if vuln.vex_manual %}
+                                                manually
+                                            {% else %}
+                                                VEX
+                                            {% endif %}
+                                        </span>
                                     {% else %}
                                         <span class="text-text-muted">Affected</span>
                                     {% endif %}
