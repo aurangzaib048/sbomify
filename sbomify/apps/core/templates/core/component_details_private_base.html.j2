@@ -121,20 +121,16 @@
                 </span>
             </div>
             {# Latest-scan vulnerability summary (design review / mock). #}
-            {% if vuln_summary.critical or vuln_summary.high or vuln_summary.medium %}
+            {% if vuln_summary.critical or vuln_summary.high or vuln_summary.medium or vuln_summary.low %}
                 <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm {% if vuln_summary.critical or vuln_summary.high %}bg-danger/10 border border-danger/20{% else %}bg-warning/10 border border-warning/20{% endif %}">
                     <i class="fas fa-triangle-exclamation text-xs {% if vuln_summary.critical or vuln_summary.high %}text-danger{% else %}text-warning{% endif %}"></i>
-                    {% if vuln_summary.critical %}
-                        <span class="font-semibold text-danger">{{ vuln_summary.critical }} Critical</span>
-                    {% endif %}
-                    {% if vuln_summary.high %}
-                        {% if vuln_summary.critical %}<span class="text-text-muted">·</span>{% endif %}
-                        <span class="font-semibold text-warning">{{ vuln_summary.high }} High</span>
-                    {% endif %}
-                    {% if vuln_summary.medium %}
-                        {% if vuln_summary.critical or vuln_summary.high %}<span class="text-text-muted">·</span>{% endif %}
-                        <span class="font-semibold text-info">{{ vuln_summary.medium }} Medium</span>
-                    {% endif %}
+                    <span class="font-semibold text-danger">{{ vuln_summary.critical }} Critical</span>
+                    <span class="text-text-muted">·</span>
+                    <span class="font-semibold text-warning">{{ vuln_summary.high }} High</span>
+                    <span class="text-text-muted">·</span>
+                    <span class="font-semibold text-info">{{ vuln_summary.medium }} Medium</span>
+                    <span class="text-text-muted">·</span>
+                    <span class="font-semibold text-text-muted">{{ vuln_summary.low }} Low</span>
                     <span class="text-text-muted">· latest scan</span>
                 </div>
             {% endif %}

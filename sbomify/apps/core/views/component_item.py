@@ -165,6 +165,41 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
             # For a VEX artifact, list exactly which vulnerabilities it suppresses.
             if actual_bom_type == SBOM.BomType.VEX:
                 vex_suppressions = vex_suppression_rows(sbom_row)
+
+                # A VEX statement usually names one id; the component's scanners
+                # know the full alias set (OSV publishes the GHSA↔CVE mapping),
+                # so enrich each row from the merged scan findings.
+                if vex_suppressions:
+                    from sbomify.apps.vulnerability_scanning.utils import merge_findings_by_alias
+
+                    latest_sbom_id = (
+                        SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
+                        .order_by("-created_at")
+                        .values_list("id", flat=True)
+                        .first()
+                    )
+                    alias_map: dict[str, list[str]] = {}
+                    if latest_sbom_id:
+                        provider_results = list(
+                            AssessmentRun.objects.filter(
+                                sbom_id=latest_sbom_id, category="security", status="completed"
+                            )
+                            .order_by("plugin_name", "-created_at")
+                            .distinct("plugin_name")
+                            .values_list("result", flat=True)
+                        )
+                        for finding in merge_findings_by_alias(provider_results)["findings"]:
+                            id_set = [i for i in [finding.get("id"), *(finding.get("aliases") or [])] if i]
+                            for advisory_id in id_set:
+                                alias_map[str(advisory_id).lower()] = [str(i) for i in id_set]
+                    for row in vex_suppressions:
+                        known = {row["id"], *row["aliases"]}
+                        for advisory_id in list(known):
+                            known.update(alias_map.get(advisory_id.lower(), []))
+                        display_id = next((i for i in sorted(known) if i.upper().startswith("CVE-")), row["id"])
+                        row["id"] = display_id
+                        row["aliases"] = sorted(i for i in known if i != display_id)
+
                 vex_suppression_terms = [
                     f"{r['id']} {' '.join(r['aliases'])} {r['package']} {r['state']} {r['justification']}".lower()
                     for r in vex_suppressions
