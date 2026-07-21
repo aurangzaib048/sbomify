@@ -38,19 +38,21 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
         latest_result = None
 
         try:
-            # Fetch the latest security assessment run for this SBOM
-            latest_result = (
+            # One section per provider: the latest completed run of each scanner
+            # that has assessed this SBOM, newest provider first.
+            provider_runs = list(
                 AssessmentRun.objects.filter(
                     sbom=sbom,
                     category="security",
                     status="completed",
                 )
-                .order_by("-created_at")
-                .first()
+                .order_by("plugin_name", "-created_at")
+                .distinct("plugin_name")
             )
+            provider_runs.sort(key=lambda run: run.created_at, reverse=True)
+            latest_result = provider_runs[0] if provider_runs else None
 
             if latest_result:
-                result_json = latest_result.result or {}
                 scan_timestamp_str = latest_result.created_at.strftime("%B %d, %Y at %I:%M %p %Z")
 
                 sbom_version_info = {
@@ -62,15 +64,12 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                     "source": sbom.source_display,
                 }
 
-                # Extract findings from the result JSON
-                findings = result_json.get("findings", [])
-
-                if isinstance(findings, list) and findings:
-                    vulnerabilities_data = {
-                        "results": [
-                            {"source": {"file_path": f"{sbom.name} ({latest_result.plugin_name})"}, "packages": []}
-                        ]
-                    }
+                severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                results: list[dict[str, Any]] = []
+                for run in provider_runs:
+                    findings = (run.result or {}).get("findings", [])
+                    if not isinstance(findings, list) or not findings:
+                        continue
 
                     # Group vulnerabilities by component/package for display
                     packages_dict: dict[str, dict[str, Any]] = {}
@@ -114,7 +113,6 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                         packages_dict[package_key]["vulnerabilities"].append(template_vuln)
 
                     # Worst first: severity rank, then CVSS descending within a rank.
-                    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
                     for package in packages_dict.values():
                         package["vulnerabilities"].sort(
                             key=lambda v: (
@@ -122,14 +120,23 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                                 -(v.get("cvss_score") or 0),
                             )
                         )
-                    vulnerabilities_data["results"][0]["packages"] = list(packages_dict.values())
+                    results.append(
+                        {
+                            "source": {"file_path": f"{sbom.name} ({run.plugin_name})"},
+                            "packages": list(packages_dict.values()),
+                        }
+                    )
 
-                # Check for error metadata
+                if results:
+                    vulnerabilities_data = {"results": results}
+
+                # Check for error metadata on the newest run
+                result_json = latest_result.result or {}
                 metadata = result_json.get("metadata", {})
                 if metadata.get("error"):
                     error_message = "An error occurred during vulnerability scanning"
                     # Check findings for error details
-                    for f in findings:
+                    for f in result_json.get("findings", []) or []:
                         if f.get("status") == "error":
                             error_message = f.get("description", error_message)
                             break
