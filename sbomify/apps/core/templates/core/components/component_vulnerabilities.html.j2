@@ -51,7 +51,8 @@
                     </thead>
                     <tbody>
                         {% for vuln in latest_vulns %}
-                            <tr x-show="pageSet.has({{ forloop.counter0 }})">
+                            <tr x-show="pageSet.has({{ forloop.counter0 }})"
+                                {% if vuln.vex_suppressed %}class="opacity-50"{% endif %}>
                                 <td class="px-6 py-4">
                                     {% if vuln.severity == 'critical' %}
                                         <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-danger/10 text-danger border border-danger/30">Critical</span>

@@ -219,18 +219,31 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 .first()
             )
             if latest_scan:
-                # VEX-suppressed findings are already excluded from the stored
-                # summary (applied server-side at scan time / on VEX upload).
-                result_json = latest_scan.result or {}
-                summary = result_json.get("summary", {})
-                by_severity = summary.get("by_severity", {})
+                # Actionable counts from every provider's latest run, merged by
+                # alias and filtered through the component's VEX — the same math
+                # as the component page badge, so the numbers agree everywhere.
+                from sbomify.apps.vulnerability_scanning.utils import (
+                    extract_finding_rows,
+                    merge_findings_by_alias,
+                )
+                from sbomify.apps.vulnerability_scanning.vex import load_vex_suppressions
+
+                provider_runs = list(
+                    AssessmentRun.objects.filter(sbom_id=item_id, category="security", status="completed")
+                    .order_by("plugin_name", "-created_at")
+                    .distinct("plugin_name")
+                    .values_list("plugin_name", "result")
+                )
+                merged = merge_findings_by_alias([result for _, result in provider_runs])
+                rows = extract_finding_rows(merged, load_vex_suppressions(component_id_from_item))
+                counted = [row for row in rows if not row["vex_suppressed"]]
                 vulnerability_summary = {
-                    "total": summary.get("total_findings", 0),
-                    "critical": by_severity.get("critical", 0),
-                    "high": by_severity.get("high", 0),
-                    "medium": by_severity.get("medium", 0),
-                    "low": by_severity.get("low", 0),
-                    "provider": latest_scan.plugin_name,
+                    "total": len(counted),
+                    "critical": sum(1 for row in counted if row["severity"] == "critical"),
+                    "high": sum(1 for row in counted if row["severity"] == "high"),
+                    "medium": sum(1 for row in counted if row["severity"] == "medium"),
+                    "low": sum(1 for row in counted if row["severity"] == "low"),
+                    "provider": ", ".join(sorted({name for name, _ in provider_runs})),
                     "scan_date": latest_scan.created_at,
                 }
 

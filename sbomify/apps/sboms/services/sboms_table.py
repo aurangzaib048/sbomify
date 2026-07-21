@@ -11,36 +11,52 @@ from sbomify.apps.plugins.models import AssessmentRun
 from sbomify.apps.sboms.forms import SbomDeleteForm
 from sbomify.apps.sboms.services.sboms import delete_sbom_record
 from sbomify.apps.teams.apis import get_team
-from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
 
 
-def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
-    """Attach each SBOM's latest security-scan severity counts as ``item['vuln']``.
+def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]], component_id: str) -> None:
+    """Attach each SBOM's actionable severity counts as ``item['vuln']``.
 
-    One batched query over every SBOM in the table. Ordering newest-first per
-    ``sbom_id`` means the first row seen for a given SBOM is its latest run, so
-    the counts read straight off that run (VEX-suppressed findings are already
-    excluded from the stored summary). Rows with no completed security run get
-    ``vuln = None``, which the table renders as "not scanned".
+    One batched query over every SBOM in the table — the latest run per
+    (sbom, provider) — merged by advisory alias and filtered through the
+    component's VEX, so the counts agree with the header badge and the
+    drill-down statuses rather than echoing one provider's stale summary.
+    Rows with no completed security run get ``vuln = None``, which the table
+    renders as "not scanned".
     """
+    from sbomify.apps.vulnerability_scanning.utils import extract_finding_rows, merge_findings_by_alias
+    from sbomify.apps.vulnerability_scanning.vex import load_vex_suppressions
+
     sbom_ids = [item["sbom"]["id"] for item in sbom_items if item.get("sbom", {}).get("id")]
     if not sbom_ids:
         return
 
-    # DISTINCT ON (sbom_id) with newest-first ordering returns exactly one row
-    # per SBOM — its latest run — so we never load every historical result blob.
+    # DISTINCT ON (sbom_id, plugin_name) with newest-first ordering returns each
+    # provider's latest run per SBOM — never every historical result blob.
     latest_runs = (
         AssessmentRun.objects.filter(sbom_id__in=sbom_ids, category="security", status="completed")
-        .order_by("sbom_id", "-created_at")
-        .distinct("sbom_id")
+        .order_by("sbom_id", "plugin_name", "-created_at")
+        .distinct("sbom_id", "plugin_name")
         .values("sbom_id", "result")
     )
-    latest_by_sbom: dict[str, dict[str, int]] = {
-        str(run["sbom_id"]): extract_severity_counts(run["result"]) for run in latest_runs
-    }
+    results_by_sbom: dict[str, list[dict[str, Any] | None]] = {}
+    for run in latest_runs:
+        results_by_sbom.setdefault(str(run["sbom_id"]), []).append(run["result"])
 
+    vex_statements = load_vex_suppressions(component_id) if results_by_sbom else []
     for item in sbom_items:
-        item["vuln"] = latest_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
+        provider_results = results_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
+        if not provider_results:
+            item["vuln"] = None
+            continue
+        rows = extract_finding_rows(merge_findings_by_alias(provider_results), vex_statements)
+        counted = [row for row in rows if not row["vex_suppressed"]]
+        item["vuln"] = {
+            "total": len(counted),
+            "critical": sum(1 for row in counted if row["severity"] == "critical"),
+            "high": sum(1 for row in counted if row["severity"] == "high"),
+            "medium": sum(1 for row in counted if row["severity"] == "medium"),
+            "low": sum(1 for row in counted if row["severity"] == "low"),
+        }
 
 
 def _summary_artifacts(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,7 +120,7 @@ def build_sboms_table_context(
         sbom_items = _summary_artifacts(sbom_items)
 
     if not is_public_view:
-        _attach_vulnerability_counts(sbom_items)
+        _attach_vulnerability_counts(sbom_items, component_id)
 
     context = {
         "component_id": component_id,
