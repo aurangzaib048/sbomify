@@ -76,14 +76,15 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         # rather than whichever run happened to complete last.
         from sbomify.apps.plugins.models import AssessmentRun
         from sbomify.apps.sboms.models import SBOM
-        from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
+        from sbomify.apps.vulnerability_scanning.utils import extract_finding_rows, extract_severity_counts
 
-        latest_sbom_id = (
+        latest_sbom = (
             SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
             .order_by("-created_at")
-            .values_list("id", flat=True)
+            .values("id", "version")
             .first()
         )
+        latest_sbom_id = latest_sbom["id"] if latest_sbom else None
         latest_scan_result = (
             (
                 AssessmentRun.objects.filter(sbom_id=latest_sbom_id, category="security", status="completed")
@@ -95,6 +96,8 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             else None
         )
         vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
+        # Flat, severity-sorted findings for the latest SBOM's drill-down table.
+        latest_vulns = extract_finding_rows(latest_scan_result) if latest_scan_result else []
 
         context = {
             "APP_BASE_URL": settings.APP_BASE_URL,
@@ -106,6 +109,9 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             "gated_visibility_allowed": gated_visibility_allowed,
             "team_key": team_key,
             "vuln_summary": vuln_summary,
+            "latest_vulns": latest_vulns,
+            "latest_vuln_version": latest_sbom["version"] if latest_sbom else None,
+            "latest_vuln_sbom_id": latest_sbom_id,
             "document_type_subcategories": document_type_subcategories,
             "document_type_subcategories_json": json.dumps(document_type_subcategories),
         }
