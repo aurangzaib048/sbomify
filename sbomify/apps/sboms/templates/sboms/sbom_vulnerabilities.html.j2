@@ -87,10 +87,6 @@
                     {% if vulnerabilities.results %}
                         {% for result in vulnerabilities.results %}
                             <div class="mb-8 {% if not forloop.last %}pb-8 border-b border-border{% endif %}">
-                                <h5 class="text-base font-semibold text-text mb-4 pb-2 border-b-2 border-border flex items-center gap-2">
-                                    <i class="fas fa-file-code text-text-muted"></i>
-                                    Source: {{ result.source.file_path }}
-                                </h5>
                                 {% if result.packages %}
                                     <div class="overflow-x-auto">
                                         <table class="tw-table w-full table-fixed">
@@ -140,27 +136,26 @@
                                                                             <div class="flex flex-wrap justify-between items-start gap-2 mb-2">
                                                                                 <div class="flex-1">
                                                                                     {# Vulnerability ID with smart links #}
-                                                                                    {% if vuln.source == "Dependency Track" %}
-                                                                                        {% if vuln.id|slice:":4" == "CVE-" %}
-                                                                                            <a href="https://www.cve.org/CVERecord?id={{ vuln.id }}"
-                                                                                               target="_blank"
-                                                                                               class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
-                                                                                                <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
-                                                                                            </a>
-                                                                                        {% elif vuln.id|slice:":5" == "GHSA-" %}
-                                                                                            <a href="https://github.com/advisories/{{ vuln.id }}"
-                                                                                               target="_blank"
-                                                                                               class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
-                                                                                                <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
-                                                                                            </a>
-                                                                                        {% else %}
-                                                                                            <span class="text-text font-semibold inline-flex items-center gap-1">
-                                                                                                <i class="fas fa-bug text-xs"></i>{{ vuln.id }}
-                                                                                            </span>
-                                                                                        {% endif %}
+                                                                                    {% if vuln.id|slice:":4" == "CVE-" %}
+                                                                                        <a href="https://www.cve.org/CVERecord?id={{ vuln.id }}"
+                                                                                           target="_blank"
+                                                                                           rel="noopener"
+                                                                                           class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
+                                                                                            <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
+                                                                                        </a>
+                                                                                    {% elif vuln.id|slice:":5" == "GHSA-" %}
+                                                                                        <a href="https://github.com/advisories/{{ vuln.id }}"
+                                                                                           target="_blank"
+                                                                                           rel="noopener"
+                                                                                           class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
+                                                                                            <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
+                                                                                        </a>
+                                                                                    {% elif vuln.id == "Unknown" %}
+                                                                                        <span class="text-text font-semibold">{{ vuln.id }}</span>
                                                                                     {% else %}
                                                                                         <a href="https://osv.dev/vulnerability/{{ vuln.id }}"
                                                                                            target="_blank"
+                                                                                           rel="noopener"
                                                                                            class="text-primary font-semibold hover:underline inline-flex items-center gap-1">
                                                                                             <i class="fas fa-external-link-alt text-xs"></i>{{ vuln.id }}
                                                                                         </a>

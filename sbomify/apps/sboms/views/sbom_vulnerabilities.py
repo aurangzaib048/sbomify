@@ -65,16 +65,18 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                 }
 
                 severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-                results: list[dict[str, Any]] = []
+                # One merged view across every provider's latest run: providers
+                # report the same issue under different ids (DT: CVE, OSV: GHSA
+                # with the CVE as alias), so findings sharing any id/alias fold
+                # into one entry with the worst severity and the union of ids.
+                packages_dict: dict[str, dict[str, Any]] = {}
                 for run in provider_runs:
                     findings = (run.result or {}).get("findings", [])
-                    if not isinstance(findings, list) or not findings:
+                    if not isinstance(findings, list):
                         continue
 
-                    # Group vulnerabilities by component/package for display
-                    packages_dict: dict[str, dict[str, Any]] = {}
                     for vuln in findings:
-                        component = vuln.get("component", {})
+                        component = vuln.get("component", {}) or {}
                         package_name = component.get("name", "Unknown Package")
                         package_version = component.get("version", "Unknown Version")
                         package_ecosystem = component.get("ecosystem", "Unknown")
@@ -86,49 +88,82 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                                 except (IndexError, AttributeError):
                                     package_ecosystem = "Unknown"
 
-                        package_key = f"{package_name}:{package_version}:{package_ecosystem}"
+                        # Providers name the same package differently (OSV uses
+                        # "group:artifact", DT just "artifact"); key on the
+                        # artifact tail so their rows merge.
+                        artifact = package_name.split(":")[-1]
+                        package_key = f"{artifact}:{package_version}:{package_ecosystem}".lower()
 
-                        if package_key not in packages_dict:
-                            packages_dict[package_key] = {
+                        entry = packages_dict.setdefault(
+                            package_key,
+                            {
                                 "package": {
                                     "name": package_name,
                                     "version": package_version,
                                     "ecosystem": package_ecosystem,
                                 },
                                 "vulnerabilities": [],
+                                "_by_alias": {},
+                            },
+                        )
+
+                        ids = {str(vuln.get("id") or "")} | {str(a) for a in (vuln.get("aliases") or [])}
+                        ids.discard("")
+                        alias_keys = {i.lower() for i in ids}
+                        merged = next(
+                            (entry["_by_alias"][key] for key in alias_keys if key in entry["_by_alias"]), None
+                        )
+                        severity = (vuln.get("severity") or "medium").lower()
+
+                        if merged is None:
+                            merged = {
+                                "_ids": set(),
+                                "id": "Unknown",
+                                "aliases": [],
+                                "summary": vuln.get("title") or vuln.get("summary", ""),
+                                "details": vuln.get("description", ""),
+                                "severity": severity,
+                                "cvss_score": vuln.get("cvss_score"),
+                                "references": list(vuln.get("references") or []),
+                                "source": vuln.get("source", "Unknown"),
+                                "affected": vuln.get("affected", []),
                             }
+                            entry["vulnerabilities"].append(merged)
+                        else:
+                            if severity_rank.get(severity, 5) < severity_rank.get(merged["severity"], 5):
+                                merged["severity"] = severity
+                            if (vuln.get("cvss_score") or 0) > (merged.get("cvss_score") or 0):
+                                merged["cvss_score"] = vuln.get("cvss_score")
+                            if not merged["summary"]:
+                                merged["summary"] = vuln.get("title") or vuln.get("summary", "")
+                            if not merged["details"]:
+                                merged["details"] = vuln.get("description", "")
+                            for reference in vuln.get("references") or []:
+                                if reference not in merged["references"]:
+                                    merged["references"].append(reference)
 
-                        template_vuln = {
-                            "id": vuln.get("id", "Unknown"),
-                            "aliases": vuln.get("aliases", []),
-                            "summary": vuln.get("title") or vuln.get("summary", ""),
-                            "details": vuln.get("description", ""),
-                            "severity": vuln.get("severity", "medium"),
-                            "cvss_score": vuln.get("cvss_score"),
-                            "references": vuln.get("references", []),
-                            "source": vuln.get("source", "Unknown"),
-                            "affected": vuln.get("affected", []),
-                        }
+                        merged["_ids"] |= ids
+                        for key in alias_keys:
+                            entry["_by_alias"][key] = merged
 
-                        packages_dict[package_key]["vulnerabilities"].append(template_vuln)
-
-                    # Worst first: severity rank, then CVSS descending within a rank.
-                    for package in packages_dict.values():
-                        package["vulnerabilities"].sort(
+                if packages_dict:
+                    for entry in packages_dict.values():
+                        entry.pop("_by_alias", None)
+                        for merged in entry["vulnerabilities"]:
+                            merged_ids = sorted(merged.pop("_ids"))
+                            display_id = next((i for i in merged_ids if i.lower().startswith("cve-")), None) or (
+                                merged_ids[0] if merged_ids else "Unknown"
+                            )
+                            merged["id"] = display_id
+                            merged["aliases"] = [i for i in merged_ids if i != display_id]
+                        # Worst first: severity rank, then CVSS descending within a rank.
+                        entry["vulnerabilities"].sort(
                             key=lambda v: (
                                 severity_rank.get((v.get("severity") or "").lower(), 5),
                                 -(v.get("cvss_score") or 0),
                             )
                         )
-                    results.append(
-                        {
-                            "source": {"file_path": f"{sbom.name} ({run.plugin_name})"},
-                            "packages": list(packages_dict.values()),
-                        }
-                    )
-
-                if results:
-                    vulnerabilities_data = {"results": results}
+                    vulnerabilities_data = {"results": [{"packages": list(packages_dict.values())}]}
 
                 # Check for error metadata on the newest run
                 result_json = latest_result.result or {}
