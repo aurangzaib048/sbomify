@@ -428,6 +428,17 @@ html.no-transitions * {
   background-color: rgb(var(--color-accent-orange));
 }
 
+/* High-severity orange — distinct from amber warnings (CVSS convention). */
+@utility text-severity-high {
+  color: rgb(var(--color-severity-high));
+}
+@utility bg-severity-high-soft {
+  background-color: rgb(var(--color-severity-high) / 0.12);
+}
+@utility border-severity-high-soft {
+  border-color: rgb(var(--color-severity-high) / 0.3);
+}
+
 /* Text Colors - using CSS variables with !important for Bootstrap override */
 @utility text-text {
   color: rgb(var(--color-text)) !important;

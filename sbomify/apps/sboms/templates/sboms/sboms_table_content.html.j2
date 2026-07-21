@@ -138,21 +138,24 @@
                                     <template x-if="item.vuln && item.vuln.total === 0">
                                         <span class="tw-badge-success text-xs">Clean</span>
                                     </template>
-                                    {# All four severities, zeros muted so the live counts pop. #}
                                     <template x-if="item.vuln && item.vuln.total > 0">
                                         <div class="flex items-center gap-1.5 flex-wrap">
-                                            <span class="px-2 py-0.5 rounded text-xs font-bold"
-                                                  :class="item.vuln.critical > 0 ? 'bg-danger/10 text-danger' : 'bg-border/30 text-text-muted'"
-                                                  x-text="item.vuln.critical + ' Critical'"></span>
-                                            <span class="px-2 py-0.5 rounded text-xs font-bold"
-                                                  :class="item.vuln.high > 0 ? 'bg-warning/10 text-warning' : 'bg-border/30 text-text-muted'"
-                                                  x-text="item.vuln.high + ' High'"></span>
-                                            <span class="px-2 py-0.5 rounded text-xs font-bold"
-                                                  :class="item.vuln.medium > 0 ? 'bg-info/10 text-info' : 'bg-border/30 text-text-muted'"
-                                                  x-text="item.vuln.medium + ' Medium'"></span>
-                                            <span class="px-2 py-0.5 rounded text-xs font-bold"
-                                                  :class="item.vuln.low > 0 ? 'bg-surface text-text-muted border border-border' : 'bg-border/30 text-text-muted'"
-                                                  x-text="item.vuln.low + ' Low'"></span>
+                                            <template x-if="item.vuln.critical > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-danger/10 text-danger"
+                                                      x-text="item.vuln.critical + ' Critical'"></span>
+                                            </template>
+                                            <template x-if="item.vuln.high > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-severity-high-soft text-severity-high"
+                                                      x-text="item.vuln.high + ' High'"></span>
+                                            </template>
+                                            <template x-if="item.vuln.medium > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-info/10 text-info"
+                                                      x-text="item.vuln.medium + ' Medium'"></span>
+                                            </template>
+                                            <template x-if="item.vuln.low > 0">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold bg-surface text-text-muted border border-border"
+                                                      x-text="item.vuln.low + ' Low'"></span>
+                                            </template>
                                         </div>
                                     </template>
                                 </td>

@@ -100,7 +100,6 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             if latest_sbom_id
             else None
         )
-        vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
         # Flat, severity-sorted findings for the latest SBOM's drill-down table,
         # merged across every provider's latest run so aliases auto-resolve (OSV
         # carries the GHSA↔CVE mapping the DT run lacks). The component's VEX
@@ -116,6 +115,22 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             )
             vex_statements = load_vex_suppressions(component_id)
             latest_vulns = extract_finding_rows(merge_findings_by_alias(provider_results), vex_statements)
+
+        # The header badge counts the same merged, VEX-filtered view the table
+        # shows — counting a single run would disagree with the rows (e.g. OSV
+        # rates a finding high where DT said medium).
+        vuln_summary = None
+        if latest_vulns:
+            counted = [v for v in latest_vulns if not v["vex_suppressed"]]
+            vuln_summary = {
+                "total": len(counted),
+                "critical": sum(1 for v in counted if v["severity"] == "critical"),
+                "high": sum(1 for v in counted if v["severity"] == "high"),
+                "medium": sum(1 for v in counted if v["severity"] == "medium"),
+                "low": sum(1 for v in counted if v["severity"] == "low"),
+            }
+        elif latest_scan_result:
+            vuln_summary = extract_severity_counts(latest_scan_result)
         # Lowercased "advisory package ecosystem" haystack per finding, so the
         # drill-down's search box can filter client-side without re-fetching.
         latest_vuln_terms = [

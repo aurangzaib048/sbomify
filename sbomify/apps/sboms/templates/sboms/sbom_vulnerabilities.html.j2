@@ -168,7 +168,7 @@
                                                                                         {% if vuln.severity|lower == 'critical' %}
                                                                                             <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-danger/10 text-danger border border-danger/30">{{ vuln.severity|upper }}</span>
                                                                                         {% elif vuln.severity|lower == 'high' %}
-                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-warning/10 text-warning border border-warning/30">{{ vuln.severity|upper }}</span>
+                                                                                            <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-severity-high-soft text-severity-high border border-severity-high-soft">{{ vuln.severity|upper }}</span>
                                                                                         {% elif vuln.severity|lower == 'medium' %}
                                                                                             <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">{{ vuln.severity|upper }}</span>
                                                                                         {% elif vuln.severity|lower == 'low' %}
