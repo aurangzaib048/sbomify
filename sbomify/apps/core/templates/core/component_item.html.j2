@@ -195,6 +195,82 @@
                     </div>
                 </div>
             {% endif %}
+            {# VEX suppressions — the vulnerabilities this VEX artifact clears #}
+            {% if vex_suppressions is not None %}
+                <div class="tw-card">
+                    <div class="px-6 py-4 border-b border-border">
+                        <h4 class="text-lg font-semibold text-text flex items-center gap-2 m-0">
+                            <i class="fas fa-shield-halved text-primary"></i>
+                            Suppressed vulnerabilities
+                            <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-border/50 text-text-muted">{{ vex_suppressions|length }}</span>
+                        </h4>
+                    </div>
+                    {% if vex_suppressions %}
+                        <div class="overflow-x-auto">
+                            <table class="tw-table w-full">
+                                <thead>
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider">Advisory</th>
+                                        <th class="px-6 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider">Package</th>
+                                        <th class="px-6 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider">Status</th>
+                                        <th class="px-6 py-3 text-left text-xs font-semibold text-text-muted uppercase tracking-wider">Justification</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for s in vex_suppressions %}
+                                        <tr>
+                                            <td class="px-6 py-4">
+                                                {% if s.id|slice:":4" == "CVE-" %}
+                                                    <a href="https://www.cve.org/CVERecord?id={{ s.id }}"
+                                                       target="_blank"
+                                                       rel="noopener"
+                                                       class="font-medium text-primary hover:underline inline-flex items-center gap-1">
+                                                        {{ s.id }}<i class="fas fa-external-link-alt text-[0.65rem]"></i>
+                                                    </a>
+                                                {% elif s.id|slice:":5" == "GHSA-" %}
+                                                    <a href="https://github.com/advisories/{{ s.id }}"
+                                                       target="_blank"
+                                                       rel="noopener"
+                                                       class="font-medium text-primary hover:underline inline-flex items-center gap-1">
+                                                        {{ s.id }}<i class="fas fa-external-link-alt text-[0.65rem]"></i>
+                                                    </a>
+                                                {% else %}
+                                                    <span class="font-medium text-text">{{ s.id }}</span>
+                                                {% endif %}
+                                            </td>
+                                            <td class="px-6 py-4 text-text">{{ s.package }}</td>
+                                            <td class="px-6 py-4">
+                                                <span class="text-info">
+                                                    {% if s.state == 'not_affected' %}
+                                                        Not affected
+                                                    {% elif s.state == 'false_positive' %}
+                                                        False positive
+                                                    {% else %}
+                                                        {{ s.state|cut:"_"|title }}
+                                                    {% endif %}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-4 text-text-muted">
+                                                {% if s.justification %}
+                                                    <span {% if s.detail %}title="{{ s.detail }}"{% endif %}>{{ s.justification }}</span>
+                                                {% elif s.detail %}
+                                                    <span>{{ s.detail|truncatechars:60 }}</span>
+                                                {% else %}
+                                                    —
+                                                {% endif %}
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="p-6 text-sm text-text-muted">
+                            This VEX document doesn't suppress any vulnerabilities (no <code>not_affected</code> or <code>false_positive</code> statements).
+                        </div>
+                    {% endif %}
+                </div>
+            {% endif %}
             {# Cryptographic Assets (CBOM) — lazy-loaded; collapses when there are none #}
             <div hx-get="{% url 'sboms:sbom_crypto_inventory' sbom_id=item.id %}"
                  hx-trigger="load"

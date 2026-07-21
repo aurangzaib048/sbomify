@@ -128,6 +128,7 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
 
         vulnerability_summary = None
         assessment_runs = None
+        vex_suppressions = None
 
         if item_type == "sboms":
             result = get_sbom_detail(request, item_id)
@@ -137,6 +138,14 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                     HttpResponse(status=result.status_code or 400, content=result.error or "Unknown error"),
                 )
             item = result.value
+
+            # For a VEX artifact, list exactly which vulnerabilities it suppresses.
+            from sbomify.apps.sboms.models import SBOM
+            from sbomify.apps.vulnerability_scanning.vex import vex_suppression_rows
+
+            vex_row = SBOM.objects.filter(pk=item_id).only("id", "bom_type", "sbom_filename").first()
+            if vex_row and vex_row.bom_type == SBOM.BomType.VEX:
+                vex_suppressions = vex_suppression_rows(vex_row)
             # Get latest vulnerability scan for this SBOM from AssessmentRun
             component_id_from_item = item.get("component_id") or component_id  # type: ignore[union-attr]
             latest_scan = (
@@ -207,6 +216,7 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 "component_id": component_id,
                 "vulnerability_summary": vulnerability_summary,
                 "assessment_runs": assessment_runs,
+                "vex_suppressions": vex_suppressions,
                 "can_triage": can_triage,
                 "team_key": component.team.key,
             },
