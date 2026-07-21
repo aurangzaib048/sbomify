@@ -67,7 +67,7 @@
                                                         </a>
                                                     </div>
                                                 {% endif %}
-                                                {% if plugin.config_schema %}
+                                                {% if plugin.has_visible_config %}
                                                     <div x-show="enabled" x-cloak class="mt-4 pt-4 border-t border-border">
                                                         {% for field in plugin.config_schema %}
                                                             {% if field.type == "select" and not field.choices and field.hide_if_no_choices %}

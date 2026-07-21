@@ -38,8 +38,16 @@ class TeamPluginSettingsView(TeamRoleRequiredMixin, LoginRequiredMixin, View):
         plugins = plugin_settings.get("available_plugins", [])
         for plugin in plugins:
             plugin["is_enabled"] = plugin["name"] in enabled_plugins and plugin.get("has_access", False)
-            for field in plugin.get("config_schema") or []:
+            schema = plugin.get("config_schema") or []
+            for field in schema:
                 field["current_value"] = plugin_configs.get(plugin["name"], {}).get(field.get("key", ""), "")
+            # A select with no choices flagged hide_if_no_choices is skipped in the
+            # template. If every field is skipped the config section would still render
+            # an empty bordered div (a stray divider under the plugin), so only mark it
+            # renderable when at least one field will actually show.
+            plugin["has_visible_config"] = any(
+                not (f.get("type") == "select" and not f.get("choices") and f.get("hide_if_no_choices")) for f in schema
+            )
         # Group into category sections in the template. The per-plugin "<plan>+ Plan"
         # badge conveys plan gating, so the previous global "Requires Plan Upgrade"
         # divider is dropped. Sort so regroup produces contiguous category blocks in
