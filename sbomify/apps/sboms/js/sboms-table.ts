@@ -8,6 +8,7 @@ interface Sbom {
   format_version: string
   version: string
   created_at: string
+  bom_type?: string
 }
 
 interface Release {
@@ -64,6 +65,7 @@ export function registerSbomsTable() {
       componentId,
       allSboms: parseJsonScript<SbomItem[]>('sboms-data') || [],
       search: '',
+      typeFilter: 'all',
       sortColumn: 'created_at' as SortColumn,
       sortDirection: 'desc' as SortDirection,
       currentPage: 1,
@@ -106,6 +108,9 @@ export function registerSbomsTable() {
               item.sbom.version.toLowerCase().includes(s) ||
               item.sbom.format.toLowerCase().includes(s)
           )
+        }
+        if (this.typeFilter !== 'all') {
+          data = data.filter(item => (item.sbom.bom_type || 'sbom') === this.typeFilter)
         }
         return data
       },

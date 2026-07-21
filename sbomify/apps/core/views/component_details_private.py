@@ -105,6 +105,8 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         # Lowercased "advisory package ecosystem" haystack per finding, so the
         # drill-down's search box can filter client-side without re-fetching.
         latest_vuln_terms = [f"{v['id']} {v['package']} {v['ecosystem']}".lower() for v in latest_vulns]
+        # Parallel severity list so the drill-down's type/severity dropdown can filter by index.
+        latest_vuln_severities = [v["severity"] for v in latest_vulns]
 
         context = {
             "APP_BASE_URL": settings.APP_BASE_URL,
@@ -118,6 +120,7 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             "vuln_summary": vuln_summary,
             "latest_vulns": latest_vulns,
             "latest_vuln_terms": latest_vuln_terms,
+            "latest_vuln_severities": latest_vuln_severities,
             "latest_vuln_version": latest_sbom["version"] if latest_sbom else None,
             "latest_vuln_sbom_id": latest_sbom_id,
             "document_type_subcategories": document_type_subcategories,

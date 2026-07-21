@@ -1,8 +1,9 @@
 {# Vulnerabilities drill-down for the latest SBOM. Rendered only when the latest scan has findings. #}
 {% if latest_vulns %}
     {{ latest_vuln_terms|json_script:"latest-vuln-terms" }}
-    <div x-data="{ open: true, search: '', page: 1, perPage: 5, terms: (window.parseJsonScript('latest-vuln-terms') || []), get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => !q || this.terms[i].includes(q)); }, get total() { return this.filteredIdx.length; }, get pageCount() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.page - 1) * this.perPage, this.page * this.perPage)); }, get startIdx() { return this.total ? (this.page - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.page * this.perPage, this.total); }, }"
-         x-init="$watch('search', () => { page = 1 })"
+    {{ latest_vuln_severities|json_script:"latest-vuln-severities" }}
+    <div x-data="{ open: true, search: '', sevFilter: 'all', page: 1, perPage: 5, terms: (window.parseJsonScript('latest-vuln-terms') || []), severities: (window.parseJsonScript('latest-vuln-severities') || []), get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.sevFilter === 'all' || this.severities[i] === this.sevFilter)); }, get total() { return this.filteredIdx.length; }, get pageCount() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.page - 1) * this.perPage, this.page * this.perPage)); }, get startIdx() { return this.total ? (this.page - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.page * this.perPage, this.total); }, }"
+         x-init="$watch('search', () => { page = 1 }); $watch('sevFilter', () => { page = 1 })"
          class="tw-card">
         <div class="px-6 py-4 border-b border-border cursor-pointer flex items-center justify-between gap-3"
              @click="open = !open">
@@ -17,8 +18,8 @@
                :class="open ? 'rotate-180' : ''"></i>
         </div>
         <div x-show="open" x-collapse>
-            {# Search toolbar #}
-            <div class="px-6 py-4 border-b border-border">
+            {# Search + severity filter toolbar #}
+            <div class="px-6 py-4 border-b border-border flex flex-wrap items-center gap-3">
                 <div class="tw-data-table-search max-w-xs">
                     <i class="fas fa-search tw-data-table-search-icon"></i>
                     <label for="vuln-search" class="sr-only">Search vulnerabilities</label>
@@ -28,6 +29,16 @@
                            placeholder="Search vulnerabilities..."
                            class="tw-data-table-search-input" />
                 </div>
+                <label for="vuln-sev-filter" class="sr-only">Filter by severity</label>
+                <select id="vuln-sev-filter"
+                        x-model="sevFilter"
+                        class="tw-data-table-page-size-select">
+                    <option value="all">All Severities</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                </select>
             </div>
             <div class="overflow-x-auto" x-cloak>
                 <table class="tw-table w-full">

@@ -22,6 +22,16 @@
                            placeholder="Search artifacts..."
                            class="tw-data-table-search-input">
                 </div>
+                <label for="sboms-type-filter" class="sr-only">Filter by type</label>
+                <select id="sboms-type-filter"
+                        x-model="typeFilter"
+                        @change="currentPage = 1"
+                        class="tw-data-table-page-size-select">
+                    <option value="all">All Types</option>
+                    <option value="sbom">SBOM</option>
+                    <option value="vex">VEX</option>
+                    <option value="cbom">CBOM</option>
+                </select>
             </div>
             {% if full_view %}
                 <div class="tw-data-table-toolbar-right">
