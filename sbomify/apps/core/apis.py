@@ -4079,8 +4079,13 @@ def list_component_sboms(
     component_id: str,
     page: int = Query(1),  # type: ignore[type-arg]
     page_size: int = Query(15),  # type: ignore[type-arg]
+    include_all_types: bool = Query(False),  # type: ignore[type-arg]
 ) -> Any:
-    """List all SBOMs for a specific component with pagination."""
+    """List a component's artifacts with pagination.
+
+    SBOMs only by default; ``include_all_types`` also returns VEX, CBOM and any
+    other bom types so the merged "Artifacts & security" table can list them.
+    """
     try:
         component = Component.objects.get(pk=component_id)
     except Component.DoesNotExist:
@@ -4132,9 +4137,10 @@ def list_component_sboms(
         from sbomify.apps.sboms.models import SBOM
 
         try:
-            sboms_queryset = SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM).order_by(
-                "-created_at"
-            )
+            sboms_queryset = SBOM.objects.filter(component_id=component_id)
+            if not include_all_types:
+                sboms_queryset = sboms_queryset.filter(bom_type=SBOM.BomType.SBOM)
+            sboms_queryset = sboms_queryset.order_by("-created_at")
             # Apply pagination
             paginated_sboms, pagination_meta = _paginate_queryset(sboms_queryset, page, page_size)
         except (DatabaseError, OperationalError) as db_err:

@@ -58,12 +58,6 @@
                                         @click="compMenu = false; $dispatch('open-upload')">
                                     <i class="fas fa-upload w-4 text-text-muted" aria-hidden="true"></i>Upload artifact…
                                 </button>
-                                <button type="button"
-                                        role="menuitem"
-                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                        @click="compMenu = false; document.getElementById('trusted-publishers')?.scrollIntoView({ behavior: 'smooth', block: 'center' })">
-                                    <i class="fas fa-shield-halved w-4 text-text-muted" aria-hidden="true"></i>Trusted publishers…
-                                </button>
                                 <hr class="my-1.5 border-border">
                             {% endblock %}
                             <div class="px-2.5 pt-1 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Component</div>
@@ -87,13 +81,6 @@
                                     <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
                                 </button>
                             {% endif %}
-                            <hr class="my-1.5 border-border">
-                            <button type="button"
-                                    role="menuitem"
-                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-danger hover:bg-danger/10 text-left"
-                                    @click="compMenu = false; $dispatch('delete-component')">
-                                <i class="fas fa-trash w-4" aria-hidden="true"></i>Delete component…
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -130,6 +117,18 @@
                     </span>
                 </span>
             </div>
+            {# Latest-scan vulnerability summary (design review / mock). #}
+            {% if vuln_summary.critical or vuln_summary.high %}
+                <div class="flex items-center gap-1.5 px-3 py-1.5 bg-danger/10 border border-danger/20 rounded-md text-sm">
+                    <i class="fas fa-triangle-exclamation text-danger text-xs"></i>
+                    {% if vuln_summary.critical %}
+                        <span class="font-semibold text-danger">{{ vuln_summary.critical }} Critical</span>
+                    {% endif %}
+                    {% if vuln_summary.critical and vuln_summary.high %}<span class="text-text-muted">·</span>{% endif %}
+                    {% if vuln_summary.high %}<span class="font-semibold text-warning">{{ vuln_summary.high }} High</span>{% endif %}
+                    <span class="text-text-muted">· latest scan</span>
+                </div>
+            {% endif %}
         </div>
         {% block header_after_meta %}{% endblock %}
         {% block content_after_header %}{% endblock %}

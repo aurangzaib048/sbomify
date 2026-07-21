@@ -70,6 +70,19 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
                 }
             # Add more document types with subcategories here as needed
 
+        # Latest security scan summary for the header badge (newest completed run
+        # across this component's SBOMs; VEX-suppressed findings already excluded).
+        from sbomify.apps.plugins.models import AssessmentRun
+        from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
+
+        latest_scan_result = (
+            AssessmentRun.objects.filter(sbom__component_id=component_id, category="security", status="completed")
+            .order_by("-created_at")
+            .values_list("result", flat=True)
+            .first()
+        )
+        vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
+
         context = {
             "APP_BASE_URL": settings.APP_BASE_URL,
             "component": component,
@@ -79,6 +92,7 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             "company_nda_id": company_nda_id,
             "gated_visibility_allowed": gated_visibility_allowed,
             "team_key": team_key,
+            "vuln_summary": vuln_summary,
             "document_type_subcategories": document_type_subcategories,
             "document_type_subcategories_json": json.dumps(document_type_subcategories),
         }

@@ -43,6 +43,27 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]]) -> None:
         item["vuln"] = latest_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
 
 
+def _latest_per_type(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the newest artifact of each bom_type (latest SBOM, latest VEX, …).
+
+    The component card shows this compact summary; the full history lives behind
+    the "View all" toggle (``?full=1``).
+    """
+    by_date = sorted(
+        sbom_items,
+        key=lambda x: x["sbom"]["created_at"].timestamp() if x["sbom"].get("created_at") else 0.0,
+        reverse=True,
+    )
+    seen: set[str] = set()
+    latest: list[dict[str, Any]] = []
+    for item in by_date:
+        bom_type = item["sbom"].get("bom_type") or "sbom"
+        if bom_type not in seen:
+            seen.add(bom_type)
+            latest.append(item)
+    return latest
+
+
 def build_sboms_table_context(
     request: HttpRequest, component_id: str, is_public_view: bool
 ) -> ServiceResult[dict[str, Any]]:
@@ -50,7 +71,7 @@ def build_sboms_table_context(
     if status_code != 200:
         return ServiceResult.failure(component.get("detail", "Unknown error"))
 
-    status_code, sboms = list_component_sboms(request, component_id, page=1, page_size=-1)
+    status_code, sboms = list_component_sboms(request, component_id, page=1, page_size=-1, include_all_types=True)
     if status_code != 200:
         return ServiceResult.failure(sboms.get("detail", "Failed to load SBOMs"))
 
@@ -73,6 +94,13 @@ def build_sboms_table_context(
     # done — ~3 extra queries per row on top of the inner N+1 — and was the
     # dominant slow path on the component detail page.
 
+    # The component card shows only the latest artifact of each type; ?full=1
+    # (the "View all" toggle) returns the complete history.
+    full_view = request.GET.get("full") == "1"
+    total_artifact_count = len(sbom_items)
+    if not full_view:
+        sbom_items = _latest_per_type(sbom_items)
+
     if not is_public_view:
         _attach_vulnerability_counts(sbom_items)
 
@@ -81,6 +109,9 @@ def build_sboms_table_context(
         "sboms": sbom_items,
         "is_public_view": is_public_view,
         "has_crud_permissions": component.get("has_crud_permissions", False),
+        "full_view": full_view,
+        "show_view_all": not full_view and total_artifact_count > len(sbom_items),
+        "total_artifact_count": total_artifact_count,
     }
 
     if not is_public_view:

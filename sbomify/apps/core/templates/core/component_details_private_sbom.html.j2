@@ -5,7 +5,7 @@
     {# Artifacts & security — the SBOM versions list leads the page, with vulnerabilities shown per version (design review p9: "one wholistic view at the top"). #}
     <div id="sboms-table-container"
          hx-get="{% url 'sboms:sboms_table' component.id %}"
-         hx-trigger="load, refreshSbomsTable from:body"
+         hx-trigger="load, refreshSbomsTable from:body, refreshVexDocuments from:body"
          hx-swap="innerHTML">
         <div class="text-center py-8">
             <div class="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto"
@@ -13,16 +13,6 @@
                 <span class="sr-only">Loading...</span>
             </div>
             <p class="mt-3 text-text-muted">Loading SBOMs...</p>
-        </div>
-    </div>
-    {# VEX documents uploaded for this component. refreshSbomsTable also refreshes it, so an upload reflects immediately. #}
-    <div id="vex-documents-container"
-         class="mt-4"
-         hx-get="{% url 'sboms:component_vex_documents' component.id %}"
-         hx-trigger="load, refreshVexDocuments from:body, refreshSbomsTable from:body"
-         hx-swap="innerHTML">
-        <div class="tw-card">
-            <div class="tw-card-body text-text-muted text-sm">Loading VEX documents…</div>
         </div>
     </div>
     {# Post-Quantum posture — lazy-loaded; collapses when the latest artifact has no crypto assets #}
