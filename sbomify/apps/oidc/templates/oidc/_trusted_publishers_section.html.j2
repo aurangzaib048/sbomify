@@ -19,16 +19,11 @@
 {% endcomment %}
 <section id="trusted-publishers-section" class="tw-card">
 <details class="group/tp"{% if bindings %} open{% endif %}>
-<summary class="tw-card-header flex items-start justify-between gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-<div class="flex items-start gap-3">
-<span class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 flex-shrink-0">
-<i class="fas fa-shield-halved text-primary"></i>
-</span>
-<div>
-<h4 class="text-lg font-semibold text-text m-0">Trusted Publishers</h4>
-</div>
-</div>
-<i class="fas fa-chevron-down text-text-muted mt-1 flex-shrink-0 transition-transform group-open/tp:rotate-180"></i>
+<summary class="flex items-center px-6 py-4 cursor-pointer list-none border-b border-transparent group-open/tp:border-border [&::-webkit-details-marker]:hidden">
+<h5 class="text-lg font-semibold text-text m-0 flex items-center">
+Trusted Publishers
+<i class="fas fa-chevron-down ml-2 text-sm text-text-muted transition-transform group-open/tp:rotate-180"></i>
+</h5>
 </summary>
 <div class="tw-card-body space-y-6">
 <p class="text-sm text-text-muted m-0">

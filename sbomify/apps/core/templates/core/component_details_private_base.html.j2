@@ -55,7 +55,7 @@
                                 <button type="button"
                                         role="menuitem"
                                         class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                        @click="compMenu = false; document.getElementById('upload-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' })">
+                                        @click="compMenu = false; $dispatch('open-upload')">
                                     <i class="fas fa-upload w-4 text-text-muted" aria-hidden="true"></i>Upload artifact…
                                 </button>
                                 <button type="button"
