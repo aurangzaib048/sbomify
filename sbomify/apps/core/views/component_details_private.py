@@ -77,6 +77,7 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         from sbomify.apps.plugins.models import AssessmentRun
         from sbomify.apps.sboms.models import SBOM
         from sbomify.apps.vulnerability_scanning.utils import extract_finding_rows, extract_severity_counts
+        from sbomify.apps.vulnerability_scanning.vex import load_vex_suppressions
 
         latest_sbom = (
             SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
@@ -97,7 +98,10 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         )
         vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
         # Flat, severity-sorted findings for the latest SBOM's drill-down table.
-        latest_vulns = extract_finding_rows(latest_scan_result) if latest_scan_result else []
+        # Pass the component's VEX so each finding's status resolves live, even
+        # when the stored scan predates the VEX upload.
+        vex_statements = load_vex_suppressions(component_id) if latest_scan_result else []
+        latest_vulns = extract_finding_rows(latest_scan_result, vex_statements) if latest_scan_result else []
         # Lowercased "advisory package ecosystem" haystack per finding, so the
         # drill-down's search box can filter client-side without re-fetching.
         latest_vuln_terms = [f"{v['id']} {v['package']} {v['ecosystem']}".lower() for v in latest_vulns]
