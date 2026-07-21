@@ -70,16 +70,29 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
                 }
             # Add more document types with subcategories here as needed
 
-        # Latest security scan summary for the header badge (newest completed run
-        # across this component's SBOMs; VEX-suppressed findings already excluded).
+        # Latest-scan vulnerability summary for the header badge: the newest SBOM's
+        # most recent completed security run (VEX-suppressed findings already
+        # excluded). Tied to the newest SBOM so it matches the top artifacts row,
+        # rather than whichever run happened to complete last.
         from sbomify.apps.plugins.models import AssessmentRun
+        from sbomify.apps.sboms.models import SBOM
         from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
 
-        latest_scan_result = (
-            AssessmentRun.objects.filter(sbom__component_id=component_id, category="security", status="completed")
+        latest_sbom_id = (
+            SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
             .order_by("-created_at")
-            .values_list("result", flat=True)
+            .values_list("id", flat=True)
             .first()
+        )
+        latest_scan_result = (
+            (
+                AssessmentRun.objects.filter(sbom_id=latest_sbom_id, category="security", status="completed")
+                .order_by("-created_at")
+                .values_list("result", flat=True)
+                .first()
+            )
+            if latest_sbom_id
+            else None
         )
         vuln_summary = extract_severity_counts(latest_scan_result) if latest_scan_result else None
 
