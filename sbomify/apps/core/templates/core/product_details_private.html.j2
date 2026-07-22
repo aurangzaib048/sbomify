@@ -181,8 +181,9 @@
         {{ component_statuses|json_script:"pc-statuses" }}
         {{ assigned_component_ids|json_script:"pc-assigned" }}
         <section class="tw-card"
-                 x-data="{ search: '', status: 'all', currentPage: 1, perPage: 5, terms: (window.parseJsonScript('pc-terms') || []), statuses: (window.parseJsonScript('pc-statuses') || []), get statusOptions() { const order = ['critical', 'high', 'medium', 'low', 'clean', 'not_scanned']; const present = new Set(this.statuses); return order.filter(v => present.has(v)); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.status === 'all' || this.statuses[i] === this.status)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); }, assignOpen: false, availLoading: false, avail: [], selectedId: '', busy: false, err: '', assignedIds: (window.parseJsonScript('pc-assigned') || []), openAssign() { this.assignOpen = true; this.err = ''; this.selectedId = ''; this.availLoading = true; fetch('/api/v1/components').then(r => r.json()).then(d => { const items = d.items || d; this.avail = items.filter(c => !this.assignedIds.includes(c.id)).sort((a, b) => a.name.localeCompare(b.name)); }).catch(() => { this.err = 'Failed to load components'; }).finally(() => { this.availLoading = false; }); }, patchIds(ids) { this.busy = true; return fetch('/api/v1/products/{{ product.id }}', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '' }, body: JSON.stringify({ component_ids: ids }) }).then(r => { if (!r.ok) throw new Error(); location.reload(); }).catch(() => { this.busy = false; this.err = 'Update failed'; }); }, confirmAssign() { if (this.selectedId && !this.busy) this.patchIds([...this.assignedIds, this.selectedId]); }, removeTarget: null, confirmRemove() { if (this.removeTarget && !this.busy) this.patchIds(this.assignedIds.filter(x => x !== this.removeTarget.id)); } }"
-                 x-init="$watch('search', () => currentPage = 1); $watch('status', () => currentPage = 1)">
+                 x-data="{ search: '', status: 'all', currentPage: 1, perPage: 5, terms: (window.parseJsonScript('pc-terms') || []), statuses: (window.parseJsonScript('pc-statuses') || []), get statusOptions() { const order = ['critical', 'high', 'medium', 'low', 'clean', 'not_scanned']; const present = new Set(this.statuses); return order.filter(v => present.has(v)); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.status === 'all' || this.statuses[i] === this.status)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); }, assignOpen: false, availLoading: false, avail: [], selectedId: '', busy: false, err: '', assignedIds: (window.parseJsonScript('pc-assigned') || []), prodPublic: {{ product.is_public|yesno:'true,false' }}, openAssign() { this.assignOpen = true; this.err = ''; this.selectedId = ''; this.availLoading = true; fetch('/api/v1/components?is_global=false').then(r => r.json()).then(d => { const items = d.items || d; this.avail = items.filter(c => !this.assignedIds.includes(c.id)).sort((a, b) => a.name.localeCompare(b.name)); }).catch(() => { this.err = 'Failed to load components'; }).finally(() => { this.availLoading = false; }); }, patchIds(ids) { this.busy = true; return fetch('/api/v1/products/{{ product.id }}', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '' }, body: JSON.stringify({ component_ids: ids }) }).then(r => { if (!r.ok) throw new Error(); location.reload(); }).catch(() => { this.busy = false; this.err = 'Update failed'; }); }, confirmAssign() { if (this.selectedId && !this.busy) this.patchIds([...this.assignedIds, this.selectedId]); }, removeTarget: null, confirmRemove() { if (this.removeTarget && !this.busy) this.patchIds(this.assignedIds.filter(x => x !== this.removeTarget.id)); } }"
+                 x-init="$watch('search', () => currentPage = 1); $watch('status', () => currentPage = 1)"
+                 @public-status-changed.window="if ($event.detail.itemType === 'product' && $event.detail.itemId === '{{ product.id }}') prodPublic = $event.detail.isPublic">
             <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
                 <h4 class="text-lg font-semibold text-text m-0">Components</h4>
                 {% if product.has_crud_permissions and component_rows %}
@@ -296,42 +297,75 @@
                     {% include "components/tw/table_pager.html.j2" %}
                 </div>
             {% else %}
-                {% include "components/tw/empty_state.html.j2" with icon="fas fa-puzzle-piece" title="No components assigned yet" message="Components are shared building blocks — assign an existing one, or create a component and connect CI/CD so your first push reports here." action_text="Assign a component" action_click="openAssign()" secondary_text="or create a new one" secondary_url="/components/" %}
+                {% include "components/tw/empty_state.html.j2" with icon="fas fa-puzzle-piece" title="No components assigned yet" message="Components are shared building blocks. Assign an existing one, or create a component and connect CI/CD so your first push reports here." action_text="Assign a component" action_click="openAssign()" secondary_text="or create a new one" secondary_url="/components/" %}
             {% endif %}
             {# Assign modal #}
             {% if product.has_crud_permissions %}
                 <div x-show="assignOpen"
                      x-cloak
-                     class="fixed inset-0 z-50 flex items-center justify-center p-4"
-                     role="dialog"
-                     aria-modal="true"
-                     aria-label="Assign component">
-                    <div class="absolute inset-0 bg-black/50" @click="assignOpen = false"></div>
-                    <div class="relative bg-surface border border-border rounded-xl shadow-xl w-full max-w-md p-6"
-                         @keydown.escape.window="assignOpen = false">
-                        <h4 class="text-lg font-semibold text-text m-0 mb-1">Assign component</h4>
-                        <p class="text-sm text-text-muted mt-0 mb-4">Components are shared — one component can live in several products.</p>
-                        <div x-show="availLoading" class="py-6 text-center text-text-muted">
-                            <i class="fas fa-spinner fa-spin mr-2"></i>Loading components…
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0"
+                     x-transition:enter-end="opacity-100"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100"
+                     x-transition:leave-end="opacity-0"
+                     class="tw-modal-overlay"
+                     @click="assignOpen = false"></div>
+                <div x-show="assignOpen"
+                     x-cloak
+                     x-trap.noscroll="assignOpen"
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0 scale-95"
+                     x-transition:enter-end="opacity-100 scale-100"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100 scale-100"
+                     x-transition:leave-end="opacity-0 scale-95"
+                     class="tw-modal"
+                     @keydown.escape.window="assignOpen = false"
+                     @click.stop>
+                    <div class="tw-modal-content"
+                         role="dialog"
+                         aria-modal="true"
+                         aria-label="Assign component">
+                        <div class="tw-modal-header">
+                            <h4 class="tw-modal-title flex items-center gap-2">
+                                <i class="fas fa-puzzle-piece text-primary"></i>Assign Component
+                            </h4>
+                            <button type="button"
+                                    class="tw-modal-close"
+                                    @click="assignOpen = false"
+                                    aria-label="Close">
+                                <i class="fas fa-times" aria-hidden="true"></i>
+                            </button>
                         </div>
-                        <template x-if="!availLoading && avail.length === 0 && !err">
-                            <p class="text-sm text-text-muted">Every component in this workspace is already assigned.</p>
-                        </template>
-                        <template x-if="!availLoading && avail.length > 0">
-                            <div>
-                                <label for="pc-assign-select" class="sr-only">Component</label>
-                                <select id="pc-assign-select"
-                                        x-model="selectedId"
-                                        class="tw-form-input w-full">
-                                    <option value="">Choose a component…</option>
-                                    <template x-for="c in avail" :key="c.id">
-                                        <option :value="c.id" x-text="c.name"></option>
-                                    </template>
-                                </select>
+                        <div class="tw-modal-body">
+                            <p class="text-sm text-text-muted mt-0 mb-4">
+                                <span x-show="prodPublic">This product is public, so assign public components. Private components stay hidden on the public page.</span>
+                                <span x-show="!prodPublic">This product is private, so you can assign any component, public or private.</span>
+                            </p>
+                            <div x-show="availLoading" class="py-6 text-center text-text-muted">
+                                <i class="fas fa-spinner fa-spin mr-2"></i>Loading components…
                             </div>
-                        </template>
-                        <p x-show="err" class="text-sm text-danger mt-3" x-text="err"></p>
-                        <div class="flex justify-end gap-2 mt-5">
+                            <template x-if="!availLoading && avail.length === 0 && !err">
+                                <p class="text-sm text-text-muted">Every component in this workspace is already assigned.</p>
+                            </template>
+                            <template x-if="!availLoading && avail.length > 0">
+                                <div>
+                                    <label for="pc-assign-select"
+                                           class="text-text text-sm font-medium block mb-1.5">Component</label>
+                                    <select id="pc-assign-select"
+                                            x-model="selectedId"
+                                            class="tw-form-select w-full">
+                                        <option value="">Choose a component…</option>
+                                        <template x-for="c in avail" :key="c.id">
+                                            <option :value="c.id" x-text="c.name"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                            </template>
+                            <p x-show="err" class="text-sm text-danger mt-3" x-text="err"></p>
+                        </div>
+                        <div class="tw-modal-footer">
                             <button type="button"
                                     class="tw-btn-secondary text-sm"
                                     @click="assignOpen = false">Cancel</button>
@@ -348,21 +382,51 @@
                 {# Remove confirmation #}
                 <div x-show="removeTarget !== null"
                      x-cloak
-                     class="fixed inset-0 z-50 flex items-center justify-center p-4"
-                     role="dialog"
-                     aria-modal="true"
-                     aria-label="Remove component from product">
-                    <div class="absolute inset-0 bg-black/50" @click="removeTarget = null"></div>
-                    <div class="relative bg-surface border border-border rounded-xl shadow-xl w-full max-w-md p-6"
-                         @keydown.escape.window="removeTarget = null">
-                        <h4 class="text-lg font-semibold text-text m-0 mb-1">
-                            Remove <span x-text="removeTarget?.name"></span>?
-                        </h4>
-                        <p class="text-sm text-text-muted mt-0 mb-4">
-                            The component is only unassigned from this product — it stays in your workspace and in any other products that use it.
-                        </p>
-                        <p x-show="err" class="text-sm text-danger mb-3" x-text="err"></p>
-                        <div class="flex justify-end gap-2">
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0"
+                     x-transition:enter-end="opacity-100"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100"
+                     x-transition:leave-end="opacity-0"
+                     class="tw-modal-overlay"
+                     @click="removeTarget = null"></div>
+                <div x-show="removeTarget !== null"
+                     x-cloak
+                     x-trap.noscroll="removeTarget !== null"
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0 scale-95"
+                     x-transition:enter-end="opacity-100 scale-100"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100 scale-100"
+                     x-transition:leave-end="opacity-0 scale-95"
+                     class="tw-modal"
+                     @keydown.escape.window="removeTarget = null"
+                     @click.stop>
+                    <div class="tw-modal-content"
+                         role="dialog"
+                         aria-modal="true"
+                         aria-label="Remove component from product">
+                        <div class="tw-modal-header">
+                            <h4 class="tw-modal-title flex items-center gap-2">
+                                <i class="fas fa-unlink text-danger"></i>Remove Component
+                            </h4>
+                            <button type="button"
+                                    class="tw-modal-close"
+                                    @click="removeTarget = null"
+                                    aria-label="Close">
+                                <i class="fas fa-times" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <div class="tw-modal-body">
+                            <p class="text-text text-sm mt-0 mb-2">
+                                Are you sure you want to remove <strong x-text="removeTarget?.name"></strong> from this product?
+                            </p>
+                            <p class="text-sm text-text-muted m-0">
+                                The component is only unassigned. It stays in your workspace and in any other products that use it.
+                            </p>
+                            <p x-show="err" class="text-sm text-danger mt-3 mb-0" x-text="err"></p>
+                        </div>
+                        <div class="tw-modal-footer">
                             <button type="button"
                                     class="tw-btn-secondary text-sm"
                                     @click="removeTarget = null">Cancel</button>
@@ -378,30 +442,35 @@
                 </div>
             {% endif %}
         </section>
-        {# Releases strip #}
+        {# Latest releases #}
         <section class="tw-card">
-            <div class="px-6 py-4 {% if releases_summary.latest %}border-b border-border{% endif %} flex items-center justify-between gap-3">
-                <h4 class="text-lg font-semibold text-text m-0">Releases</h4>
-                <span class="text-xs text-text-muted">Snapshots of this product's artifacts</span>
-            </div>
-            {% if releases_summary.latest %}
-                <div class="px-6 py-3.5 flex items-center gap-3 flex-wrap text-sm text-text-muted">
-                    <a href="{% url 'core:release_details' product.id releases_summary.latest.id %}"
-                       class="font-semibold text-text hover:text-primary no-underline">{{ releases_summary.latest.name }}</a>
-                    {% if releases_summary.latest.is_latest %}
-                        <span class="text-[10px] font-extrabold tracking-wider uppercase text-success bg-success/10 rounded px-2 py-0.5">Latest</span>
-                    {% endif %}
-                    {% if releases_summary.latest.is_prerelease %}
-                        <span class="text-[10px] font-extrabold tracking-wider uppercase text-warning bg-warning/10 rounded px-2 py-0.5">Pre-release</span>
-                    {% endif %}
-                    <span>{{ releases_summary.latest.artifact_count }} artifact{{ releases_summary.latest.artifact_count|pluralize }}</span>
-                    <span>{{ releases_summary.latest.date|date:"M d, Y" }}</span>
+            <div class="px-6 py-4 {% if releases_summary.releases %}border-b border-border{% endif %} flex items-center justify-between gap-3">
+                <h4 class="text-lg font-semibold text-text m-0">Latest releases</h4>
+                {% if releases_summary.releases %}
                     <a href="{% url 'core:product_releases' product.id %}"
-                       class="ml-auto text-sm font-semibold text-primary no-underline hover:underline">View all {{ releases_summary.total }} release{{ releases_summary.total|pluralize }} <i class="fas fa-arrow-right text-xs" aria-hidden="true"></i></a>
-                </div>
+                       class="tw-btn-secondary text-sm no-underline">View all {{ releases_summary.total }}
+                        <i class="fas fa-arrow-right ml-1 text-xs" aria-hidden="true"></i>
+                    </a>
+                {% endif %}
+            </div>
+            {% if releases_summary.releases %}
+                {% for release in releases_summary.releases %}
+                    <div class="px-6 py-3.5 flex items-center gap-3 flex-wrap text-sm text-text-muted {% if not forloop.last %}border-b border-border/50{% endif %}">
+                        <a href="{% url 'core:release_details' product.id release.id %}"
+                           class="font-semibold text-text hover:text-primary no-underline">{{ release.name }}</a>
+                        {% if release.is_latest %}
+                            <span class="text-[10px] font-extrabold tracking-wider uppercase text-success bg-success/10 rounded px-2 py-0.5">Latest</span>
+                        {% endif %}
+                        {% if release.is_prerelease %}
+                            <span class="text-[10px] font-extrabold tracking-wider uppercase text-warning bg-warning/10 rounded px-2 py-0.5">Pre-release</span>
+                        {% endif %}
+                        <span class="ml-auto">{{ release.artifact_count }} artifact{{ release.artifact_count|pluralize }}</span>
+                        <span>{{ release.date|date:"M d, Y" }}</span>
+                    </div>
+                {% endfor %}
             {% else %}
                 {% url 'core:product_releases' product.id as releases_url %}
-                {% include "components/tw/empty_state.html.j2" with compact=True icon="fas fa-tag" title="No releases yet" message="A release freezes this product's artifacts at a point in time — tag one when you ship." action_text="Create a release" action_url=releases_url action_variant="secondary" %}
+                {% include "components/tw/empty_state.html.j2" with compact=True icon="fas fa-tag" title="No releases yet" message="A release freezes this product's artifacts at a point in time. Tag one when you ship." action_text="Create a release" action_url=releases_url action_variant="secondary" %}
             {% endif %}
         </section>
         {# About this product — compliance & metadata, uniform collapsed rows #}

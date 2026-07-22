@@ -60,16 +60,24 @@ def test_rows_sort_worst_first_with_rollup(sample_team_with_owner_member):
     assert data["rollup"] == {"total": 2, "critical": 1, "high": 0, "medium": 1, "low": 0}
 
 
-def test_releases_summary_prefers_the_latest_flag(sample_team_with_owner_member):
+def test_releases_summary_lists_newest_with_latest_first(sample_team_with_owner_member):
     team = sample_team_with_owner_member.team
     product = Product.objects.create(name="prod2", team=team)
-    assert build_product_releases_summary(product.id) == {"total": 0, "latest": None}
+    assert build_product_releases_summary(product.id) == {"total": 0, "releases": []}
 
     Release.objects.create(product_id=product.id, name="v1.0")
     latest = Release.objects.create(product_id=product.id, name="latest", is_latest=True)
 
     summary = build_product_releases_summary(product.id)
     assert summary["total"] == 2
-    assert summary["latest"]["id"] == latest.id
-    assert summary["latest"]["is_latest"] is True
-    assert summary["latest"]["artifact_count"] == 0
+    assert [r["name"] for r in summary["releases"]] == ["latest", "v1.0"]
+    assert summary["releases"][0]["id"] == latest.id
+    assert summary["releases"][0]["is_latest"] is True
+    assert summary["releases"][0]["artifact_count"] == 0
+
+    for i in range(6):
+        Release.objects.create(product_id=product.id, name=f"v2.{i}")
+    capped = build_product_releases_summary(product.id)
+    assert capped["total"] == 8
+    assert len(capped["releases"]) == 2
+    assert capped["releases"][0]["name"] == "latest"

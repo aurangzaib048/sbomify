@@ -97,20 +97,27 @@ def build_product_components_rows(product_id: str) -> dict[str, Any]:
     return {"rows": rows, "rollup": rollup}
 
 
-def build_product_releases_summary(product_id: str) -> dict[str, Any]:
-    """The releases strip: the release that represents "now" plus the total count."""
-    releases = Release.objects.filter(product_id=product_id)
-    total = releases.count()
-    latest = releases.filter(is_latest=True).first() or releases.first()
-    summary: dict[str, Any] = {"total": total, "latest": None}
-    if latest:
-        summary["latest"] = {
-            "id": latest.id,
-            "name": latest.name,
-            "version": latest.version,
-            "is_latest": latest.is_latest,
-            "is_prerelease": latest.is_prerelease,
-            "date": latest.released_at or latest.created_at,
-            "artifact_count": latest.artifacts.count(),
+def build_product_releases_summary(product_id: str, limit: int = 2) -> dict[str, Any]:
+    """The releases strip: the newest releases (rolling "latest" first) plus the
+    total count. ``limit`` caps the strip; the full history lives on the
+    releases page."""
+    from django.db.models import Count, F
+
+    queryset = Release.objects.filter(product_id=product_id)
+    total = queryset.count()
+    newest = queryset.annotate(artifact_count=Count("artifacts")).order_by(
+        "-is_latest", F("released_at").desc(nulls_last=True), "-created_at"
+    )[:limit]
+    releases = [
+        {
+            "id": release.id,
+            "name": release.name,
+            "version": release.version,
+            "is_latest": release.is_latest,
+            "is_prerelease": release.is_prerelease,
+            "date": release.released_at or release.created_at,
+            "artifact_count": release.artifact_count,
         }
-    return summary
+        for release in newest
+    ]
+    return {"total": total, "releases": releases}
