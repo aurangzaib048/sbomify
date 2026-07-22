@@ -428,6 +428,23 @@ html.no-transitions * {
   background-color: rgb(var(--color-accent-orange));
 }
 
+/* Flatten a tw-card rendered inside an About-group collapsible row: the row is
+   the chrome, so the embedded card sheds its border and duplicate heading while
+   keeping its own action buttons. */
+.tw-embed .tw-card {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tw-embed .tw-card > div:first-child {
+  border-bottom: 0;
+  padding-top: 0;
+  justify-content: flex-end;
+}
+.tw-embed .tw-card > div:first-child h4 {
+  display: none;
+}
+
 /* High-severity orange — distinct from amber warnings (CVSS convention). */
 @utility text-severity-high {
   color: rgb(var(--color-severity-high));
