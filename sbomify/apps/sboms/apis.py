@@ -900,6 +900,52 @@ def get_sbom_crypto_inventory(request: HttpRequest, sbom_id: str) -> tuple[int, 
 
 
 @router.get(
+    "/{sbom_id}/crypto-inventory/cipher-suites.csv",
+    response={200: None, 403: ErrorResponse, 404: ErrorResponse},
+    auth=None,  # Same gate as the JSON inventory: open for public SBOMs
+)
+@decorate_view(optional_auth)
+def download_cipher_suite_inventory_csv(request: HttpRequest, sbom_id: str) -> Any:
+    """Protocol and cipher-suite inventory as CSV.
+
+    One row per cipher suite (plus one per deprecated protocol version) with
+    weakness flags — the inventory-of-suites-and-protocols evidence PCI DSS
+    4.x requirement 12.3.3 asks to keep and review.
+    """
+    import csv
+    import io
+
+    result = get_crypto_inventory(request, sbom_id)
+    if not result.ok:
+        return result.status_code or 400, {"detail": result.error or "Invalid request"}
+    inventory = result.value or {}
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["protocol", "type", "version", "cipher_suite", "identifiers", "weak", "weaknesses"])
+    for asset in inventory.get("assets", []):
+        view = asset.get("protocol_view")
+        if not view:
+            continue
+        base = [asset.get("name") or "", view.get("type") or "", view.get("version") or ""]
+        if view.get("weak_version"):
+            writer.writerow(base + ["", "", "yes", view["weak_version"]])
+        for suite in view.get("cipher_suites", []):
+            writer.writerow(
+                base
+                + [
+                    suite.get("name") or "",
+                    " ".join(suite.get("identifiers") or []),
+                    "yes" if suite.get("weaknesses") else "no",
+                    "; ".join(suite.get("weaknesses") or []),
+                ]
+            )
+    response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="cipher-suite-inventory-{sbom_id}.csv"'
+    return response
+
+
+@router.get(
     "/{sbom_id}/download",
     response={200: None, 403: ErrorResponse, 404: ErrorResponse, 500: ErrorResponse},
     auth=None,  # Allow unauthenticated access for public SBOMs

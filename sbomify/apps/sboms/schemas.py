@@ -119,9 +119,12 @@ class CryptoAssetSchema(Schema):
     certificate: dict[str, Any] | None = None
     protocol: dict[str, Any] | None = None
     related_material: dict[str, Any] | None = None
+    certificate_view: dict[str, Any] | None = None
+    protocol_view: dict[str, Any] | None = None
     pqc_status: str | None = None
     pqc_reason: str | None = None
     pqc_data_quality_flag: str | None = None
+    pqc_replacement: str | None = None
 
 
 class CryptoEdgeSchema(Schema):

@@ -271,6 +271,27 @@ def classify_crypto_asset(asset: CryptoAsset) -> PqcAssessment:
     return PqcAssessment(status=status, family=family, reason=reason, data_quality_flag=data_quality_flag)
 
 
+_SIGNATURE_HINTS = ("ecdsa", "eddsa", "ed25519", "ed448", "dsa", "signature")
+_KEY_ESTABLISHMENT_HINTS = ("ecdh", "x25519", "x448", "diffie", "hellman", "ffdh", "kem", "pke", "ecies", "mqv")
+
+
+def replacement_for(asset: CryptoAsset, status: PqcStatus) -> str | None:
+    """NIST-standardized migration target for a quantum-vulnerable asset.
+
+    Signature use maps to ML-DSA (FIPS 204) / SLH-DSA (FIPS 205); key
+    establishment to ML-KEM (FIPS 203); ambiguous identities get both.
+    """
+    if status is not PqcStatus.VULNERABLE:
+        return None
+    hay = _haystack(asset)
+    tokens = _tokens(hay)
+    if any(h in hay for h in _SIGNATURE_HINTS):
+        return "ML-DSA (FIPS 204) or SLH-DSA (FIPS 205)"
+    if any(h in hay for h in _KEY_ESTABLISHMENT_HINTS) or (tokens & {"dh", "dhe"}):
+        return "ML-KEM (FIPS 203)"
+    return "ML-KEM (FIPS 203) for key establishment; ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) for signatures"
+
+
 def assess_inventory(inventory: CryptoInventory) -> PqcSummary:
     """Classify every asset and roll up to an overall readiness verdict.
 
