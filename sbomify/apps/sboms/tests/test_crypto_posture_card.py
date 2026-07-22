@@ -72,3 +72,43 @@ def test_posture_does_not_leak_private_to_anonymous(sample_sbom: SBOM, mocker: M
     response = Client().get(_posture_url(sample_sbom.component.id))  # anon, component private
     assert response.status_code == 200
     assert "At risk" not in response.content.decode()
+
+
+def _newer_artifact(base: SBOM, bom_type: str) -> SBOM:
+    return SBOM.objects.create(
+        name=base.name,
+        version="newer",
+        component=base.component,
+        bom_type=bom_type,
+        format=base.format,
+        format_version=base.format_version,
+        sbom_filename=f"{bom_type}.json",
+    )
+
+
+@pytest.mark.django_db
+def test_posture_survives_newer_vex_upload(sample_sbom: SBOM, mocker: MockerFixture):  # noqa: F811
+    """A VEX landing after the CBOM must not displace the posture card."""
+    sample_sbom.bom_type = SBOM.BomType.CBOM
+    sample_sbom.save(update_fields=["bom_type"])
+    _newer_artifact(sample_sbom, SBOM.BomType.VEX)
+    _mock_s3(mocker, (_DATA / "cbom_sample_1.6.cdx.json").read_bytes())
+
+    response = _owner_client(sample_sbom).get(_posture_url(sample_sbom.component.id))
+    assert response.status_code == 200
+    assert "Post-Quantum Posture" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_posture_prefers_cbom_over_newer_sbom(sample_sbom: SBOM, mocker: MockerFixture):  # noqa: F811
+    sample_sbom.bom_type = SBOM.BomType.CBOM
+    sample_sbom.save(update_fields=["bom_type"])
+    _newer_artifact(sample_sbom, SBOM.BomType.SBOM)
+    _mock_s3(mocker, (_DATA / "cbom_sample_1.6.cdx.json").read_bytes())
+
+    response = _owner_client(sample_sbom).get(_posture_url(sample_sbom.component.id))
+    assert response.status_code == 200
+    html = response.content.decode()
+    assert "Post-Quantum Posture" in html
+    # the card links the CBOM, not the newer plain SBOM
+    assert str(sample_sbom.id) in html
