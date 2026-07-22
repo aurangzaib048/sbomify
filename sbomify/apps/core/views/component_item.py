@@ -172,8 +172,11 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 if vex_suppressions:
                     from sbomify.apps.vulnerability_scanning.utils import merge_findings_by_alias
 
+                    # Scope to the artifact's own component — the URL segment is
+                    # only canonical after the redirect above.
+                    own_component_id = item.get("component_id") or component_id  # type: ignore[union-attr]
                     latest_sbom_id = (
-                        SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.SBOM)
+                        SBOM.objects.filter(component_id=own_component_id, bom_type=SBOM.BomType.SBOM)
                         .order_by("-created_at")
                         .values_list("id", flat=True)
                         .first()

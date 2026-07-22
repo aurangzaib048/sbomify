@@ -13,21 +13,44 @@ from sbomify.apps.sboms.services.sboms import delete_sbom_record
 from sbomify.apps.teams.apis import get_team
 
 
-def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]], component_id: str) -> None:
-    """Attach each SBOM's actionable severity counts as ``item['vuln']``.
+def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]], component_id: str, *, merged: bool = True) -> None:
+    """Attach each SBOM's severity counts as ``item['vuln']``.
 
-    One batched query over every SBOM in the table — the latest run per
-    (sbom, provider) — merged by advisory alias and filtered through the
-    component's VEX, so the counts agree with the header badge and the
-    drill-down statuses rather than echoing one provider's stale summary.
-    Rows with no completed security run get ``vuln = None``, which the table
-    renders as "not scanned".
+    ``merged=True`` (the compact card, a handful of rows): the latest run per
+    (sbom, provider) merged by advisory alias, so the chips agree with the
+    header badge and the drill-down. ``merged=False`` (the full history
+    listing, potentially hundreds of rows): each SBOM's newest run summary read
+    from the STORED ``result_summary`` generated columns — no result blob is
+    ever de-TOASTed, at the cost of showing that single run's counts.
+    Rows with no completed security run get ``vuln = None``.
     """
-    from sbomify.apps.vulnerability_scanning.utils import extract_finding_rows, merge_findings_by_alias
+    from sbomify.apps.vulnerability_scanning.utils import (
+        RESULT_SUMMARY_ANNOTATIONS,
+        RESULT_SUMMARY_FIELDS,
+        extract_finding_rows,
+        extract_severity_counts,
+        merge_findings_by_alias,
+        reconstruct_result_summary,
+    )
     from sbomify.apps.vulnerability_scanning.vex import load_vex_suppressions
 
     sbom_ids = [item["sbom"]["id"] for item in sbom_items if item.get("sbom", {}).get("id")]
     if not sbom_ids:
+        return
+
+    if not merged:
+        latest_summaries = (
+            AssessmentRun.objects.filter(sbom_id__in=sbom_ids, category="security", status="completed")
+            .order_by("sbom_id", "-created_at")
+            .distinct("sbom_id")
+            .annotate(**RESULT_SUMMARY_ANNOTATIONS)
+            .values("sbom_id", *RESULT_SUMMARY_FIELDS)
+        )
+        counts_by_sbom = {
+            str(row["sbom_id"]): extract_severity_counts(reconstruct_result_summary(row)) for row in latest_summaries
+        }
+        for item in sbom_items:
+            item["vuln"] = counts_by_sbom.get(str(item.get("sbom", {}).get("id", "")))
         return
 
     # DISTINCT ON (sbom_id, plugin_name) with newest-first ordering returns each
@@ -119,7 +142,7 @@ def build_sboms_table_context(
         sbom_items = _summary_artifacts(sbom_items)
 
     if not is_public_view:
-        _attach_vulnerability_counts(sbom_items, component_id)
+        _attach_vulnerability_counts(sbom_items, component_id, merged=not full_view)
 
     context = {
         "component_id": component_id,

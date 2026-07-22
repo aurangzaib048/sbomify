@@ -73,8 +73,12 @@ def build_product_components_rows(product_id: str) -> dict[str, Any]:
         if sbom:
             provider_results = results_by_sbom.get(str(sbom["id"]))
             if provider_results:
-                statements = load_vex_suppressions(component["id"], cache=vex_cache)
-                findings = extract_finding_rows(merge_findings_by_alias(provider_results), statements)
+                merged = merge_findings_by_alias(provider_results)
+                # VEX lives in S3; skip the fetch entirely for clean components
+                # (the common case) so an N-component product doesn't pay N
+                # object reads just to annotate empty lists.
+                statements = load_vex_suppressions(component["id"], cache=vex_cache) if merged["findings"] else []
+                findings = extract_finding_rows(merged, statements)
                 counts = {"total": len(findings)}
                 for severity in _SEVERITIES:
                     counts[severity] = sum(1 for f in findings if f["severity"] == severity)

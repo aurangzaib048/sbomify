@@ -6,6 +6,7 @@ from django.shortcuts import render
 from django.views import View
 
 from sbomify.apps.core.apis import get_component
+from sbomify.apps.core.errors import error_response
 from sbomify.apps.teams.permissions import GuestAccessBlockedMixin
 
 
@@ -20,5 +21,7 @@ class ComponentArtifactsView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
     def get(self, request: HttpRequest, component_id: str) -> HttpResponse:
         status_code, component = get_component(request, component_id)
         if status_code != 200:
-            return HttpResponse(status=status_code, content=component.get("detail", "Unknown error"))
+            return error_response(
+                request, HttpResponse(status=status_code, content=component.get("detail", "Unknown error"))
+            )
         return render(request, "sboms/component_artifacts.html.j2", {"component": component})

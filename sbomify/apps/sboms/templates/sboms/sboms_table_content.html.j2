@@ -132,8 +132,11 @@
                             </td>
                             {% if not is_public_view %}
                                 <td class="whitespace-nowrap">
-                                    <template x-if="!item.vuln">
+                                    <template x-if="!item.vuln && bomType === 'sbom'">
                                         <span class="text-text-muted text-sm">Not scanned</span>
+                                    </template>
+                                    <template x-if="!item.vuln && bomType !== 'sbom'">
+                                        <span class="text-text-muted text-sm">—</span>
                                     </template>
                                     <template x-if="item.vuln && item.vuln.total === 0">
                                         <span class="tw-badge-success text-xs">Clean</span>
