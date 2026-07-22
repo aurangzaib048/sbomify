@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sbomify.apps.plugins.builtins.pqc import PqcReadinessPlugin
 from sbomify.apps.plugins.sdk import AssessmentCategory
+from sbomify.apps.sboms.tests.fixtures import sample_component  # noqa: F401
 
 
 def _crypto(name: str, asset_type: str = "algorithm", **algo) -> dict:
@@ -92,6 +95,7 @@ def test_summary_counts_include_info_and_sum_to_total(tmp_path: Path):
     )
 
 
+@pytest.mark.django_db
 def test_assess_crypto_free_document_is_skipped_not_warned(tmp_path: Path):
     # The plugin runs on ordinary SBOMs too; a crypto-free document must not
     # accumulate warning findings, it flags itself skipped.
@@ -120,3 +124,27 @@ def test_metadata_block_includes_standard_reference(tmp_path: Path):
     result = _assess(_cbom(_crypto("RSA-2048", primitive="pke")), tmp_path)
     assert result.metadata and result.metadata["standard_name"]
     assert result.metadata["pqc_overall"] == "at_risk"
+
+
+@pytest.mark.django_db
+def test_assess_crypto_free_explicit_cbom_warns_not_skips(tmp_path: Path, sample_component):  # noqa: F811
+    """An artifact deliberately tagged cbom with zero crypto assets is a
+    generator misfire: it keeps a visible warning instead of a filtered skip."""
+    from sbomify.apps.sboms.models import SBOM
+
+    row = SBOM.objects.create(
+        name="empty-cbom",
+        version="1",
+        component=sample_component,
+        format="cyclonedx",
+        format_version="1.6",
+        sbom_filename="empty.json",
+        bom_type=SBOM.BomType.CBOM,
+    )
+    path = tmp_path / "empty.json"
+    path.write_text(json.dumps(_cbom()), encoding="utf-8")
+
+    result = PqcReadinessPlugin().assess(row.id, path)
+
+    assert result.findings[0].status == "warning"
+    assert not (result.metadata or {}).get("skipped")

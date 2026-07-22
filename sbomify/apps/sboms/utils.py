@@ -2221,6 +2221,19 @@ def populate_component_metadata_native_fields(
 _SBOM_UNIQUE_CONSTRAINT = "sboms_sbom_unique_component_version_format_qualifiers_bom_type"
 
 
+def _contains_crypto_assets(sbom_data: dict[str, Any]) -> bool:
+    """True when the document carries ANY crypto asset (components or
+    metadata.component), whatever its bom_type. Feeds ``has_crypto_assets`` so
+    crypto-gated assessments skip dispatch for the (majority) crypto-free rows."""
+    from sbomify.apps.sboms.crypto_inventory import is_crypto_asset
+
+    components = sbom_data.get("components")
+    if isinstance(components, list) and any(is_crypto_asset(c) for c in components):
+        return True
+    metadata = sbom_data.get("metadata")
+    return isinstance(metadata, dict) and is_crypto_asset(metadata.get("component"))
+
+
 def _is_cbom(sbom_data: dict[str, Any]) -> bool:
     """True when a CycloneDX document is a *pure* CBOM: its
     ``metadata.component`` is a crypto asset, or every entry in a non-empty

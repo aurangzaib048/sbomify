@@ -31,7 +31,12 @@ from sbomify.apps.core.utils import (
     obj_extract,
 )
 from sbomify.apps.oidc.permissions import is_authorised_for_component
-from sbomify.apps.sboms.utils import _is_cbom, _is_duplicate_integrity_error, verify_download_token
+from sbomify.apps.sboms.utils import (
+    _contains_crypto_assets,
+    _is_cbom,
+    _is_duplicate_integrity_error,
+    verify_download_token,
+)
 from sbomify.apps.teams.models import ContactProfile
 
 from .models import SBOM, Component, Product
@@ -473,6 +478,7 @@ def sbom_upload_cyclonedx(
         # a crypto-heavy VEX is never re-tagged cbom.
         if bom_type == SBOM.BomType.SBOM.value and "bom_type" not in request.GET and _is_cbom(sbom_data):
             bom_type = "cbom"
+        sbom_dict["has_crypto_assets"] = _contains_crypto_assets(sbom_data)
 
         # Extract PURL qualifiers from metadata.component.purl
         cdx_purl = _extract_cdx_purl(payload)
@@ -882,7 +888,13 @@ def get_sbom(request: HttpRequest, sbom_id: str) -> tuple[int, dict[str, Any]]:
 
 @router.get(
     "/{sbom_id}/crypto-inventory",
-    response={200: CryptoInventorySchema, 403: ErrorResponse, 404: ErrorResponse},
+    response={
+        200: CryptoInventorySchema,
+        400: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        503: ErrorResponse,
+    },
     auth=None,  # Allow unauthenticated access for public SBOMs
 )
 @decorate_view(optional_auth)
@@ -901,7 +913,7 @@ def get_sbom_crypto_inventory(request: HttpRequest, sbom_id: str) -> tuple[int, 
 
 @router.get(
     "/{sbom_id}/crypto-inventory/cipher-suites.csv",
-    response={200: None, 403: ErrorResponse, 404: ErrorResponse},
+    response={200: None, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 503: ErrorResponse},
     auth=None,  # Same gate as the JSON inventory: open for public SBOMs
 )
 @decorate_view(optional_auth)
@@ -915,6 +927,12 @@ def download_cipher_suite_inventory_csv(request: HttpRequest, sbom_id: str) -> A
     import csv
     import io
 
+    def csv_safe(value: str) -> str:
+        # Cell values come from the uploaded document. Neutralize spreadsheet
+        # formula triggers so opening the export in Excel/Sheets can never
+        # execute attacker-authored formulas (CSV injection).
+        return f"'{value}" if value[:1] in ("=", "+", "-", "@", "\t", "\r") else value
+
     result = get_crypto_inventory(request, sbom_id)
     if not result.ok:
         return result.status_code or 400, {"detail": result.error or "Invalid request"}
@@ -927,15 +945,19 @@ def download_cipher_suite_inventory_csv(request: HttpRequest, sbom_id: str) -> A
         view = asset.get("protocol_view")
         if not view:
             continue
-        base = [asset.get("name") or "", view.get("type") or "", view.get("version") or ""]
+        base = [
+            csv_safe(asset.get("name") or ""),
+            csv_safe(view.get("type") or ""),
+            csv_safe(view.get("version") or ""),
+        ]
         if view.get("weak_version"):
             writer.writerow(base + ["", "", "yes", view["weak_version"]])
         for suite in view.get("cipher_suites", []):
             writer.writerow(
                 base
                 + [
-                    suite.get("name") or "",
-                    " ".join(suite.get("identifiers") or []),
+                    csv_safe(suite.get("name") or ""),
+                    csv_safe(" ".join(suite.get("identifiers") or [])),
                     "yes" if suite.get("weaknesses") else "no",
                     "; ".join(suite.get("weaknesses") or []),
                 ]
@@ -1328,6 +1350,7 @@ def sbom_upload_file(
             # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
             if "bom_type" not in request.GET and _is_cbom(sbom_data):
                 bom_type = "cbom"
+            sbom_dict["has_crypto_assets"] = _contains_crypto_assets(sbom_data)
 
             # Extract PURL qualifiers from metadata.component.purl
             cdx_purl = _extract_cdx_purl(cdx_payload)

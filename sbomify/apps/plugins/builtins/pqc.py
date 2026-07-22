@@ -82,6 +82,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             category=AssessmentCategory.COMPLIANCE,
             scan_mode=ScanMode.ONE_SHOT,
             supported_bom_types=["cbom", "sbom"],
+            requires_crypto_assets=True,
         )
 
     def assess(
@@ -114,19 +115,34 @@ class PqcReadinessPlugin(AssessmentPlugin):
         if certificates:
             metadata["certificates"] = certificates
         if not findings:
-            # A crypto-free document is "nothing to assess", not a warning —
-            # this plugin also runs on ordinary SBOMs, and most contain no
-            # crypto assets. Skipped results are filtered from posture rollups.
-            findings = [
-                Finding(
-                    id=f"{_PLUGIN_NAME}:no-assets",
-                    title="No cryptographic assets found",
-                    description="This document declares no crypto-asset components; nothing to assess.",
-                    status="info",
-                    severity="info",
-                )
-            ]
-            metadata["skipped"] = True
+            # A crypto-free ordinary SBOM is "nothing to assess" (most SBOMs
+            # carry no crypto), so it skips quietly. An artifact explicitly
+            # tagged cbom that declares zero crypto assets is a generator
+            # misfire and must stay visible as a warning.
+            from sbomify.apps.sboms.models import SBOM as SBOMModel
+
+            bom_type = SBOMModel.objects.filter(pk=sbom_id).values_list("bom_type", flat=True).first()
+            if bom_type == SBOMModel.BomType.CBOM:
+                findings = [
+                    Finding(
+                        id=f"{_PLUGIN_NAME}:no-assets",
+                        title="No cryptographic assets found",
+                        description=("This CBOM declares no crypto-asset components; the generator may have misfired."),
+                        status="warning",
+                        severity="medium",
+                    )
+                ]
+            else:
+                findings = [
+                    Finding(
+                        id=f"{_PLUGIN_NAME}:no-assets",
+                        title="No cryptographic assets found",
+                        description="This document declares no crypto-asset components; nothing to assess.",
+                        status="info",
+                        severity="info",
+                    )
+                ]
+                metadata["skipped"] = True
 
         return AssessmentResult(
             plugin_name=_PLUGIN_NAME,

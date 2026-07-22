@@ -124,7 +124,7 @@ class PluginOrchestrator:
                 other orchestration errors occur.
         """
         # Verify SBOM exists and fetch bom_type in a single query (reused later via sbom_id)
-        sbom_instance_check = SBOM.objects.filter(id=sbom_id).only("id", "bom_type").first()
+        sbom_instance_check = SBOM.objects.filter(id=sbom_id).only("id", "bom_type", "has_crypto_assets").first()
         if sbom_instance_check is None:
             raise PluginOrchestratorError(f"SBOM '{sbom_id}' not found - it may have been deleted")
 
@@ -136,6 +136,12 @@ class PluginOrchestrator:
                 f"[PLUGIN] Skipping plugin '{metadata.name}' for SBOM {sbom_id}: "
                 f"bom_type '{sbom_instance_check.bom_type}' not in supported types {supported}"
             )
+            return None
+        # Crypto-gated plugins skip dispatch when upload determined the document
+        # holds no crypto assets. None (pre-field rows) still runs — unknown is
+        # not a reason to skip.
+        if metadata.requires_crypto_assets and sbom_instance_check.has_crypto_assets is False:
+            logger.info(f"[PLUGIN] Skipping plugin '{metadata.name}' for SBOM {sbom_id}: document has no crypto assets")
             return None
         config_hash = compute_config_hash(plugin.config)
 

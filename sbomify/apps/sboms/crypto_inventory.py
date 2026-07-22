@@ -260,39 +260,67 @@ def _extract_edges(candidates: list[dict[str, Any]], assets: tuple[CryptoAsset, 
     return tuple(edges)
 
 
+CERT_EXPIRING_SOON_DAYS = 90
+
+
+def parse_cert_datetime(raw: Any) -> datetime | None:
+    """Parse a CycloneDX certificate timestamp (datetime or bare date), UTC-aware.
+
+    The one parser both the per-certificate view and the fleet rollup use, so
+    the two surfaces can never disagree about the same certificate.
+    """
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def cert_expiry_state(raw: Any, now: datetime) -> tuple[int | None, bool, bool]:
+    """``(days_to_expiry, expired, expiring_soon)`` for a notValidAfter value."""
+    parsed = parse_cert_datetime(raw)
+    if parsed is None:
+        return None, False, False
+    days = (parsed - now).days
+    return days, days < 0, 0 <= days <= CERT_EXPIRING_SOON_DAYS
+
+
 def certificate_expiry_summary(inventory: CryptoInventory, now: datetime | None = None) -> dict[str, Any] | None:
-    """Expiry rollup over certificate assets: counts plus the soonest notValidAfter.
+    """Expiry rollup over certificate assets: counts, the soonest notValidAfter,
+    and the raw expiry dates.
 
     Persisted into PQC AssessmentRun metadata so fleet views can aggregate
-    certificate posture without re-reading artifacts. ``None`` when the
-    inventory holds no certificates.
+    certificate posture without re-reading artifacts. The counts freeze at run
+    time; ``not_valid_after`` carries the dates so read-time consumers can
+    recompute a live countdown. ``None`` when the inventory holds no
+    certificates.
     """
     certs = [a for a in inventory.assets if a.asset_type == "certificate" and a.certificate]
     if not certs:
         return None
     now = now or datetime.now(timezone.utc)
     expired = expiring_soon = 0
+    dates: list[str] = []
     soonest: datetime | None = None
     for asset in certs:
         raw = (asset.certificate or {}).get("notValidAfter")
-        if not isinstance(raw, str):
+        parsed = parse_cert_datetime(raw)
+        if parsed is None:
             continue
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+        dates.append(parsed.isoformat())
         if soonest is None or parsed < soonest:
             soonest = parsed
-        days = (parsed - now).days
-        if days < 0:
+        _days, is_expired, is_expiring = cert_expiry_state(raw, now)
+        if is_expired:
             expired += 1
-        elif days <= 90:
+        elif is_expiring:
             expiring_soon += 1
     return {
         "count": len(certs),
         "expired": expired,
         "expiring_soon": expiring_soon,
         "soonest_not_valid_after": soonest.isoformat() if soonest else None,
+        "not_valid_after": dates,
     }

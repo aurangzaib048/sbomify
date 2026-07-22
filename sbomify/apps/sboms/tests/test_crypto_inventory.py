@@ -287,3 +287,21 @@ def test_related_asset_refs_resolve_to_edges():
     assert ("cert-1", "subjectPublicKey", "missing-key", False) in edges  # dangling ref stays visible
     assert ("proto-tls", "cryptoRef", "alg-rsa", True) in edges
     assert ("proto-tls", "algorithm", "alg-rsa", True) in edges  # 1.7 relatedCryptographicAssets
+
+
+def test_registry_build_tables_skips_malformed_entries():
+    from sbomify.apps.sboms.crypto_registry import build_tables
+
+    tables = build_tables(
+        {
+            "algorithms": [{"family": "AES"}, {"nofamily": True}, "junk"],
+            "ellipticCurves": [
+                {"name": "nist", "curves": [{"name": "P-256", "oid": "1.2.840.10045.3.1.7", "aliases": []}]},
+                {"name": "bad", "curves": [{"oid": "1.2.3"}, "junk", {"name": 42}]},
+                "junk",
+            ],
+        }
+    )
+    assert tables.family_by_name == {"aes": "AES"}
+    assert tables.curve_by_name["p-256"] == "nist/P-256"
+    assert tables.curve_by_oid == {"1.2.840.10045.3.1.7": "nist/P-256"}

@@ -11,11 +11,20 @@ stamps into run metadata.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, cast
+
+from django.core.cache import cache as django_cache
+from django.utils import timezone
 
 from sbomify.apps.core.models import Component
 from sbomify.apps.plugins.models import AssessmentRun
+from sbomify.apps.sboms.crypto_inventory import cert_expiry_state
 from sbomify.apps.sboms.models import SBOM
+
+# The rollup reads persisted runs only, so short caching just deduplicates
+# repeated page loads; certificate countdowns recompute from stored dates on
+# every build, so staleness is bounded by the TTL, not by scan recency.
+_CACHE_TTL_SECONDS = 120
 
 PQC_PLUGIN = "pqc-readiness"
 
@@ -34,14 +43,44 @@ def _newest_by_component(component_ids: list[str], bom_type: str) -> dict[str, s
     return {component_id: sbom_id for component_id, sbom_id in rows}
 
 
+def _live_cert_counts(certificates: dict[str, Any]) -> dict[str, Any]:
+    """Recompute expired/expiring from the stored expiry dates at read time.
+
+    The counts stamped into run metadata freeze at scan time; a countdown is
+    time-sensitive, so when the run recorded the raw dates recount them
+    against now. Runs predating the dates list keep their frozen counts.
+    """
+    dates = certificates.get("not_valid_after")
+    if not isinstance(dates, list) or not dates:
+        return certificates
+    now = timezone.now()
+    expired = expiring_soon = 0
+    for raw in dates:
+        _days, is_expired, is_expiring = cert_expiry_state(raw, now)
+        if is_expired:
+            expired += 1
+        elif is_expiring:
+            expiring_soon += 1
+    return {**certificates, "expired": expired, "expiring_soon": expiring_soon}
+
+
 def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
+    cache_key = f"workspace-crypto-rollup:{team_id}"
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return cast("dict[str, Any]", cached)
+
     components = list(Component.objects.filter(team_id=team_id).order_by("name").values("id", "name"))
     component_ids = [c["id"] for c in components]
     newest_cbom = _newest_by_component(component_ids, SBOM.BomType.CBOM)
     newest_sbom = _newest_by_component(component_ids, SBOM.BomType.SBOM)
     chosen = {c["id"]: newest_cbom.get(c["id"]) or newest_sbom.get(c["id"]) for c in components}
 
-    runs = (
+    # Two-step read keeps result blobs off the wire for skipped runs (the
+    # common case once the plugin runs on every SBOM): fetch lightweight
+    # metadata first, then the full result only for runs that assessed
+    # something.
+    run_meta = list(
         AssessmentRun.objects.filter(
             sbom_id__in=[sbom_id for sbom_id in chosen.values() if sbom_id],
             plugin_name=PQC_PLUGIN,
@@ -49,9 +88,21 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
         )
         .order_by("sbom_id", "-created_at")
         .distinct("sbom_id")
-        .values("sbom_id", "result", "created_at")
+        .values("id", "sbom_id", "result_skipped", "created_at")
     )
-    run_by_sbom = {str(run["sbom_id"]): run for run in runs}
+    blob_ids = [m["id"] for m in run_meta if m["result_skipped"] is not True]
+    blobs = (
+        {str(r["id"]): r["result"] for r in AssessmentRun.objects.filter(id__in=blob_ids).values("id", "result")}
+        if blob_ids
+        else {}
+    )
+    run_by_sbom = {
+        str(m["sbom_id"]): {
+            "result": blobs.get(str(m["id"]), {"metadata": {"skipped": True}}),
+            "created_at": m["created_at"],
+        }
+        for m in run_meta
+    }
 
     rows: list[dict[str, Any]] = []
     verdict_counts: Counter[str] = Counter()
@@ -92,6 +143,7 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
                             vulnerable_components.setdefault(name, set()).add(component["id"])
                 certificates = metadata.get("certificates")
                 if isinstance(certificates, dict):
+                    certificates = _live_cert_counts(certificates)
                     row["certificates"] = certificates
                     certs_total["expired"] += int(certificates.get("expired") or 0)
                     certs_total["expiring_soon"] += int(certificates.get("expiring_soon") or 0)
@@ -104,10 +156,12 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
         key=lambda entry: (-entry[1], entry[0]),
     )[:10]
     top_vulnerable = [{"name": name, "components": count} for name, count in ranked]
-    return {
+    rollup = {
         "rows": rows,
         "verdict_counts": dict(verdict_counts),
         "top_vulnerable": top_vulnerable,
         "certificates": certs_total,
         "has_crypto_data": any(r["verdict"] in ("at_risk", "needs_review", "ready") for r in rows),
     }
+    django_cache.set(cache_key, rollup, _CACHE_TTL_SECONDS)
+    return rollup

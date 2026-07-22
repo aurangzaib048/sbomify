@@ -135,12 +135,12 @@ def test_skips_on_uniqueness_collision(sample_component, mocker, enqueue):  # no
 
 
 @pytest.mark.django_db
-def test_untags_mixed_document_back_to_sbom(sample_component, mocker, enqueue):  # noqa: F811
-    """A mixed document re-tagged cbom under the old any-crypto rule converges back to sbom."""
+def test_untags_mixed_document_back_to_sbom_only_when_opted_in(sample_component, mocker, enqueue):  # noqa: F811
+    """Demotion overrides deliberately-set cbom tags, so it is opt-in via --demote-mixed."""
     mixed = _make_sbom(sample_component, "mixed", bom_type="cbom")
     mocker.patch(f"{CMD}.get_sbom_data", return_value=(mixed, MIXED_DATA))
 
-    call_command("backfill_cbom_retag")
+    call_command("backfill_cbom_retag", "--demote-mixed")
 
     mixed.refresh_from_db()
     assert mixed.bom_type == "sbom"
@@ -148,11 +148,37 @@ def test_untags_mixed_document_back_to_sbom(sample_component, mocker, enqueue): 
 
 
 @pytest.mark.django_db
+def test_default_run_never_demotes_cbom_rows(sample_component, mocker, enqueue):  # noqa: F811
+    """A tool-generated CBOM is mixed by construction; the default run must not touch it."""
+    mixed = _make_sbom(sample_component, "mixed", bom_type="cbom")
+    fetch = mocker.patch(f"{CMD}.get_sbom_data", return_value=(mixed, MIXED_DATA))
+
+    call_command("backfill_cbom_retag")
+
+    mixed.refresh_from_db()
+    assert mixed.bom_type == "cbom"
+    fetch.assert_not_called()  # cbom rows aren't even read without the flag
+
+
+@pytest.mark.django_db
+def test_forward_converted_rows_not_rescanned_by_reverse_pass(sample_component, mocker, enqueue):  # noqa: F811
+    """Candidate IDs snapshot before writes: a row converted forward is not re-read."""
+    pure = _make_sbom(sample_component, "pure")
+    fetch = mocker.patch(f"{CMD}.get_sbom_data", return_value=(pure, CBOM_DATA))
+
+    call_command("backfill_cbom_retag", "--demote-mixed")
+
+    pure.refresh_from_db()
+    assert pure.bom_type == "cbom"
+    assert fetch.call_count == 1  # forward read only; reverse snapshot predates the write
+
+
+@pytest.mark.django_db
 def test_untag_dry_run_writes_nothing(sample_component, mocker, enqueue):  # noqa: F811
     mixed = _make_sbom(sample_component, "mixed", bom_type="cbom")
     mocker.patch(f"{CMD}.get_sbom_data", return_value=(mixed, MIXED_DATA))
 
-    call_command("backfill_cbom_retag", "--dry-run")
+    call_command("backfill_cbom_retag", "--demote-mixed", "--dry-run")
 
     mixed.refresh_from_db()
     assert mixed.bom_type == "cbom"

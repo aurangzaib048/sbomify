@@ -759,3 +759,38 @@ class TestFinalizeRetryExhausted:
         orchestrator = PluginOrchestrator()
         result = orchestrator.finalize_retry_exhausted("00000000-0000-0000-0000-000000000000", "nope")
         assert result is None
+
+
+@pytest.mark.django_db
+class TestCryptoAssetGate:
+    """Crypto-gated plugins skip dispatch when the document holds no crypto assets."""
+
+    def _pqc_plugin(self):
+        from sbomify.apps.plugins.builtins.pqc import PqcReadinessPlugin
+
+        return PqcReadinessPlugin()
+
+    def test_skips_when_document_has_no_crypto_assets(self, test_sbom) -> None:
+        test_sbom.has_crypto_assets = False
+        test_sbom.save(update_fields=["has_crypto_assets"])
+
+        run = PluginOrchestrator().run_assessment(
+            sbom_id=test_sbom.id, plugin=self._pqc_plugin(), run_reason=RunReason.ON_UPLOAD
+        )
+
+        assert run is None
+
+    def test_runs_when_crypto_flag_unknown(self, test_sbom, mock_sbom_data, mocker) -> None:
+        # Rows predating the field (None) still run: unknown is not a skip reason.
+        mocker.patch(
+            "sbomify.apps.plugins.orchestrator.get_sbom_data_bytes",
+            return_value=(test_sbom, mock_sbom_data),
+        )
+        assert test_sbom.has_crypto_assets is None
+
+        run = PluginOrchestrator().run_assessment(
+            sbom_id=test_sbom.id, plugin=self._pqc_plugin(), run_reason=RunReason.ON_UPLOAD
+        )
+
+        assert run is not None
+        assert run.status == RunStatus.COMPLETED.value

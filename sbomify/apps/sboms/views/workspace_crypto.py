@@ -29,7 +29,10 @@ class WorkspaceCryptoView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
         except (ValueError, Team.DoesNotExist):
             return error_response(request, HttpResponseNotFound("Workspace not found"))
 
-        if not Member.objects.filter(user=cast(User, request.user), team=team).exists():
+        # Role check runs against the URL workspace, not the session's current
+        # team: GuestAccessBlockedMixin only inspects the session, so a guest
+        # of THIS workspace whose session points elsewhere would pass it.
+        if not Member.objects.filter(user=cast(User, request.user), team=team).exclude(role="guest").exists():
             return error_response(request, HttpResponseForbidden("Access denied"))
 
         rollup = build_workspace_crypto_rollup(team_id)

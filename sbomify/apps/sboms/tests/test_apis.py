@@ -3809,6 +3809,7 @@ def test_cyclonedx_upload_autodetects_cbom_bom_type(
     assert resp.status_code == 201
     sbom = SBOM.objects.get(id=resp.json()["id"])
     assert sbom.bom_type == "cbom"
+    assert sbom.has_crypto_assets is True
 
 
 @pytest.mark.django_db
@@ -3834,6 +3835,7 @@ def test_cyclonedx_upload_mixed_document_stays_sbom(
     assert resp.status_code == 201
     sbom = SBOM.objects.get(id=resp.json()["id"])
     assert sbom.bom_type == "sbom"
+    assert sbom.has_crypto_assets is True  # mixed doc: crypto present, tag stays sbom
 
 
 @pytest.mark.django_db
@@ -3859,6 +3861,7 @@ def test_cyclonedx_upload_non_crypto_stays_sbom(
     assert resp.status_code == 201
     sbom = SBOM.objects.get(id=resp.json()["id"])
     assert sbom.bom_type == "sbom"
+    assert sbom.has_crypto_assets is False
 
 
 @pytest.mark.django_db

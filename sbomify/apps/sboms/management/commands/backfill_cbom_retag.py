@@ -1,14 +1,22 @@
 """Converge stored CycloneDX bom_type tags on the pure-CBOM rule.
 
-Forward: sbom-typed rows whose document is a pure CBOM (``metadata.component``
-is a crypto asset, or every component is) re-tag to ``bom_type=cbom`` and get a
-PQC assessment enqueued. Reverse: cbom-typed rows whose document is mixed (a
-software SBOM with embedded crypto assets, re-tagged under the old any-crypto
-rule) re-tag back to ``bom_type=sbom`` so they rejoin ``latest_sbom`` and the
-NTIA and vulnerability pipelines; PQC keeps assessing them tag-independently.
+Forward (default): sbom-typed rows whose document is a pure CBOM
+(``metadata.component`` is a crypto asset, or every component is) re-tag to
+``bom_type=cbom`` and get a PQC assessment enqueued.
 
-Only the bom_type discriminator changes; the stored artifact bytes are never
-rewritten (ADR-004 immutability). Idempotent; use --dry-run to preview.
+Reverse (``--demote-mixed``, opt-in): cbom-typed rows whose document is mixed
+re-tag back to ``bom_type=sbom`` so they rejoin ``latest_sbom`` and the NTIA
+and vulnerability pipelines. Opt-in because the rows carry no tag provenance:
+a mixed document wrongly auto-tagged under the old any-crypto rule is
+indistinguishable from a real tool-generated CBOM (cdxgen, cbomkit output is
+mixed by construction) that an uploader tagged cbom deliberately — demotion
+would evict the latter from the release CBOM merge and TEA. Run it only when
+you know the workspace's cbom rows came from the old auto-detect.
+
+Candidate IDs for both directions snapshot before any write, so rows the
+forward pass converts are never re-read by the reverse pass and counters stay
+honest. Only the bom_type discriminator changes; the stored artifact bytes are
+never rewritten (ADR-004 immutability). Idempotent; use --dry-run to preview.
 
 Note: enqueue_assessment sends to the Dramatiq "plugins" queue, so a worker must
 be running for the AssessmentRun to materialize.
@@ -18,7 +26,6 @@ from typing import Any
 
 from django.core.management.base import BaseCommand
 from django.db import IntegrityError, transaction
-from django.db.models import QuerySet
 
 from sbomify.apps.plugins.models import AssessmentRun
 from sbomify.apps.plugins.sdk import RunReason
@@ -35,7 +42,18 @@ class Command(BaseCommand):
     def add_arguments(self, parser: Any) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Report what would change without writing.")
         parser.add_argument("--team-id", type=int, default=None, help="Limit to one workspace (Team pk).")
-        parser.add_argument("--limit", type=int, default=None, help="Process at most N candidates in total.")
+        parser.add_argument(
+            "--limit", type=int, default=None, help="Process at most N candidates in total across both directions."
+        )
+        parser.add_argument(
+            "--demote-mixed",
+            action="store_true",
+            help=(
+                "Also re-tag mixed cbom-typed rows back to sbom. This overrides deliberately-set cbom tags "
+                "(tool-generated CBOMs are mixed documents) — run only when the workspace's cbom rows are known "
+                "to come from the old any-crypto auto-detect."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         self.dry_run: bool = options["dry_run"]
@@ -46,8 +64,18 @@ class Command(BaseCommand):
         if options["team_id"] is not None:
             base = base.filter(component__team_id=options["team_id"])
 
-        self._pass(base.filter(bom_type=SBOM.BomType.SBOM), forward=True)
-        self._pass(base.filter(bom_type=SBOM.BomType.CBOM), forward=False)
+        # Snapshot both candidate sets before any write: the forward pass
+        # mutates bom_type, and a lazily-evaluated reverse queryset would
+        # re-read every row it just converted.
+        forward_ids = list(base.filter(bom_type=SBOM.BomType.SBOM).values_list("id", flat=True))
+        reverse_ids = (
+            list(base.filter(bom_type=SBOM.BomType.CBOM).values_list("id", flat=True))
+            if options["demote_mixed"]
+            else []
+        )
+
+        self._pass(forward_ids, forward=True)
+        self._pass(reverse_ids, forward=False)
 
         summary = (
             f"scanned={self.scanned} re-tagged-cbom={self.retagged} re-tagged-sbom={self.untagged} "
@@ -55,11 +83,10 @@ class Command(BaseCommand):
         )
         self.stdout.write(self.style.SUCCESS(summary + (" (dry-run)" if self.dry_run else "")))
 
-    def _pass(self, candidates: QuerySet[SBOM], *, forward: bool) -> None:
-        # Iterate IDs only (the SBOM instance comes from get_sbom_data, which already
-        # fetches it) so there's one DB read per row, not two. iterator() avoids caching
-        # the whole result set; limit is manual since slicing + iterator() are incompatible.
-        for sbom_id in candidates.values_list("id", flat=True).iterator(chunk_size=500):
+    def _pass(self, candidate_ids: list[str], *, forward: bool) -> None:
+        # IDs were snapshotted before any write; the SBOM instance comes from
+        # get_sbom_data, so there's one DB read per row.
+        for sbom_id in candidate_ids:
             if self.limit is not None and self.scanned >= self.limit:
                 return
             self.scanned += 1

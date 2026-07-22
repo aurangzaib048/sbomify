@@ -168,29 +168,15 @@ def _suite_weaknesses(name: str) -> list[str]:
     return sorted({reason for token, reason in _WEAK_SUITE_TOKENS.items() if token in tokens})
 
 
-def _parse_cdx_datetime(value: Any) -> Any:
-    from datetime import datetime, time
-    from datetime import timezone as tz
-
-    from django.utils.dateparse import parse_date, parse_datetime
-
-    if not isinstance(value, str):
-        return None
-    parsed = parse_datetime(value)
-    if parsed is None:
-        day = parse_date(value)
-        return datetime.combine(day, time.min, tzinfo=tz.utc) if day else None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz.utc)
-
-
 def _certificate_view(cert: dict[str, Any] | None) -> dict[str, Any] | None:
     """Interpreted certificate fields: validity window, expiry countdown, lifecycle states."""
     if not isinstance(cert, dict):
         return None
     from django.utils import timezone as django_timezone
 
-    not_after = _parse_cdx_datetime(cert.get("notValidAfter"))
-    days = (not_after - django_timezone.now()).days if not_after else None
+    from sbomify.apps.sboms.crypto_inventory import cert_expiry_state
+
+    days, expired, expiring_soon = cert_expiry_state(cert.get("notValidAfter"), django_timezone.now())
     states: list[str] = []
     raw_state = cert.get("certificateState")
     for item in raw_state if isinstance(raw_state, list) else [raw_state]:
@@ -208,8 +194,8 @@ def _certificate_view(cert: dict[str, Any] | None) -> dict[str, Any] | None:
         "not_after": cert.get("notValidAfter"),
         "states": states,
         "days_to_expiry": days,
-        "expired": days is not None and days < 0,
-        "expiring_soon": days is not None and 0 <= days <= 90,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
     }
 
 
@@ -293,6 +279,18 @@ def get_crypto_inventory(request: HttpRequest, sbom_id: str) -> ServiceResult[di
     if not sbom.sbom_filename:
         return ServiceResult.failure("SBOM file not found", status_code=404)
 
+    # The artifact is immutable (ADR-004), so the derived inventory is a pure
+    # function of the SBOM id: cache it after the per-request access check.
+    # Only the certificate expiry countdown is time-sensitive, and at day
+    # granularity a bounded TTL cannot change it. Bump the version key when
+    # the derivation shape changes.
+    from django.core.cache import cache as django_cache
+
+    cache_key = f"crypto-inventory:v1:{sbom.id}"
+    cached = django_cache.get(cache_key)
+    if cached is not None:
+        return ServiceResult.success(cached)
+
     try:
         raw = S3Client("SBOMS").get_sbom_data(sbom.sbom_filename)
     except (BotoCoreError, ClientError) as exc:
@@ -322,27 +320,27 @@ def get_crypto_inventory(request: HttpRequest, sbom_id: str) -> ServiceResult[di
 
     inventory = derive_crypto_inventory(document if isinstance(document, dict) else None)
     summary = assess_inventory(inventory)
-    return ServiceResult.success(
-        {
-            "sbom_id": str(sbom.id),
-            "component_id": str(sbom.component.id),
-            "count": inventory.count,
-            "by_asset_type": inventory.by_asset_type,
-            "edges": [
-                {"source": e.source, "relation": e.relation, "target": e.target, "resolved": e.resolved}
-                for e in inventory.edges
-            ],
-            "pqc_overall": summary.overall,
-            "pqc_counts": summary.counts,
-            "assets": [
-                {
-                    **_serialize_crypto_asset(result.asset),
-                    "pqc_status": result.assessment.status.value,
-                    "pqc_reason": result.assessment.reason,
-                    "pqc_data_quality_flag": result.assessment.data_quality_flag,
-                    "pqc_replacement": replacement_for(result.asset, result.assessment.status),
-                }
-                for result in summary.results
-            ],
-        }
-    )
+    payload = {
+        "sbom_id": str(sbom.id),
+        "component_id": str(sbom.component.id),
+        "count": inventory.count,
+        "by_asset_type": inventory.by_asset_type,
+        "edges": [
+            {"source": e.source, "relation": e.relation, "target": e.target, "resolved": e.resolved}
+            for e in inventory.edges
+        ],
+        "pqc_overall": summary.overall,
+        "pqc_counts": summary.counts,
+        "assets": [
+            {
+                **_serialize_crypto_asset(result.asset),
+                "pqc_status": result.assessment.status.value,
+                "pqc_reason": result.assessment.reason,
+                "pqc_data_quality_flag": result.assessment.data_quality_flag,
+                "pqc_replacement": replacement_for(result.asset, result.assessment.status),
+            }
+            for result in summary.results
+        ],
+    }
+    django_cache.set(cache_key, payload, 3600)
+    return ServiceResult.success(payload)

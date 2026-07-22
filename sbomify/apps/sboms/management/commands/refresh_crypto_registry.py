@@ -28,6 +28,12 @@ class Command(BaseCommand):
             raise CommandError(f"Registry response is not JSON: {exc}")
         if not isinstance(data, dict) or "algorithms" not in data or "ellipticCurves" not in data:
             raise CommandError("Registry response missing algorithms/ellipticCurves")
+        # Build the lookup tables from the candidate data before writing: a
+        # shape drift that would gut normalization is rejected here instead of
+        # being committed and discovered in production.
+        candidate = crypto_registry.build_tables(data)
+        if not candidate.curve_by_name or not candidate.family_by_name:
+            raise CommandError("Registry response produced empty lookup tables; refusing to overwrite vendored data")
 
         previous = crypto_registry.registry_last_updated()
         crypto_registry._DATA_PATH.write_bytes(raw)

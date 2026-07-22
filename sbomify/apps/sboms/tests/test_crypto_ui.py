@@ -168,3 +168,131 @@ def test_workspace_crypto_page_renders_and_gates(sample_sbom: SBOM, guest_user):
     outsider = Client()
     outsider.force_login(guest_user)
     assert outsider.get(url).status_code == 403
+
+
+def test_cert_expiry_state_accepts_date_only_values():
+    from ..crypto_inventory import cert_expiry_state
+
+    days, expired, expiring = cert_expiry_state("2030-01-01", timezone.now())
+    assert days is not None and days > 0 and not expired
+    _days, expired_past, _ = cert_expiry_state("2020-01-01", timezone.now())
+    assert expired_past
+
+
+@pytest.mark.django_db
+def test_cipher_suite_csv_neutralizes_formula_cells(sample_sbom: SBOM, mocker: MockerFixture):  # noqa: F811
+    doc = {
+        "specVersion": "1.6",
+        "components": [
+            {
+                "type": "cryptographic-asset",
+                "name": "=EVIL",
+                "cryptoProperties": {
+                    "assetType": "protocol",
+                    "protocolProperties": {
+                        "type": "tls",
+                        "version": "1.2",
+                        "cipherSuites": [{"name": '=HYPERLINK("https://evil","x")'}],
+                    },
+                },
+            }
+        ],
+    }
+    import json as jsonlib
+
+    mocker.patch(_S3_TARGET).return_value.get_sbom_data.return_value = jsonlib.dumps(doc).encode()
+    client = Client()
+    team = sample_sbom.component.team
+    setup_test_session(client, team, team.members.first())
+
+    response = client.get(reverse("api-1:download_cipher_suite_inventory_csv", kwargs={"sbom_id": sample_sbom.id}))
+
+    body = response.content.decode()
+    assert "'=HYPERLINK" in body  # formula trigger neutralized with a leading quote
+    assert "'=EVIL" in body
+    assert "\n=" not in body and not body.startswith("=")
+
+
+@pytest.mark.django_db
+def test_crypto_endpoints_return_declared_503_on_storage_outage(sample_sbom: SBOM, mocker: MockerFixture):  # noqa: F811
+    from botocore.exceptions import ClientError
+
+    error = ClientError({"Error": {"Code": "ServiceUnavailable"}}, "GetObject")
+    mocker.patch(_S3_TARGET).return_value.get_sbom_data.side_effect = error
+    client = Client()
+    team = sample_sbom.component.team
+    setup_test_session(client, team, team.members.first())
+
+    csv_response = client.get(
+        reverse("api-1:download_cipher_suite_inventory_csv", kwargs={"sbom_id": sample_sbom.id})
+    )
+    assert csv_response.status_code == 503
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_page_blocks_guests_of_url_workspace(sample_sbom: SBOM, guest_user):  # noqa: F811
+    """The session-based guest mixin can be sidestepped; the view must check the
+    member's role against the URL workspace itself."""
+    from sbomify.apps.teams.models import Member
+
+    team = sample_sbom.component.team
+    Member.objects.create(user=guest_user, team=team, role="guest")
+    guest = Client()
+    guest.force_login(guest_user)
+
+    # The session-team path is covered by GuestAccessBlockedMixin (redirect).
+    same_team_session = guest.get(reverse("sboms:workspace_crypto", kwargs={"team_key": team.key}))
+    assert same_team_session.status_code == 302
+
+    # The bypass: session's current team unset (or another workspace) makes the
+    # mixin a no-op; the view's own role check must still reject the guest.
+    session = guest.session
+    session["current_team"] = {}
+    session.save()
+    response = guest.get(reverse("sboms:workspace_crypto", kwargs={"team_key": team.key}))
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_workspace_rollup_recomputes_cert_expiry_at_read_time(sample_sbom: SBOM):  # noqa: F811
+    """Frozen counts said healthy at scan time; the stored dates say expired now."""
+    from datetime import timedelta
+
+    from sbomify.apps.plugins.models import AssessmentRun
+    from sbomify.apps.plugins.sdk import RunReason
+
+    from ..services.crypto_dashboard import build_workspace_crypto_rollup
+
+    sample_sbom.bom_type = SBOM.BomType.CBOM
+    sample_sbom.save(update_fields=["bom_type"])
+    past = (timezone.now() - timedelta(days=5)).isoformat()
+    AssessmentRun.objects.create(
+        sbom=sample_sbom,
+        plugin_name="pqc-readiness",
+        plugin_version="1.0",
+        plugin_config_hash="x",
+        category="compliance",
+        status="completed",
+        run_reason=RunReason.MANUAL.value,
+        result={
+            "metadata": {
+                "pqc_overall": "ready",
+                "certificates": {
+                    "count": 1,
+                    "expired": 0,
+                    "expiring_soon": 0,
+                    "soonest_not_valid_after": past,
+                    "not_valid_after": [past],
+                },
+            },
+            "findings": [{"title": "AES-256 — Quantum-safe", "metadata": {"pqc_status": "quantum_safe"}}],
+        },
+    )
+    from django.core.cache import cache as django_cache
+
+    django_cache.clear()
+
+    rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
+
+    assert rollup["certificates"]["expired"] == 1  # recomputed live, not the frozen 0
