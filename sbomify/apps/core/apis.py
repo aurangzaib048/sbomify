@@ -4080,11 +4080,19 @@ def list_component_sboms(
     page: int = Query(1),  # type: ignore[type-arg]
     page_size: int = Query(15),  # type: ignore[type-arg]
     include_all_types: bool = Query(False),  # type: ignore[type-arg]
+    version: str | None = None,
+    format: str | None = None,
 ) -> Any:
     """List a component's artifacts with pagination.
 
     SBOMs only by default; ``include_all_types`` also returns VEX, CBOM and any
     other bom types so the merged "Artifacts & security" table can list them.
+
+    Optional `version` and `format` query parameters narrow the result to
+    exact matches (no prefix or fuzzy matching — 'v1.2.3' and '1.2.3' are
+    distinct versions). Filters are applied before pagination, so a filtered
+    miss returns an empty first page and a hit returns the newest match first.
+    Omitting both parameters returns the full, unfiltered listing.
     """
     try:
         component = Component.objects.get(pk=component_id)
@@ -4140,6 +4148,10 @@ def list_component_sboms(
             sboms_queryset = SBOM.objects.filter(component_id=component_id)
             if not include_all_types:
                 sboms_queryset = sboms_queryset.filter(bom_type=SBOM.BomType.SBOM)
+            if version is not None:
+                sboms_queryset = sboms_queryset.filter(version=version)
+            if format is not None:
+                sboms_queryset = sboms_queryset.filter(format=format)
             sboms_queryset = sboms_queryset.order_by("-created_at")
             # Apply pagination
             paginated_sboms, pagination_meta = _paginate_queryset(sboms_queryset, page, page_size)
