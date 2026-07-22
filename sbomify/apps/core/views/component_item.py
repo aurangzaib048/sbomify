@@ -239,12 +239,25 @@ class ComponentItemView(GuestAccessBlockedMixin, LoginRequiredMixin, View):
                 )
                 merged = merge_findings_by_alias([result for _, result in provider_runs])
                 rows = extract_finding_rows(merged, load_vex_suppressions(component_id_from_item))
+                if rows:
+                    counts = {
+                        "total": len(rows),
+                        "critical": sum(1 for row in rows if row["severity"] == "critical"),
+                        "high": sum(1 for row in rows if row["severity"] == "high"),
+                        "medium": sum(1 for row in rows if row["severity"] == "medium"),
+                        "low": sum(1 for row in rows if row["severity"] == "low"),
+                    }
+                else:
+                    # Summary-only results (no findings list) still carry counts.
+                    from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
+
+                    counts = max(
+                        (extract_severity_counts(result) for _, result in provider_runs),
+                        key=lambda c: c["total"],
+                        default={"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+                    )
                 vulnerability_summary = {
-                    "total": len(rows),
-                    "critical": sum(1 for row in rows if row["severity"] == "critical"),
-                    "high": sum(1 for row in rows if row["severity"] == "high"),
-                    "medium": sum(1 for row in rows if row["severity"] == "medium"),
-                    "low": sum(1 for row in rows if row["severity"] == "low"),
+                    **counts,
                     "provider": ", ".join(sorted({name for name, _ in provider_runs})),
                     "scan_date": latest_scan.created_at,
                 }

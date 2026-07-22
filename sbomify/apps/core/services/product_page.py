@@ -79,9 +79,19 @@ def build_product_components_rows(product_id: str) -> dict[str, Any]:
                 # object reads just to annotate empty lists.
                 statements = load_vex_suppressions(component["id"], cache=vex_cache) if merged["findings"] else []
                 findings = extract_finding_rows(merged, statements)
-                counts = {"total": len(findings)}
+                if findings:
+                    counts = {"total": len(findings)}
+                    for severity in _SEVERITIES:
+                        counts[severity] = sum(1 for f in findings if f["severity"] == severity)
+                else:
+                    # Summary-only results (no findings list) still carry counts.
+                    from sbomify.apps.vulnerability_scanning.utils import extract_severity_counts
+
+                    counts = max(
+                        (extract_severity_counts(result) for result in provider_results),
+                        key=lambda c: c["total"],
+                    )
                 for severity in _SEVERITIES:
-                    counts[severity] = sum(1 for f in findings if f["severity"] == severity)
                     rollup[severity] += counts[severity]
                 rollup["total"] += counts["total"]
                 row["vuln"] = counts

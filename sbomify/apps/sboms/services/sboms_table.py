@@ -72,13 +72,23 @@ def _attach_vulnerability_counts(sbom_items: list[dict[str, Any]], component_id:
             item["vuln"] = None
             continue
         rows = extract_finding_rows(merge_findings_by_alias(provider_results), vex_statements)
-        item["vuln"] = {
-            "total": len(rows),
-            "critical": sum(1 for row in rows if row["severity"] == "critical"),
-            "high": sum(1 for row in rows if row["severity"] == "high"),
-            "medium": sum(1 for row in rows if row["severity"] == "medium"),
-            "low": sum(1 for row in rows if row["severity"] == "low"),
-        }
+        if rows:
+            item["vuln"] = {
+                "total": len(rows),
+                "critical": sum(1 for row in rows if row["severity"] == "critical"),
+                "high": sum(1 for row in rows if row["severity"] == "high"),
+                "medium": sum(1 for row in rows if row["severity"] == "medium"),
+                "low": sum(1 for row in rows if row["severity"] == "low"),
+            }
+        else:
+            # A result can carry a summary but no findings list (summary-only
+            # providers, legacy blobs). Fall back to the stored summary — the
+            # same fallback the header badge uses — so the row never reads
+            # "Clean" while the badge shows counts.
+            item["vuln"] = max(
+                (extract_severity_counts(result) for result in provider_results),
+                key=lambda c: c["total"],
+            )
 
 
 def _summary_artifacts(sbom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
