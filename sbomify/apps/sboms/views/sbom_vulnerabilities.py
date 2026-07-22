@@ -65,6 +65,42 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
                 }
 
                 severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+                def package_identity(component: dict[str, Any]) -> tuple[str, str, str, str, str]:
+                    """(tail_key, purl_base, name, version, ecosystem) for a finding's component."""
+                    package_name = component.get("name", "Unknown Package")
+                    package_version = component.get("version", "Unknown Version")
+                    package_ecosystem = component.get("ecosystem", "Unknown")
+                    purl = component.get("purl", "") or ""
+                    if (not package_ecosystem or package_ecosystem in ["Unknown", "unknown"]) and purl.startswith(
+                        "pkg:"
+                    ):
+                        try:
+                            package_ecosystem = purl.split(":")[1].split("/")[0]
+                        except (IndexError, AttributeError):
+                            package_ecosystem = "Unknown"
+                    artifact = package_name.split(":")[-1]
+                    tail_key = f"{artifact}:{package_version}:{package_ecosystem}".lower()
+                    purl_base = purl.split("?")[0].lower() if purl.startswith("pkg:") else ""
+                    return tail_key, purl_base, package_name, package_version, package_ecosystem
+
+                # Pre-scan the purl namespaces per artifact-tail key. Providers
+                # name the same package differently (OSV "group:artifact", DT
+                # just "artifact"), so rows merge on the artifact tail — but two
+                # DISTINCT packages can share a tail (two Maven groupIds with
+                # the same artifact and version). The purl base disambiguates:
+                # distinct bases split into separate rows, and a purl-less row
+                # joins the tail's single purl-carrying group when exactly one
+                # exists (the unambiguous cross-provider case).
+                purl_bases_by_tail: dict[str, set[str]] = {}
+                for run in provider_runs:
+                    for vuln in (run.result or {}).get("findings") or []:
+                        if not isinstance(vuln, dict):
+                            continue
+                        tail_key, purl_base, *_ = package_identity(vuln.get("component", {}) or {})
+                        if purl_base:
+                            purl_bases_by_tail.setdefault(tail_key, set()).add(purl_base)
+
                 # One merged view across every provider's latest run: providers
                 # report the same issue under different ids (DT: CVE, OSV: GHSA
                 # with the CVE as alias), so findings sharing any id/alias fold
@@ -77,22 +113,13 @@ class SbomVulnerabilitiesView(GuestAccessBlockedMixin, LoginRequiredMixin, View)
 
                     for vuln in findings:
                         component = vuln.get("component", {}) or {}
-                        package_name = component.get("name", "Unknown Package")
-                        package_version = component.get("version", "Unknown Version")
-                        package_ecosystem = component.get("ecosystem", "Unknown")
-                        if not package_ecosystem or package_ecosystem in ["Unknown", "unknown"]:
-                            purl = component.get("purl", "")
-                            if purl and purl.startswith("pkg:"):
-                                try:
-                                    package_ecosystem = purl.split(":")[1].split("/")[0]
-                                except (IndexError, AttributeError):
-                                    package_ecosystem = "Unknown"
-
-                        # Providers name the same package differently (OSV uses
-                        # "group:artifact", DT just "artifact"); key on the
-                        # artifact tail so their rows merge.
-                        artifact = package_name.split(":")[-1]
-                        package_key = f"{artifact}:{package_version}:{package_ecosystem}".lower()
+                        tail_key, purl_base, package_name, package_version, package_ecosystem = package_identity(
+                            component
+                        )
+                        known_bases = purl_bases_by_tail.get(tail_key, set())
+                        if not purl_base and len(known_bases) == 1:
+                            purl_base = next(iter(known_bases))
+                        package_key = f"{tail_key}|{purl_base}" if purl_base else tail_key
 
                         entry = packages_dict.setdefault(
                             package_key,
