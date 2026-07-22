@@ -2222,20 +2222,23 @@ _SBOM_UNIQUE_CONSTRAINT = "sboms_sbom_unique_component_version_format_qualifiers
 
 
 def _is_cbom(sbom_data: dict[str, Any]) -> bool:
-    """True when a CycloneDX document declares crypto-asset content (a CBOM).
+    """True when a CycloneDX document is a *pure* CBOM: its
+    ``metadata.component`` is a crypto asset, or every entry in a non-empty
+    ``components`` array is one (lineage-aware via ``is_crypto_asset``).
 
-    Checks both the top-level ``components`` array and ``metadata.component``
-    (which is itself a Component and may carry the crypto indicators on its
-    own), with the same lineage-aware predicate the inventory derives from, so
-    a document detected here always yields a non-empty inventory.
+    Mixed documents — a software SBOM that happens to embed some crypto
+    assets — deliberately stay ``bom_type=sbom``: re-tagging them used to
+    drop NTIA and vulnerability assessment. Crypto inventory and PQC
+    assessment run on any artifact whose document contains crypto assets,
+    independent of this tag, so a mixed document gets both pipelines.
     """
     from sbomify.apps.sboms.crypto_inventory import is_crypto_asset
 
-    components = sbom_data.get("components")
-    if isinstance(components, list) and any(is_crypto_asset(c) for c in components):
-        return True
     metadata = sbom_data.get("metadata")
-    return isinstance(metadata, dict) and is_crypto_asset(metadata.get("component"))
+    if isinstance(metadata, dict) and is_crypto_asset(metadata.get("component")):
+        return True
+    components = sbom_data.get("components")
+    return isinstance(components, list) and bool(components) and all(is_crypto_asset(c) for c in components)
 
 
 def _is_duplicate_integrity_error(exc: IntegrityError) -> bool:

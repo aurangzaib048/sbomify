@@ -71,10 +71,10 @@ def test_1_7_field_aliases_elliptic_curve_and_family():
     inv = derive_crypto_inventory(_load("cbom_sample_1.7.cdx.json"))
     assert inv.count == 2
     ecdsa = _by_name(inv, "ECDSA-P384")
-    assert ecdsa.curve == "secp384r1"  # 1.7 uses ellipticCurve
-    assert ecdsa.algorithm_family == "ecdsa"
+    assert ecdsa.curve == "nist/P-384"  # 1.7 uses ellipticCurve (registry-namespaced)
+    assert ecdsa.algorithm_family == "ECDSA"
     mldsa = _by_name(inv, "ML-DSA-65")
-    assert mldsa.algorithm_family == "ml-dsa"
+    assert mldsa.algorithm_family == "ML-DSA"
     assert mldsa.primitive == "signature"
 
 
@@ -158,14 +158,20 @@ def test_metadata_component_crypto_asset_is_inventoried():
 
 
 def test_detection_and_inventory_agree_on_every_lineage():
-    """A document detected as a CBOM must never inventory empty: upload
-    auto-detect and derivation share one predicate across all lineages."""
+    """Every lineage inventories non-empty; only pure CBOMs re-tag. A document
+    tagged cbom therefore never renders an empty inventory, and mixed
+    documents keep their sbom pipelines while still deriving crypto."""
     from sbomify.apps.sboms.utils import _is_cbom
 
     for fixture in ("cbom_sample_legacy_1.0.cdx.json", "cbom_sample_1.6.cdx.json", "cbom_sample_1.7.cdx.json"):
-        doc = _load(fixture)
-        assert _is_cbom(doc), fixture
-        assert derive_crypto_inventory(doc).count > 0, fixture
+        assert derive_crypto_inventory(_load(fixture)).count > 0, fixture
+    assert _is_cbom(_load("cbom_sample_1.7.cdx.json"))  # every component crypto -> pure
+    assert not _is_cbom(_load("cbom_sample_1.6.cdx.json"))  # left-pad rides along -> mixed, stays sbom
+    assert not _is_cbom(_load("cbom_sample_legacy_1.0.cdx.json"))  # legacy doc is mixed too
+    # A pure CBOM whose sole crypto asset is metadata.component still re-tags.
+    meta_only = {"metadata": {"component": {"type": "crypto-asset", "cryptoProperties": {"assetType": "algorithm"}}}}
+    assert _is_cbom(meta_only)
+    assert derive_crypto_inventory(meta_only).count == 1
     plain = _load("sbomify_syft.cdx.json")
     assert not _is_cbom(plain)
     assert derive_crypto_inventory(plain).count == 0

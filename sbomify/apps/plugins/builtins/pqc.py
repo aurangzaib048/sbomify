@@ -5,9 +5,13 @@ app) to the ADR-003 assessment framework: it reads the immutable artifact the
 orchestrator hands it, derives the cryptographic-asset inventory, classifies
 each asset's post-quantum readiness, and emits one compliance Finding per asset.
 
-Gated to ``supported_bom_types=["cbom"]`` — every other builtin pins ``["sbom"]``,
-so CBOM artifacts trigger no assessments without this. Results persist as
-immutable ``AssessmentRun`` records and render in the existing compliance card.
+Runs on ``supported_bom_types=["cbom", "sbom"]``: pure CBOMs and ordinary
+software SBOMs with embedded crypto assets both get a PQC verdict (mixed
+documents keep ``bom_type=sbom`` so they retain NTIA and vulnerability
+assessment). A document with no crypto assets returns a result flagged
+``metadata={"skipped": True}`` so crypto-free SBOMs don't accumulate warning
+findings. Results persist as immutable ``AssessmentRun`` records and render in
+the existing compliance card.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             version=self.VERSION,
             category=AssessmentCategory.COMPLIANCE,
             scan_mode=ScanMode.ONE_SHOT,
-            supported_bom_types=["cbom"],
+            supported_bom_types=["cbom", "sbom"],
         )
 
     def assess(
@@ -99,16 +103,26 @@ class PqcReadinessPlugin(AssessmentPlugin):
 
         summary = assess_inventory(derive_crypto_inventory(document))
         findings = [self._finding(index, result) for index, result in enumerate(summary.results)]
+        metadata: dict[str, Any] = {
+            "standard_name": self.STANDARD_NAME,
+            "standard_version": self.STANDARD_VERSION,
+            "standard_url": self.STANDARD_URL,
+            "pqc_overall": summary.overall,
+        }
         if not findings:
+            # A crypto-free document is "nothing to assess", not a warning —
+            # this plugin also runs on ordinary SBOMs, and most contain no
+            # crypto assets. Skipped results are filtered from posture rollups.
             findings = [
                 Finding(
                     id=f"{_PLUGIN_NAME}:no-assets",
                     title="No cryptographic assets found",
-                    description="This CBOM declares no cryptographic-asset components to assess.",
-                    status="warning",
-                    severity="medium",
+                    description="This document declares no crypto-asset components; nothing to assess.",
+                    status="info",
+                    severity="info",
                 )
             ]
+            metadata["skipped"] = True
 
         return AssessmentResult(
             plugin_name=_PLUGIN_NAME,
@@ -117,12 +131,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             assessed_at=datetime.now(timezone.utc).isoformat(),
             summary=self._summary(findings),
             findings=findings,
-            metadata={
-                "standard_name": self.STANDARD_NAME,
-                "standard_version": self.STANDARD_VERSION,
-                "standard_url": self.STANDARD_URL,
-                "pqc_overall": summary.overall,
-            },
+            metadata=metadata,
         )
 
     def _finding(self, index: int, result: PqcResult) -> Finding:
