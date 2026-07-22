@@ -116,3 +116,56 @@ def test_malformed_field_types_never_raise_and_stay_schema_clean():
     assert asset.primitive is None  # list dropped
     assert asset.parameter_set == "768"  # scalar coerced to str
     assert all(isinstance(f, str) for f in asset.crypto_functions)
+
+
+def test_derives_from_legacy_ibm_cbom_1_0():
+    """The pre-standard IBM CBOM lineage (CycloneDX 1.4 fork, ``crypto-asset``
+    type, ``variant``/``implementationLevel`` spellings, root-level security
+    levels) inventories with its fields mapped onto the 1.6 projection."""
+    inv = derive_crypto_inventory(_load("cbom_sample_legacy_1.0.cdx.json"))
+    assert inv.count == 2  # the plain library and the non-crypto metadata.component are excluded
+    aes = _by_name(inv, "AES")
+    assert aes.asset_type == "algorithm"
+    assert aes.parameter_set == "AES-128-GCM"  # legacy "variant"
+    assert aes.execution_environment == "softwarePlainRam"  # legacy "implementationLevel"
+    assert aes.classical_security_level == 128  # legacy root-level placement
+    assert aes.nist_quantum_security_level == 1
+    assert aes.mode == "gcm"
+    dilithium = _by_name(inv, "Dilithium")
+    assert dilithium.primitive == "signature"
+    assert dilithium.nist_quantum_security_level == 5
+
+
+def test_untyped_component_with_crypto_properties_is_included():
+    doc = {"components": [{"type": "library", "name": "openssl-shim", "cryptoProperties": {"assetType": "algorithm"}}]}
+    inv = derive_crypto_inventory(doc)
+    assert inv.count == 1
+    assert inv.assets[0].asset_type == "algorithm"
+
+
+def test_metadata_component_crypto_asset_is_inventoried():
+    meta_asset = {
+        "type": "cryptographic-asset",
+        "bom-ref": "root-alg",
+        "name": "RootAlg",
+        "cryptoProperties": {"assetType": "algorithm"},
+    }
+    doc = {"metadata": {"component": meta_asset}, "components": []}
+    assert derive_crypto_inventory(doc).count == 1
+    # Listed again under components with the same bom-ref -> not double-counted.
+    doc["components"] = [dict(meta_asset)]
+    assert derive_crypto_inventory(doc).count == 1
+
+
+def test_detection_and_inventory_agree_on_every_lineage():
+    """A document detected as a CBOM must never inventory empty: upload
+    auto-detect and derivation share one predicate across all lineages."""
+    from sbomify.apps.sboms.utils import _is_cbom
+
+    for fixture in ("cbom_sample_legacy_1.0.cdx.json", "cbom_sample_1.6.cdx.json", "cbom_sample_1.7.cdx.json"):
+        doc = _load(fixture)
+        assert _is_cbom(doc), fixture
+        assert derive_crypto_inventory(doc).count > 0, fixture
+    plain = _load("sbomify_syft.cdx.json")
+    assert not _is_cbom(plain)
+    assert derive_crypto_inventory(plain).count == 0

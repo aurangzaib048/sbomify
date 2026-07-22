@@ -9,19 +9,40 @@ copy to keep in sync.
 
 ``derive_crypto_inventory`` is a pure function over the parsed JSON: it filters
 the crypto-asset components and projects the PQC-relevant fields into plain
-dataclasses. It tolerates both CycloneDX 1.6 and 1.7 field spellings (1.7
-renamed ``curve`` -> ``ellipticCurve`` and added ``algorithmFamily``) and
-malformed/partial entries. It does not validate the document — callers upload
-through the schema validator; this only reads.
+dataclasses. It tolerates every CBOM lineage: the legacy IBM CBOM 1.0
+CycloneDX-1.4 fork (``type == "crypto-asset"``; ``variant`` and
+``implementationLevel`` spellings; security levels at the ``cryptoProperties``
+root), CycloneDX 1.6, and 1.7 (``curve`` -> ``ellipticCurve``, added
+``algorithmFamily``), plus malformed/partial entries. It does not validate the
+document — callers upload through the schema validator; this only reads.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard
 
 CRYPTO_ASSET_TYPE = "cryptographic-asset"
+# The pre-standard IBM CBOM lineage (a CycloneDX 1.4 fork) that older
+# CBOMkit / sonar-cryptography releases emitted; upstreamed into 1.6 as
+# ``cryptographic-asset``.
+LEGACY_CRYPTO_ASSET_TYPE = "crypto-asset"
+_CRYPTO_ASSET_TYPES = frozenset({CRYPTO_ASSET_TYPE, LEGACY_CRYPTO_ASSET_TYPE})
+
+
+def is_crypto_asset(component: Any) -> TypeGuard[dict[str, Any]]:
+    """True when a component is a cryptographic asset in any CBOM lineage:
+    typed as one, or carrying a ``cryptoProperties`` object.
+
+    The one predicate shared by upload auto-detect, the CBOM backfill command,
+    and inventory derivation. The sides must never diverge: a document detected
+    as a CBOM by one predicate but inventoried by a stricter one renders a
+    CBOM page with an empty inventory.
+    """
+    return isinstance(component, dict) and (
+        component.get("type") in _CRYPTO_ASSET_TYPES or "cryptoProperties" in component
+    )
 
 
 @dataclass(frozen=True)
@@ -105,6 +126,10 @@ def _str_tuple(value: Any) -> tuple[str, ...]:
 def _project_asset(component: dict[str, Any]) -> CryptoAsset:
     crypto = _dict_or_none(component.get("cryptoProperties")) or {}
     algo = _dict_or_none(crypto.get("algorithmProperties")) or {}
+    # Legacy IBM CBOM 1.0 spellings: ``variant`` (renamed
+    # ``parameterSetIdentifier`` in 1.6), ``implementationLevel`` (renamed
+    # ``executionEnvironment``), and security levels on the cryptoProperties
+    # root rather than inside algorithmProperties.
     return CryptoAsset(
         name=_str_or_none(component.get("name")),
         bom_ref=_str_or_none(component.get("bom-ref")),
@@ -112,14 +137,16 @@ def _project_asset(component: dict[str, Any]) -> CryptoAsset:
         asset_type=_str_or_none(crypto.get("assetType")),
         primitive=_str_or_none(algo.get("primitive")),
         algorithm_family=_str_or_none(algo.get("algorithmFamily")),
-        parameter_set=_str_or_none(algo.get("parameterSetIdentifier")),
+        parameter_set=_str_or_none(algo.get("parameterSetIdentifier") or algo.get("variant")),
         curve=_str_or_none(algo.get("curve") or algo.get("ellipticCurve")),
-        nist_quantum_security_level=_as_int(algo.get("nistQuantumSecurityLevel")),
-        classical_security_level=_as_int(algo.get("classicalSecurityLevel")),
+        nist_quantum_security_level=_as_int(
+            algo.get("nistQuantumSecurityLevel", crypto.get("nistQuantumSecurityLevel"))
+        ),
+        classical_security_level=_as_int(algo.get("classicalSecurityLevel", crypto.get("classicalSecurityLevel"))),
         crypto_functions=_str_tuple(algo.get("cryptoFunctions")),
         mode=_str_or_none(algo.get("mode")),
         padding=_str_or_none(algo.get("padding")),
-        execution_environment=_str_or_none(algo.get("executionEnvironment")),
+        execution_environment=_str_or_none(algo.get("executionEnvironment") or algo.get("implementationLevel")),
         certificate=_dict_or_none(crypto.get("certificateProperties")),
         protocol=_dict_or_none(crypto.get("protocolProperties")),
         related_material=_dict_or_none(crypto.get("relatedCryptoMaterialProperties")),
@@ -128,19 +155,21 @@ def _project_asset(component: dict[str, Any]) -> CryptoAsset:
 
 
 def derive_crypto_inventory(sbom_json: dict[str, Any] | None) -> CryptoInventory:
-    """Project the ``cryptographic-asset`` components of a CycloneDX doc.
+    """Project the crypto-asset components of a CycloneDX document.
 
-    Returns an empty inventory for a non-dict input, a document with no
-    ``components``, or one with no crypto assets. Never raises on partial data.
+    Scans ``components`` plus ``metadata.component`` (a pure CBOM may carry its
+    sole crypto asset there), using the same ``is_crypto_asset`` predicate as
+    upload auto-detect. Returns an empty inventory for a non-dict input or a
+    document with no crypto assets. Never raises on partial data.
     """
     if not isinstance(sbom_json, dict):
         return CryptoInventory()
     components = sbom_json.get("components")
-    if not isinstance(components, list):
-        return CryptoInventory()
-    assets = tuple(
-        _project_asset(component)
-        for component in components
-        if isinstance(component, dict) and component.get("type") == CRYPTO_ASSET_TYPE
-    )
-    return CryptoInventory(assets=assets)
+    candidates = [c for c in components if is_crypto_asset(c)] if isinstance(components, list) else []
+    metadata = sbom_json.get("metadata")
+    meta_component = metadata.get("component") if isinstance(metadata, dict) else None
+    if is_crypto_asset(meta_component):
+        seen_refs = {c.get("bom-ref") for c in candidates if c.get("bom-ref")}
+        if meta_component.get("bom-ref") not in seen_refs:
+            candidates.insert(0, meta_component)
+    return CryptoInventory(assets=tuple(_project_asset(c) for c in candidates))

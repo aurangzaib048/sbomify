@@ -2216,29 +2216,26 @@ def populate_component_metadata_native_fields(
                         )
 
 
-# Shared by the upload API (#1042) and the CBOM backfill command (#1069); kept here in
-# the neutral utils module so neither imports the web/API layer for them.
+# Shared by the upload API and the CBOM backfill command; kept here in the
+# neutral utils module so neither imports the web/API layer for them.
 _SBOM_UNIQUE_CONSTRAINT = "sboms_sbom_unique_component_version_format_qualifiers_bom_type"
 
 
-def _is_crypto_component(component: Any) -> bool:
-    """A CycloneDX component is a crypto asset if typed as one or carrying cryptoProperties."""
-    return isinstance(component, dict) and (
-        component.get("type") == "cryptographic-asset" or "cryptoProperties" in component
-    )
-
-
 def _is_cbom(sbom_data: dict[str, Any]) -> bool:
-    """True when a CycloneDX document declares cryptographic-asset content (a CBOM).
+    """True when a CycloneDX document declares crypto-asset content (a CBOM).
 
-    Checks both the top-level ``components`` array and ``metadata.component`` (which
-    is itself a Component and may carry the crypto indicators on its own).
+    Checks both the top-level ``components`` array and ``metadata.component``
+    (which is itself a Component and may carry the crypto indicators on its
+    own), with the same lineage-aware predicate the inventory derives from, so
+    a document detected here always yields a non-empty inventory.
     """
+    from sbomify.apps.sboms.crypto_inventory import is_crypto_asset
+
     components = sbom_data.get("components")
-    if isinstance(components, list) and any(_is_crypto_component(c) for c in components):
+    if isinstance(components, list) and any(is_crypto_asset(c) for c in components):
         return True
     metadata = sbom_data.get("metadata")
-    return isinstance(metadata, dict) and _is_crypto_component(metadata.get("component"))
+    return isinstance(metadata, dict) and is_crypto_asset(metadata.get("component"))
 
 
 def _is_duplicate_integrity_error(exc: IntegrityError) -> bool:
