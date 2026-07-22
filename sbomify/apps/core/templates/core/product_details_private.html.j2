@@ -181,7 +181,7 @@
         {{ component_statuses|json_script:"pc-statuses" }}
         {{ assigned_component_ids|json_script:"pc-assigned" }}
         <section class="tw-card"
-                 x-data="{ search: '', status: 'all', currentPage: 1, perPage: 5, terms: (window.parseJsonScript('pc-terms') || []), statuses: (window.parseJsonScript('pc-statuses') || []), get statusOptions() { const order = ['critical', 'high', 'medium', 'low', 'clean', 'not_scanned']; const present = new Set(this.statuses); return order.filter(v => present.has(v)); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.status === 'all' || this.statuses[i] === this.status)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); }, assignOpen: false, availLoading: false, avail: [], selectedId: '', busy: false, err: '', assignedIds: (window.parseJsonScript('pc-assigned') || []), openAssign() { this.assignOpen = true; this.err = ''; this.selectedId = ''; this.availLoading = true; fetch('/api/v1/components').then(r => r.json()).then(d => { const items = d.items || d; this.avail = items.filter(c => !this.assignedIds.includes(c.id)).sort((a, b) => a.name.localeCompare(b.name)); }).catch(() => { this.err = 'Failed to load components'; }).finally(() => { this.availLoading = false; }); }, patchIds(ids) { this.busy = true; return fetch('/api/v1/products/{{ product.id }}', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '' }, body: JSON.stringify({ component_ids: ids }) }).then(r => { if (!r.ok) throw new Error(); location.reload(); }).catch(() => { this.busy = false; this.err = 'Update failed'; }); }, confirmAssign() { if (this.selectedId && !this.busy) this.patchIds([...this.assignedIds, this.selectedId]); }, removeComp(id) { if (!this.busy) this.patchIds(this.assignedIds.filter(x => x !== id)); } }"
+                 x-data="{ search: '', status: 'all', currentPage: 1, perPage: 5, terms: (window.parseJsonScript('pc-terms') || []), statuses: (window.parseJsonScript('pc-statuses') || []), get statusOptions() { const order = ['critical', 'high', 'medium', 'low', 'clean', 'not_scanned']; const present = new Set(this.statuses); return order.filter(v => present.has(v)); }, get filteredIdx() { const q = this.search.trim().toLowerCase(); return this.terms.map((t, i) => i).filter(i => (!q || this.terms[i].includes(q)) && (this.status === 'all' || this.statuses[i] === this.status)); }, get total() { return this.filteredIdx.length; }, get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); }, get pageSet() { return new Set(this.filteredIdx.slice((this.currentPage - 1) * this.perPage, this.currentPage * this.perPage)); }, get startIdx() { return this.total ? (this.currentPage - 1) * this.perPage + 1 : 0; }, get endIdx() { return Math.min(this.currentPage * this.perPage, this.total); }, assignOpen: false, availLoading: false, avail: [], selectedId: '', busy: false, err: '', assignedIds: (window.parseJsonScript('pc-assigned') || []), openAssign() { this.assignOpen = true; this.err = ''; this.selectedId = ''; this.availLoading = true; fetch('/api/v1/components').then(r => r.json()).then(d => { const items = d.items || d; this.avail = items.filter(c => !this.assignedIds.includes(c.id)).sort((a, b) => a.name.localeCompare(b.name)); }).catch(() => { this.err = 'Failed to load components'; }).finally(() => { this.availLoading = false; }); }, patchIds(ids) { this.busy = true; return fetch('/api/v1/products/{{ product.id }}', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '' }, body: JSON.stringify({ component_ids: ids }) }).then(r => { if (!r.ok) throw new Error(); location.reload(); }).catch(() => { this.busy = false; this.err = 'Update failed'; }); }, confirmAssign() { if (this.selectedId && !this.busy) this.patchIds([...this.assignedIds, this.selectedId]); }, removeTarget: null, confirmRemove() { if (this.removeTarget && !this.busy) this.patchIds(this.assignedIds.filter(x => x !== this.removeTarget.id)); } }"
                  x-init="$watch('search', () => currentPage = 1); $watch('status', () => currentPage = 1)">
             <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
                 <h4 class="text-lg font-semibold text-text m-0">Components</h4>
@@ -275,7 +275,7 @@
                                                     title="Remove from product"
                                                     aria-label="Remove {{ row.name }} from product"
                                                     :disabled="busy"
-                                                    @click="removeComp('{{ row.id }}')">
+                                                    @click="removeTarget = { id: '{{ row.id }}', name: '{{ row.name|escapejs }}' }">
                                                 <i class="fas fa-unlink" aria-hidden="true"></i>
                                             </button>
                                         </td>
@@ -341,6 +341,37 @@
                                     @click="confirmAssign()">
                                 <span x-show="!busy">Assign</span>
                                 <span x-show="busy"><i class="fas fa-spinner fa-spin mr-1"></i>Assigning…</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {# Remove confirmation #}
+                <div x-show="removeTarget !== null"
+                     x-cloak
+                     class="fixed inset-0 z-50 flex items-center justify-center p-4"
+                     role="dialog"
+                     aria-modal="true"
+                     aria-label="Remove component from product">
+                    <div class="absolute inset-0 bg-black/50" @click="removeTarget = null"></div>
+                    <div class="relative bg-surface border border-border rounded-xl shadow-xl w-full max-w-md p-6"
+                         @keydown.escape.window="removeTarget = null">
+                        <h4 class="text-lg font-semibold text-text m-0 mb-1">
+                            Remove <span x-text="removeTarget?.name"></span>?
+                        </h4>
+                        <p class="text-sm text-text-muted mt-0 mb-4">
+                            The component is only unassigned from this product — it stays in your workspace and in any other products that use it.
+                        </p>
+                        <p x-show="err" class="text-sm text-danger mb-3" x-text="err"></p>
+                        <div class="flex justify-end gap-2">
+                            <button type="button"
+                                    class="tw-btn-secondary text-sm"
+                                    @click="removeTarget = null">Cancel</button>
+                            <button type="button"
+                                    class="tw-btn-danger text-sm"
+                                    :disabled="busy"
+                                    @click="confirmRemove()">
+                                <span x-show="!busy">Remove</span>
+                                <span x-show="busy"><i class="fas fa-spinner fa-spin mr-1"></i>Removing…</span>
                             </button>
                         </div>
                     </div>
