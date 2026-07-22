@@ -115,9 +115,76 @@ _PQC_REVIEW_SUBSTRINGS = (
 )
 
 
+# OID -> identity words fed into the haystack, so an OID-only asset classifies
+# through the same rules as a named one. PQC arcs verified against NIST CSOR
+# (sigAlgs 17-19 ML-DSA, 20-31 SLH-DSA, kems 1-3 ML-KEM); classical identifiers
+# per RFC 8017, RFC 3279, RFC 5758, and RFC 8410.
+_OID_WORDS: dict[str, str] = {
+    "1.2.840.113549.1.1.1": "rsa",
+    "1.2.840.113549.1.1.10": "rsa pss",
+    "1.2.840.113549.1.1.11": "rsa sha-256",
+    "1.2.840.113549.1.3.1": "diffie hellman",
+    "1.2.840.10046.2.1": "diffie hellman",
+    "1.2.840.10040.4.1": "dsa",
+    "1.2.840.10045.2.1": "ec",
+    "1.2.840.10045.4.3.1": "ecdsa sha-224",
+    "1.2.840.10045.4.3.2": "ecdsa sha-256",
+    "1.2.840.10045.4.3.3": "ecdsa sha-384",
+    "1.2.840.10045.4.3.4": "ecdsa sha-512",
+    "1.3.101.110": "x25519",
+    "1.3.101.111": "x448",
+    "1.3.101.112": "ed25519",
+    "1.3.101.113": "ed448",
+    "2.16.840.1.101.3.4.2.1": "sha-256",
+    "2.16.840.1.101.3.4.2.2": "sha-384",
+    "2.16.840.1.101.3.4.2.3": "sha-512",
+    "2.16.840.1.101.3.4.4.1": "ml-kem",
+    "2.16.840.1.101.3.4.4.2": "ml-kem",
+    "2.16.840.1.101.3.4.4.3": "ml-kem",
+}
+_SIG_ALGS_ARC = "2.16.840.1.101.3.4.3."
+_AES_ARC = "2.16.840.1.101.3.4.1."
+
+
+def _oid_words(oid: str | None) -> str:
+    """Identity words for a recognized algorithm OID, else empty."""
+    if not oid:
+        return ""
+    exact = _OID_WORDS.get(oid)
+    if exact:
+        return exact
+    if oid.startswith(_SIG_ALGS_ARC):
+        tail = oid[len(_SIG_ALGS_ARC) :]
+        if tail in {"17", "18", "19"}:
+            return "ml-dsa"
+        if tail.isdigit() and 20 <= int(tail) <= 31:
+            return "slh-dsa"
+    if oid.startswith(_AES_ARC):
+        tail = oid[len(_AES_ARC) :]
+        if tail.isdigit():
+            arc = int(tail)
+            if 1 <= arc <= 8:
+                return "aes 128"
+            if 21 <= arc <= 28:
+                return "aes 192"
+            if 41 <= arc <= 48:
+                return "aes 256"
+        return "aes"
+    return ""
+
+
 def _haystack(asset: CryptoAsset) -> str:
-    parts = [asset.name, asset.algorithm_family, asset.curve]
-    return " ".join(p for p in parts if isinstance(p, str)).lower()
+    parts = [
+        asset.name,
+        asset.algorithm_family,
+        asset.curve,
+        asset.parameter_set,
+        asset.primitive,
+        asset.normalized_family,
+        asset.normalized_curve,
+        _oid_words(asset.oid),
+    ]
+    return " ".join(p for p in parts if isinstance(p, str) and p).lower()
 
 
 def _tokens(haystack: str) -> set[str]:
@@ -148,13 +215,17 @@ def _classify_symmetric_or_hash(hay: str) -> tuple[PqcStatus, str, str] | None:
     return None
 
 
-def _classify_identity(hay: str, tokens: set[str]) -> tuple[PqcStatus, str | None, str, bool]:
+def _classify_identity(
+    hay: str, tokens: set[str], has_registry_curve: bool = False
+) -> tuple[PqcStatus, str | None, str, bool]:
     """Return ``(status, family, reason, is_pqc_safe_family)`` from algorithm identity."""
     if any(s in hay for s in _PQC_SAFE_SUBSTRINGS):
         return PqcStatus.SAFE, "PQC", "Standardized post-quantum algorithm (FIPS 203/204/205)", True
     if any(s in hay for s in _PQC_REVIEW_SUBSTRINGS):
         return PqcStatus.REVIEW, "PQC-candidate", "Selected/stateful PQC, not a finalized FIPS standard — review", False
-    if any(s in hay for s in _VULNERABLE_SUBSTRINGS) or (tokens & _VULNERABLE_TOKENS):
+    # Any registry-identified elliptic curve implies EC crypto, whatever the
+    # asset is called — every curve in the registry is Shor-breakable.
+    if any(s in hay for s in _VULNERABLE_SUBSTRINGS) or (tokens & _VULNERABLE_TOKENS) or has_registry_curve:
         return (
             PqcStatus.VULNERABLE,
             "classical-asymmetric",
@@ -178,7 +249,7 @@ def classify_crypto_asset(asset: CryptoAsset) -> PqcAssessment:
     """
     hay = _haystack(asset)
     tokens = _tokens(hay)
-    status, family, reason, is_pqc_safe = _classify_identity(hay, tokens)
+    status, family, reason, is_pqc_safe = _classify_identity(hay, tokens, asset.normalized_curve is not None)
 
     level = asset.nist_quantum_security_level
 
