@@ -226,7 +226,13 @@ def _lineage_docs() -> dict[str, bytes]:
                     "classicalSecurityLevel": 128,
                     "nistQuantumSecurityLevel": 1,
                 },
-            }
+            },
+            {
+                "type": "crypto-asset",
+                "bom-ref": "legacy/keystore",
+                "name": "app-keystore",
+                "cryptoProperties": {"assetType": "relatedCryptoMaterial"},
+            },
         ],
     }
     modern = {
@@ -264,13 +270,17 @@ def test_build_release_cbom_normalizes_lineages_for_1_6(sample_team_with_owner_m
     assert aes["type"] == "cryptographic-asset"  # legacy type lifted
     algo = aes["cryptoProperties"]["algorithmProperties"]
     assert algo["parameterSetIdentifier"] == "AES-128-GCM"  # variant renamed
-    assert algo["executionEnvironment"] == "softwarePlainRam"  # implementationLevel renamed
+    assert algo["executionEnvironment"] == "software-plain-ram"  # legacy camelCase re-cased to the spec enum
     assert algo["certificationLevel"] == ["none"]  # bare string -> array
     assert algo["classicalSecurityLevel"] == 128  # root levels moved inside
     assert "classicalSecurityLevel" not in aes["cryptoProperties"]
+    assert by_ref["legacy/keystore"]["cryptoProperties"]["assetType"] == "related-crypto-material"
     ecdsa_algo = by_ref["modern/ecdsa"]["cryptoProperties"]["algorithmProperties"]
     assert ecdsa_algo["curve"] == "nist/P-384"  # ellipticCurve down-converted
     assert "algorithmFamily" not in ecdsa_algo  # no 1.6 home -> dropped with log
+    from sbomify.apps.sboms.apis import validate_cyclonedx_sbom
+
+    assert validate_cyclonedx_sbom(merged)[1] == "1.6"  # the whole document schema-validates
 
 
 @pytest.mark.django_db
@@ -290,6 +300,9 @@ def test_build_release_cbom_1_7_keeps_registry_vocabulary(sample_team_with_owner
     assert ecdsa_algo["ellipticCurve"] == "nist/P-384"
     # legacy lifting happens for every target version
     assert by_ref["legacy/aes"]["cryptoProperties"]["algorithmProperties"]["parameterSetIdentifier"] == "AES-128-GCM"
+    from sbomify.apps.sboms.apis import validate_cyclonedx_sbom
+
+    assert validate_cyclonedx_sbom(merged)[1] == "1.7"  # the whole document schema-validates
 
 
 @pytest.mark.django_db

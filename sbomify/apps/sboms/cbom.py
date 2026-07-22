@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
+from functools import cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,31 @@ def _document_from_cbom_sbom(cbom: Any) -> dict[str, Any] | None:
     except (ValueError, TypeError):
         return None
     return document if isinstance(document, dict) else None
+
+
+@cache
+def _crypto_enum_tables() -> dict[str, dict[str, str]]:
+    """Canonical-form -> spec-value tables for the crypto enums whose spellings
+    changed across lineages (IBM 1.0 used camelCase: ``softwarePlainRam``,
+    ``relatedCryptoMaterial``; 1.6+ uses kebab-case). Built from the 1.6
+    schema module; 1.7 keeps the same values for these fields."""
+    from sbomify.apps.sboms.sbom_format_schemas import cyclonedx_1_6 as cdx16
+
+    def table(enum_cls: Any) -> dict[str, str]:
+        return {re.sub(r"[^a-z0-9]", "", member.value.lower()): member.value for member in enum_cls}
+
+    return {
+        "assetType": table(cdx16.AssetType),
+        "executionEnvironment": table(cdx16.ExecutionEnvironment),
+        "implementationPlatform": table(cdx16.ImplementationPlatform),
+        "primitive": table(cdx16.Primitive),
+    }
+
+
+def _align_enum_value(value: Any, allowed_by_canon: dict[str, str]) -> Any:
+    if not isinstance(value, str):
+        return value
+    return allowed_by_canon.get(re.sub(r"[^a-z0-9]", "", value.lower()), value)
 
 
 def _normalize_crypto_component(comp: dict[str, Any], spec_version: str) -> dict[str, Any]:
@@ -85,6 +112,16 @@ def _normalize_crypto_component(comp: dict[str, Any], spec_version: str) -> dict
                 algo = {}
                 crypto["algorithmProperties"] = algo
             algo.setdefault(key, value)
+    # Enum spellings changed across lineages too (softwarePlainRam ->
+    # software-plain-ram, relatedCryptoMaterial -> related-crypto-material);
+    # align known values onto the spec vocabulary, leave unknown ones as-is.
+    tables = _crypto_enum_tables()
+    if "assetType" in crypto:
+        crypto["assetType"] = _align_enum_value(crypto["assetType"], tables["assetType"])
+    if algo is not None:
+        for key in ("executionEnvironment", "implementationPlatform", "primitive"):
+            if key in algo:
+                algo[key] = _align_enum_value(algo[key], tables[key])
     if spec_version == "1.6":
         if algo is not None and "ellipticCurve" in algo:
             algo.setdefault("curve", algo.pop("ellipticCurve"))
