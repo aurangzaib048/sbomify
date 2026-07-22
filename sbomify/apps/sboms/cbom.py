@@ -91,9 +91,15 @@ def _normalize_crypto_component(comp: dict[str, Any], spec_version: str) -> dict
         if algo is not None and "algorithmFamily" in algo:
             dropped = algo.pop("algorithmFamily")
             logger.info("Release CBOM merge: dropped 1.7-only algorithmFamily=%r for 1.6 output", dropped)
-        if "relatedCryptographicAssets" in crypto:
-            crypto.pop("relatedCryptographicAssets")
-            logger.info("Release CBOM merge: dropped 1.7-only relatedCryptographicAssets for 1.6 output")
+        # 1.7 nests relatedCryptographicAssets inside each sub-object, next to
+        # the deprecated 1.6 ref fields (which stay — they are 1.6 vocabulary).
+        for key in ("certificateProperties", "relatedCryptoMaterialProperties", "protocolProperties"):
+            sub = crypto.get(key)
+            if isinstance(sub, dict) and "relatedCryptographicAssets" in sub:
+                sub = dict(sub)
+                sub.pop("relatedCryptographicAssets")
+                crypto[key] = sub
+                logger.info("Release CBOM merge: dropped 1.7-only %s.relatedCryptographicAssets for 1.6 output", key)
     return out
 
 

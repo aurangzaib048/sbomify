@@ -68,6 +68,13 @@ class CryptoAsset:
     implementation_platform: str | None = None
     certification_level: tuple[str, ...] = ()  # FIPS 140 / Common Criteria levels
 
+    # 1.7 registry normalization: one canonical identifier however the source
+    # spelled it ("prime256v1" == "secp256r1" == "nist/P-256"). None when the
+    # registry doesn't know the name; the raw value stays in curve/family.
+    normalized_family: str | None = None
+    normalized_curve: str | None = None
+    registry_unrecognized: bool = False  # named a curve/family the registry lacks
+
     # other asset-type sub-objects kept as-is (raw); less central to PQC scoring
     certificate: dict[str, Any] | None = None
     protocol: dict[str, Any] | None = None
@@ -78,10 +85,25 @@ class CryptoAsset:
 
 
 @dataclass(frozen=True)
+class CryptoEdge:
+    """A resolved cross-reference between two crypto assets (certificate ->
+    signature algorithm, key material -> algorithm, protocol -> suite member).
+    Sources: 1.7 ``relatedCryptographicAssets`` plus the deprecated 1.6 ref
+    fields (``signatureAlgorithmRef``, ``subjectPublicKeyRef``,
+    ``algorithmRef``, ``securedBy.algorithmRef``, ``cryptoRefArray``)."""
+
+    source: str
+    relation: str
+    target: str
+    resolved: bool  # target bom-ref exists in this inventory
+
+
+@dataclass(frozen=True)
 class CryptoInventory:
     """The crypto assets derived from a single CycloneDX document."""
 
     assets: tuple[CryptoAsset, ...] = ()
+    edges: tuple[CryptoEdge, ...] = ()
 
     @property
     def count(self) -> int:
@@ -133,21 +155,29 @@ def _str_tuple(value: Any) -> tuple[str, ...]:
 
 
 def _project_asset(component: dict[str, Any]) -> CryptoAsset:
+    from sbomify.apps.sboms.crypto_registry import curve_for_oid, normalize_curve, normalize_family
+
     crypto = _dict_or_none(component.get("cryptoProperties")) or {}
     algo = _dict_or_none(crypto.get("algorithmProperties")) or {}
+    curve = _str_or_none(algo.get("curve") or algo.get("ellipticCurve"))
+    family = _str_or_none(algo.get("algorithmFamily"))
+    name = _str_or_none(component.get("name"))
+    oid = _str_or_none(crypto.get("oid") or component.get("oid"))
+    normalized_curve = normalize_curve(curve) or curve_for_oid(oid)
+    normalized_family = normalize_family(family) or normalize_family(name)
     # Legacy IBM CBOM 1.0 spellings: ``variant`` (renamed
     # ``parameterSetIdentifier`` in 1.6), ``implementationLevel`` (renamed
     # ``executionEnvironment``), and security levels on the cryptoProperties
     # root rather than inside algorithmProperties.
     return CryptoAsset(
-        name=_str_or_none(component.get("name")),
+        name=name,
         bom_ref=_str_or_none(component.get("bom-ref")),
-        oid=_str_or_none(crypto.get("oid") or component.get("oid")),
+        oid=oid,
         asset_type=_str_or_none(crypto.get("assetType")),
         primitive=_str_or_none(algo.get("primitive")),
-        algorithm_family=_str_or_none(algo.get("algorithmFamily")),
+        algorithm_family=family,
         parameter_set=_str_or_none(algo.get("parameterSetIdentifier") or algo.get("variant")),
-        curve=_str_or_none(algo.get("curve") or algo.get("ellipticCurve")),
+        curve=curve,
         nist_quantum_security_level=_as_int(
             algo.get("nistQuantumSecurityLevel", crypto.get("nistQuantumSecurityLevel"))
         ),
@@ -158,6 +188,9 @@ def _project_asset(component: dict[str, Any]) -> CryptoAsset:
         execution_environment=_str_or_none(algo.get("executionEnvironment") or algo.get("implementationLevel")),
         implementation_platform=_str_or_none(algo.get("implementationPlatform")),
         certification_level=_certification_levels(algo.get("certificationLevel")),
+        normalized_family=normalized_family,
+        normalized_curve=normalized_curve,
+        registry_unrecognized=bool((curve and not normalized_curve) or (family and not normalized_family)),
         certificate=_dict_or_none(crypto.get("certificateProperties")),
         protocol=_dict_or_none(crypto.get("protocolProperties")),
         related_material=_dict_or_none(crypto.get("relatedCryptoMaterialProperties")),
@@ -183,4 +216,44 @@ def derive_crypto_inventory(sbom_json: dict[str, Any] | None) -> CryptoInventory
         seen_refs = {c.get("bom-ref") for c in candidates if c.get("bom-ref")}
         if meta_component.get("bom-ref") not in seen_refs:
             candidates.insert(0, meta_component)
-    return CryptoInventory(assets=tuple(_project_asset(c) for c in candidates))
+    assets = tuple(_project_asset(c) for c in candidates)
+    return CryptoInventory(assets=assets, edges=_extract_edges(candidates, assets))
+
+
+def _extract_edges(candidates: list[dict[str, Any]], assets: tuple[CryptoAsset, ...]) -> tuple[CryptoEdge, ...]:
+    known_refs = {a.bom_ref for a in assets if a.bom_ref}
+    edges: list[CryptoEdge] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(source: str | None, relation: str, target: Any) -> None:
+        if not source or not isinstance(target, str) or not target:
+            return
+        key = (source, relation, target)
+        if key in seen:
+            return
+        seen.add(key)
+        edges.append(CryptoEdge(source=source, relation=relation, target=target, resolved=target in known_refs))
+
+    for component in candidates:
+        source = component.get("bom-ref")
+        source = source if isinstance(source, str) else None
+        crypto = _dict_or_none(component.get("cryptoProperties")) or {}
+        certificate = _dict_or_none(crypto.get("certificateProperties")) or {}
+        add(source, "signatureAlgorithm", certificate.get("signatureAlgorithmRef"))
+        add(source, "subjectPublicKey", certificate.get("subjectPublicKeyRef"))
+        material = _dict_or_none(crypto.get("relatedCryptoMaterialProperties")) or {}
+        add(source, "algorithm", material.get("algorithmRef"))
+        secured_by = _dict_or_none(material.get("securedBy")) or {}
+        add(source, "securedBy", secured_by.get("algorithmRef"))
+        protocol = _dict_or_none(crypto.get("protocolProperties")) or {}
+        crypto_refs = protocol.get("cryptoRefArray")
+        if isinstance(crypto_refs, list):
+            for ref in crypto_refs:
+                add(source, "cryptoRef", ref)
+        for sub in (certificate, material, protocol):
+            related = sub.get("relatedCryptographicAssets")
+            if isinstance(related, list):
+                for item in related:
+                    if isinstance(item, dict):
+                        add(source, _str_or_none(item.get("type")) or "related", item.get("ref"))
+    return tuple(edges)

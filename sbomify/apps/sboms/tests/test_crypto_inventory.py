@@ -177,3 +177,113 @@ def test_detection_and_inventory_agree_on_every_lineage():
     plain = _load("sbomify_syft.cdx.json")
     assert not _is_cbom(plain)
     assert derive_crypto_inventory(plain).count == 0
+
+
+def test_registry_normalization_folds_curve_spellings():
+    """The acceptance case for registry normalization: a 1.6 document naming
+    prime256v1 and a 1.7 document naming nist/P-256 inventory identically."""
+    doc = {
+        "components": [
+            {
+                "type": "cryptographic-asset",
+                "name": "ECDSA-old-spelling",
+                "cryptoProperties": {"assetType": "algorithm", "algorithmProperties": {"curve": "prime256v1"}},
+            },
+            {
+                "type": "cryptographic-asset",
+                "name": "ECDSA-registry",
+                "cryptoProperties": {
+                    "assetType": "algorithm",
+                    "algorithmProperties": {"algorithmFamily": "ECDSA", "ellipticCurve": "nist/P-256"},
+                },
+            },
+            {
+                "type": "cryptographic-asset",
+                "name": "ECDSA-secg",
+                "cryptoProperties": {"assetType": "algorithm", "algorithmProperties": {"curve": "secp256r1"}},
+            },
+        ]
+    }
+    inv = derive_crypto_inventory(doc)
+    normalized = {a.normalized_curve for a in inv.assets}
+    assert normalized == {"nist/P-256"}
+    registry = _by_name(inv, "ECDSA-registry")
+    assert registry.normalized_family == "ECDSA"
+    assert not registry.registry_unrecognized
+
+
+def test_registry_unknown_names_pass_through_flagged():
+    doc = {
+        "components": [
+            {
+                "type": "cryptographic-asset",
+                "name": "HomeGrown",
+                "cryptoProperties": {
+                    "assetType": "algorithm",
+                    "algorithmProperties": {"curve": "curve9000", "algorithmFamily": "NotARealFamily"},
+                },
+            }
+        ]
+    }
+    asset = derive_crypto_inventory(doc).assets[0]
+    assert asset.curve == "curve9000"  # raw value kept
+    assert asset.normalized_curve is None
+    assert asset.registry_unrecognized
+
+
+def test_registry_normalizes_curve_from_oid():
+    doc = {
+        "components": [
+            {
+                "type": "cryptographic-asset",
+                "name": "some-ec-key",
+                "cryptoProperties": {"assetType": "relatedCryptoMaterial", "oid": "1.2.840.10045.3.1.7"},
+            }
+        ]
+    }
+    assert derive_crypto_inventory(doc).assets[0].normalized_curve == "nist/P-256"
+
+
+def test_related_asset_refs_resolve_to_edges():
+    """Deprecated 1.6 refs and 1.7 relatedCryptographicAssets both become
+    typed edges, resolved against the inventory's bom-refs."""
+    doc = {
+        "components": [
+            {
+                "type": "cryptographic-asset",
+                "bom-ref": "alg-rsa",
+                "name": "RSA-2048",
+                "cryptoProperties": {"assetType": "algorithm"},
+            },
+            {
+                "type": "cryptographic-asset",
+                "bom-ref": "cert-1",
+                "name": "server-cert",
+                "cryptoProperties": {
+                    "assetType": "certificate",
+                    "certificateProperties": {
+                        "signatureAlgorithmRef": "alg-rsa",
+                        "subjectPublicKeyRef": "missing-key",
+                    },
+                },
+            },
+            {
+                "type": "cryptographic-asset",
+                "bom-ref": "proto-tls",
+                "name": "TLS",
+                "cryptoProperties": {
+                    "assetType": "protocol",
+                    "protocolProperties": {
+                        "cryptoRefArray": ["alg-rsa"],
+                        "relatedCryptographicAssets": [{"type": "algorithm", "ref": "alg-rsa"}],
+                    },
+                },
+            },
+        ]
+    }
+    inv = derive_crypto_inventory(doc)
+    edges = {(e.source, e.relation, e.target, e.resolved) for e in inv.edges}
+    assert ("cert-1", "signatureAlgorithm", "alg-rsa", True) in edges
+    assert ("cert-1", "subjectPublicKey", "missing-key", False) in edges  # dangling ref stays visible
+    assert ("proto-tls", "cryptoRef", "alg-rsa", True) in edges
+    assert ("proto-tls", "algorithm", "alg-rsa", True) in edges  # 1.7 relatedCryptographicAssets

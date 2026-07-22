@@ -164,6 +164,9 @@ def _serialize_crypto_asset(asset: CryptoAsset) -> dict[str, Any]:
         "execution_environment": asset.execution_environment,
         "implementation_platform": asset.implementation_platform,
         "certification_level": list(asset.certification_level),
+        "normalized_family": asset.normalized_family,
+        "normalized_curve": asset.normalized_curve,
+        "registry_unrecognized": asset.registry_unrecognized,
         "certificate": asset.certificate,
         "protocol": asset.protocol,
         "related_material": asset.related_material,
@@ -229,6 +232,10 @@ def get_crypto_inventory(request: HttpRequest, sbom_id: str) -> ServiceResult[di
             "component_id": str(sbom.component.id),
             "count": inventory.count,
             "by_asset_type": inventory.by_asset_type,
+            "edges": [
+                {"source": e.source, "relation": e.relation, "target": e.target, "resolved": e.resolved}
+                for e in inventory.edges
+            ],
             "pqc_overall": summary.overall,
             "pqc_counts": summary.counts,
             "assets": [
