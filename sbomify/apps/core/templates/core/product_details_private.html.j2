@@ -583,8 +583,7 @@
                 </div>
             </div>
         </section>
-        {# Shared create-release modal, opened from the meatball. Slim productReleases
-           scope: no initial load; a ws release_created event refreshes the page. #}
+        {# Shared create-release modal opened from the meatball; slim productReleases scope, ws release_created refreshes. #}
         {% if product.has_crud_permissions %}
             <div x-data="productReleases({ productId: '{{ product.id }}', initialReleases: [], totalCount: 0, isPublicView: false, canCreate: true, canEdit: false, canDelete: false })"
                  @open-create-release.window="openCreateModal()"
