@@ -65,6 +65,8 @@ class CryptoAsset:
     mode: str | None = None
     padding: str | None = None
     execution_environment: str | None = None
+    implementation_platform: str | None = None
+    certification_level: tuple[str, ...] = ()  # FIPS 140 / Common Criteria levels
 
     # other asset-type sub-objects kept as-is (raw); less central to PQC scoring
     certificate: dict[str, Any] | None = None
@@ -117,6 +119,13 @@ def _str_or_none(value: Any) -> str | None:
     return None
 
 
+def _certification_levels(value: Any) -> tuple[str, ...]:
+    """1.6+ certificationLevel is an array; the legacy lineage used a bare string."""
+    if isinstance(value, str):
+        return (value,)
+    return _str_tuple(value)
+
+
 def _str_tuple(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
@@ -147,6 +156,8 @@ def _project_asset(component: dict[str, Any]) -> CryptoAsset:
         mode=_str_or_none(algo.get("mode")),
         padding=_str_or_none(algo.get("padding")),
         execution_environment=_str_or_none(algo.get("executionEnvironment") or algo.get("implementationLevel")),
+        implementation_platform=_str_or_none(algo.get("implementationPlatform")),
+        certification_level=_certification_levels(algo.get("certificationLevel")),
         certificate=_dict_or_none(crypto.get("certificateProperties")),
         protocol=_dict_or_none(crypto.get("protocolProperties")),
         related_material=_dict_or_none(crypto.get("relatedCryptoMaterialProperties")),

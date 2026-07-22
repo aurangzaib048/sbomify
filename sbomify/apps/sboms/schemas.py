@@ -111,6 +111,8 @@ class CryptoAssetSchema(Schema):
     mode: str | None = None
     padding: str | None = None
     execution_environment: str | None = None
+    implementation_platform: str | None = None
+    certification_level: list[str] = Field(default_factory=list)
     certificate: dict[str, Any] | None = None
     protocol: dict[str, Any] | None = None
     related_material: dict[str, Any] | None = None

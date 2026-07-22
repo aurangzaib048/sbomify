@@ -131,6 +131,8 @@ def test_derives_from_legacy_ibm_cbom_1_0():
     assert aes.classical_security_level == 128  # legacy root-level placement
     assert aes.nist_quantum_security_level == 1
     assert aes.mode == "gcm"
+    assert aes.implementation_platform == "x86_64"
+    assert aes.certification_level == ("none",)  # legacy bare string -> tuple
     dilithium = _by_name(inv, "Dilithium")
     assert dilithium.primitive == "signature"
     assert dilithium.nist_quantum_security_level == 5

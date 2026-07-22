@@ -162,6 +162,8 @@ def _serialize_crypto_asset(asset: CryptoAsset) -> dict[str, Any]:
         "mode": asset.mode,
         "padding": asset.padding,
         "execution_environment": asset.execution_environment,
+        "implementation_platform": asset.implementation_platform,
+        "certification_level": list(asset.certification_level),
         "certificate": asset.certificate,
         "protocol": asset.protocol,
         "related_material": asset.related_material,
