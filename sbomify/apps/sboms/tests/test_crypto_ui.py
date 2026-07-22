@@ -112,3 +112,59 @@ def test_cipher_suite_csv_download(sample_sbom: SBOM, mocker: MockerFixture):  #
     body = response.content.decode()
     assert body.splitlines()[0] == "protocol,type,version,cipher_suite,identifiers,weak,weaknesses"
     assert "TLS" in body
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_rollup_aggregates_runs(sample_sbom: SBOM):  # noqa: F811
+    from sbomify.apps.plugins.models import AssessmentRun
+    from sbomify.apps.plugins.sdk import RunReason
+    from ..services.crypto_dashboard import build_workspace_crypto_rollup
+
+    sample_sbom.bom_type = SBOM.BomType.CBOM
+    sample_sbom.save(update_fields=["bom_type"])
+    AssessmentRun.objects.create(
+        sbom=sample_sbom,
+        plugin_name="pqc-readiness",
+        plugin_version="1.0",
+        plugin_config_hash="x",
+        category="compliance",
+        status="completed",
+        run_reason=RunReason.MANUAL.value,
+        result={
+            "metadata": {
+                "pqc_overall": "at_risk",
+                "certificates": {"count": 2, "expired": 1, "expiring_soon": 0, "soonest_not_valid_after": None},
+            },
+            "findings": [
+                {"title": "RSA-2048 — Quantum-vulnerable", "metadata": {"pqc_status": "quantum_vulnerable", "asset_name": "RSA-2048"}},
+                {"title": "ML-KEM-768 — Quantum-safe", "metadata": {"pqc_status": "quantum_safe", "asset_name": "ML-KEM-768"}},
+            ],
+        },
+    )
+
+    rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
+
+    assert rollup["has_crypto_data"]
+    assert rollup["verdict_counts"].get("at_risk") == 1
+    row = next(r for r in rollup["rows"] if r["id"] == sample_sbom.component.id)
+    assert row["verdict"] == "at_risk"
+    assert row["counts"]["quantum_vulnerable"] == 1
+    assert row["certificates"]["expired"] == 1
+    assert rollup["top_vulnerable"][0] == {"name": "RSA-2048", "components": 1}
+    assert rollup["certificates"]["expired"] == 1
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_page_renders_and_gates(sample_sbom: SBOM, guest_user):  # noqa: F811
+    team = sample_sbom.component.team
+    url = reverse("sboms:workspace_crypto", kwargs={"team_key": team.key})
+
+    member = Client()
+    setup_test_session(member, team, team.members.first())
+    response = member.get(url)
+    assert response.status_code == 200
+    assert "Cryptography" in response.content.decode()
+
+    outsider = Client()
+    outsider.force_login(guest_user)
+    assert outsider.get(url).status_code == 403

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, TypeGuard
 
 CRYPTO_ASSET_TYPE = "cryptographic-asset"
@@ -257,3 +258,41 @@ def _extract_edges(candidates: list[dict[str, Any]], assets: tuple[CryptoAsset, 
                     if isinstance(item, dict):
                         add(source, _str_or_none(item.get("type")) or "related", item.get("ref"))
     return tuple(edges)
+
+
+def certificate_expiry_summary(inventory: CryptoInventory, now: datetime | None = None) -> dict[str, Any] | None:
+    """Expiry rollup over certificate assets: counts plus the soonest notValidAfter.
+
+    Persisted into PQC AssessmentRun metadata so fleet views can aggregate
+    certificate posture without re-reading artifacts. ``None`` when the
+    inventory holds no certificates.
+    """
+    certs = [a for a in inventory.assets if a.asset_type == "certificate" and a.certificate]
+    if not certs:
+        return None
+    now = now or datetime.now(timezone.utc)
+    expired = expiring_soon = 0
+    soonest: datetime | None = None
+    for asset in certs:
+        raw = (asset.certificate or {}).get("notValidAfter")
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if soonest is None or parsed < soonest:
+            soonest = parsed
+        days = (parsed - now).days
+        if days < 0:
+            expired += 1
+        elif days <= 90:
+            expiring_soon += 1
+    return {
+        "count": len(certs),
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "soonest_not_valid_after": soonest.isoformat() if soonest else None,
+    }

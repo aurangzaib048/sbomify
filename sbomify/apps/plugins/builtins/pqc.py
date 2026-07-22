@@ -32,7 +32,7 @@ from sbomify.apps.plugins.sdk import (
     ScanMode,
 )
 from sbomify.apps.plugins.sdk.base import SBOMContext
-from sbomify.apps.sboms.crypto_inventory import derive_crypto_inventory
+from sbomify.apps.sboms.crypto_inventory import certificate_expiry_summary, derive_crypto_inventory
 from sbomify.apps.sboms.pqc import PqcResult, PqcStatus, assess_inventory
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,8 @@ class PqcReadinessPlugin(AssessmentPlugin):
         if not isinstance(document, dict):
             return self._error_result("SBOM is not a JSON object")
 
-        summary = assess_inventory(derive_crypto_inventory(document))
+        inventory = derive_crypto_inventory(document)
+        summary = assess_inventory(inventory)
         findings = [self._finding(index, result) for index, result in enumerate(summary.results)]
         metadata: dict[str, Any] = {
             "standard_name": self.STANDARD_NAME,
@@ -109,6 +110,9 @@ class PqcReadinessPlugin(AssessmentPlugin):
             "standard_url": self.STANDARD_URL,
             "pqc_overall": summary.overall,
         }
+        certificates = certificate_expiry_summary(inventory)
+        if certificates:
+            metadata["certificates"] = certificates
         if not findings:
             # A crypto-free document is "nothing to assess", not a warning —
             # this plugin also runs on ordinary SBOMs, and most contain no
@@ -150,7 +154,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
                 description=f"{kind.capitalize()} assets are not assessed for post-quantum readiness by this check.",
                 status="info",
                 severity="info",
-                metadata={"pqc_status": verdict.status.value, "asset_type": asset.asset_type},
+                metadata={"pqc_status": verdict.status.value, "asset_type": asset.asset_type, "asset_name": asset.name},
             )
 
         status, severity = _VERDICT.get(verdict.status, ("warning", "medium"))
@@ -164,7 +168,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             status=status,
             severity=severity,
             remediation=_REMEDIATION.get(verdict.status),
-            metadata={"pqc_status": verdict.status.value, "asset_type": asset.asset_type},
+            metadata={"pqc_status": verdict.status.value, "asset_type": asset.asset_type, "asset_name": asset.name},
         )
 
     def _summary(self, findings: list[Finding]) -> AssessmentSummary:
