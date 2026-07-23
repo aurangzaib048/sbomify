@@ -38,6 +38,11 @@ class User(AbstractUser):
     email_verified = models.BooleanField(default=False)
     """Whether the user's email has been verified."""
 
+    newsletter_opt_in = models.BooleanField(
+        default=True,
+        help_text="Whether the user is subscribed to the sbomify newsletter.",
+    )
+
     deleted_at = models.DateTimeField(
         null=True,
         blank=True,
