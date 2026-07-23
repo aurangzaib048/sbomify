@@ -48,6 +48,7 @@ class TestExportNewsletterContacts:
         User.objects.create_user(username="inactive", email="inactive@example.org", is_active=False)
         User.objects.create_user(username="deleted", email="deleted@example.org", deleted_at=timezone.now())
         User.objects.create_user(username="noemail", email="")
+        User.objects.create_user(username="oidc-bot-abc123def456", email="oidc-bot-abc123def456@sbomify.local")
 
         rows = _run_command()
 

@@ -16,6 +16,7 @@ from typing import Any
 from django.core.management.base import BaseCommand
 
 from sbomify.apps.core.models import User
+from sbomify.apps.oidc.services import BOT_USERNAME_PREFIX
 
 MAILJET_HEADER = ["Email", "First Name", "Last Name", "Gender", "Birthday", "Interests"]
 
@@ -31,6 +32,7 @@ class Command(BaseCommand):
                 deleted_at__isnull=True,
             )
             .exclude(email="")
+            .exclude(username__startswith=BOT_USERNAME_PREFIX)
             .order_by("email")
             .values_list("email", "first_name", "last_name")
         )
