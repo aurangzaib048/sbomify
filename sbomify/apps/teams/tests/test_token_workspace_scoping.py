@@ -224,6 +224,29 @@ class TestWorkspaceSettingsScope:
         other.refresh_from_db()
         assert not other.branding_info.get("icon")
 
+    def test_scoped_token_cannot_set_domain_in_non_bound_workspace(self, owner_of_two_workspaces, scoped_token):
+        _, _, other = owner_of_two_workspaces
+        for method in ("put", "patch"):
+            response = getattr(Client(), method)(
+                f"{WORKSPACES_URL}{other.key}/domain",
+                json.dumps({"domain": "hijacked.example.com"}),
+                content_type="application/json",
+                **_headers(scoped_token),
+            )
+            assert response.status_code == 403
+        other.refresh_from_db()
+        assert not other.custom_domain
+
+    def test_scoped_token_cannot_delete_domain_in_non_bound_workspace(self, owner_of_two_workspaces, scoped_token):
+        _, _, other = owner_of_two_workspaces
+        other.custom_domain = "trust.other.example"
+        other.custom_domain_validated = True
+        other.save(update_fields=["custom_domain", "custom_domain_validated"])
+        response = Client().delete(f"{WORKSPACES_URL}{other.key}/domain", **_headers(scoped_token))
+        assert response.status_code == 403
+        other.refresh_from_db()
+        assert other.custom_domain == "trust.other.example"
+
     def test_scoped_token_can_patch_bound_workspace(self, owner_of_two_workspaces, scoped_token):
         _, bound, _ = owner_of_two_workspaces
         response = _patch_json(Client(), f"{WORKSPACES_URL}{bound.key}", {"name": "Renamed WS"}, scoped_token)

@@ -1265,11 +1265,14 @@ def list_teams(request: HttpRequest) -> tuple[int, Any]:
 
     # Route token-authenticated listings through can() so a narrow
     # action-scoped token (e.g. publish-only) can't enumerate workspaces its
-    # scopes don't grant it to read. Sessions carry no token and skip this.
-    if getattr(request, "access_token_record", None) is not None:
-        memberships = [m for m in memberships if can(request, "workspace:read", m.team)]
-        if not memberships:
-            return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+    # scopes don't grant it to read. One check covers the whole listing: the
+    # token's action-scope gate is team-independent, workspace binding was
+    # already applied to the queryset above, and workspace:read's role tier
+    # admits every remaining membership. Sessions carry no token and skip this.
+    if getattr(request, "access_token_record", None) is not None and not can(
+        request, "workspace:read", memberships[0].team
+    ):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     return 200, [_build_team_response(request, membership.team) for membership in memberships]
 
