@@ -74,15 +74,11 @@
             {# Needs attention — the worst non-suppressed findings across the workspace #}
             {% if dashboard.needs_attention %}
                 <div class="tw-card">
-                    <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-3">
+                    <div class="px-6 py-4 border-b border-border">
                         <h4 class="text-lg font-semibold text-text m-0 flex items-center gap-2">
                             Needs attention
                             <span class="px-2 py-0.5 text-xs font-bold rounded-full bg-danger/10 text-danger">{{ dashboard.needs_attention|length }}</span>
                         </h4>
-                        <a href="{% url 'vulnerability_scanning:vulnerability_scans' current_team.key %}"
-                           class="text-sm text-primary hover:underline no-underline inline-flex items-center gap-1">
-                            View all scans<i class="fas fa-arrow-right text-xs"></i>
-                        </a>
                     </div>
                     <div class="divide-y divide-border">
                         {% for finding in dashboard.needs_attention %}
