@@ -30,9 +30,9 @@ inventory's overall post-quantum readiness verdict from the pqc module.
             {% endfor %}
         </div>
         <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="tw-table w-full text-sm">
                 <thead>
-                    <tr class="text-left text-text-muted border-b border-border">
+                    <tr>
                         <th class="py-2 pr-4 font-medium">Asset</th>
                         <th class="py-2 pr-4 font-medium">Quantum readiness</th>
                         <th class="py-2 pr-4 font-medium">Type</th>
@@ -43,7 +43,7 @@ inventory's overall post-quantum readiness verdict from the pqc module.
                 </thead>
                 <tbody>
                     {% for asset in crypto_inventory.assets %}
-                        <tr class="border-b border-border/50">
+                        <tr>
                             <td class="py-2 pr-4 font-medium text-text">{{ asset.name|default:"—" }}</td>
                             <td class="py-2 pr-4">
                                 <span class="tw-badge tw-badge-{{ asset.pqc_status|pqc_variant }}">{{ asset.pqc_status|pqc_label }}</span>

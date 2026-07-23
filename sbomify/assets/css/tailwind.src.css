@@ -428,6 +428,34 @@ html.no-transitions * {
   background-color: rgb(var(--color-accent-orange));
 }
 
+/* Flatten a tw-card rendered inside an About-group collapsible row: the row is
+   the chrome, so the embedded card sheds its border and duplicate heading while
+   keeping its own action buttons. */
+.tw-embed .tw-card {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tw-embed .tw-card > div:first-child {
+  border-bottom: 0;
+  padding-top: 0;
+  justify-content: flex-end;
+}
+.tw-embed .tw-card > div:first-child h4 {
+  display: none;
+}
+
+/* High-severity orange — distinct from amber warnings (CVSS convention). */
+@utility text-severity-high {
+  color: rgb(var(--color-severity-high));
+}
+@utility bg-severity-high-soft {
+  background-color: rgb(var(--color-severity-high) / 0.12);
+}
+@utility border-severity-high-soft {
+  border-color: rgb(var(--color-severity-high) / 0.3);
+}
+
 /* Text Colors - using CSS variables with !important for Bootstrap override */
 @utility text-text {
   color: rgb(var(--color-text)) !important;
@@ -1586,6 +1614,7 @@ html.no-transitions * {
 .tw-badge-danger,
 .tw-badge-accent,
 .tw-badge-info,
+.tw-badge-violet,
 .tw-badge-dot {
   display: inline-flex;
   align-items: center;
@@ -1638,6 +1667,13 @@ html.no-transitions * {
   color: rgb(var(--color-info));
   background-color: rgb(var(--color-info) / 0.12);
   border: 1px solid rgb(var(--color-info) / 0.2);
+}
+
+/* Soft violet — attestation artifacts (VEX); distinct from every severity hue. */
+.tw-badge-violet {
+  color: rgb(var(--color-accent));
+  background-color: rgb(var(--color-accent) / 0.12);
+  border: 1px solid rgb(var(--color-accent) / 0.2);
 }
 
 /* Neutral chip — squared variant for table-like contexts (counts, types).
@@ -2048,6 +2084,10 @@ html.no-transitions * {
   overflow: hidden;
 }
 
+.tw-modal-content.tw-modal-wide {
+  max-width: 56rem;
+}
+
 .tw-modal-header {
   display: flex;
   align-items: center;
@@ -2221,7 +2261,7 @@ html.no-transitions * {
 }
 
 .tw-table th {
-  padding: 0.875rem 1rem;
+  padding: 1rem 1.25rem;
   text-align: left;
   font-size: 0.75rem;
   font-weight: 600;
@@ -2235,20 +2275,31 @@ html.no-transitions * {
   z-index: 1;
 }
 
+/* Edge cells breathe away from the card frame so rows don't read as packed. */
 .tw-table th:first-child {
   border-top-left-radius: 0.5rem;
+  padding-left: 1.5rem;
 }
 
 .tw-table th:last-child {
   border-top-right-radius: 0.5rem;
+  padding-right: 1.5rem;
 }
 
 .tw-table td {
-  padding: 1rem;
+  padding: 1.25rem;
   font-size: 0.875rem;
   color: rgb(var(--color-text));
   border-bottom: 1px solid rgb(var(--color-border) / 0.5);
   transition: background-color 0.15s;
+}
+
+.tw-table td:first-child {
+  padding-left: 1.5rem;
+}
+
+.tw-table td:last-child {
+  padding-right: 1.5rem;
 }
 
 .tw-table tbody tr {
@@ -2265,6 +2316,36 @@ html.no-transitions * {
 
 .tw-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+/* Right-align a trailing status/visibility/actions column so its content
+   reaches the right edge, mirroring the left column — keeps the table's
+   left and right content margins symmetric. Higher specificity than
+   `.tw-table th` (which forces left-align on headers). */
+.tw-table th.tw-cell-end,
+.tw-table td.tw-cell-end {
+  text-align: right;
+}
+
+/* In an equal-width (fixed) table, centre every column between the first
+   and the last so all columns are spaced equally — the first column stays
+   left-aligned and the last is right-aligned via tw-cell-end. */
+.tw-table-fixed th:not(:first-child):not(:last-child),
+.tw-table-fixed td:not(:first-child):not(:last-child) {
+  text-align: center;
+}
+
+/* text-align doesn't reach a block-level flex container (e.g. a row of
+   pills), so centre those too, keeping cell content aligned with its
+   centred header. */
+.tw-table-fixed td:not(:first-child):not(:last-child) > .flex {
+  justify-content: center;
+}
+
+/* Equal-width columns so a table's columns are evenly distributed rather
+   than sized to content. Pair with tw-cell-end on the trailing column. */
+.tw-table-fixed {
+  table-layout: fixed;
 }
 
 /* Tighter table cell padding on small screens for public trust-center

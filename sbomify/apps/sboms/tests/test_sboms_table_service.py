@@ -114,7 +114,11 @@ class TestBuildSbomsTableContext:
         mock_list_sboms.return_value = (200, {"items": sboms})
         mock_assessment_badge.return_value = MagicMock(model_dump=lambda: {})
 
-        result = build_sboms_table_context(mock_request, "comp123", is_public_view=True)
+        # ?full=1 returns the whole history (the component card otherwise shows
+        # only the latest artifact of each type), so the sort order is testable.
+        full_request = RequestFactory().get("/?full=1")
+        full_request.session = {}
+        result = build_sboms_table_context(full_request, "comp123", is_public_view=True)
 
         assert result.ok is True
         # First should be "alpha" (alphabetical), and between alphas, newer first

@@ -31,12 +31,12 @@ Rendered into #vex-documents-container, which re-fetches on refreshVexDocuments.
                                 <td class="break-all">
                                     <span class="font-medium text-text">{{ doc.name }}</span>
                                     {% if doc.unreadable %}
-                                        <span class="tw-badge tw-badge-warning text-xs ml-1"
+                                        <span class="tw-badge tw-badge-violet text-xs ml-1"
                                               title="Could not read this document from storage">unreadable</span>
                                     {% endif %}
                                 </td>
                                 <td class="hidden md:table-cell">
-                                    <span class="tw-badge tw-badge-warning text-xs">VEX</span>
+                                    <span class="tw-badge tw-badge-violet text-xs">VEX</span>
                                     <span class="text-text-muted text-xs ml-1">{{ doc.format_label }}</span>
                                 </td>
                                 <td class="hidden md:table-cell text-text-muted text-sm">{{ doc.source_label }}</td>
