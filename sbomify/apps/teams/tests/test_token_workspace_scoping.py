@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 
 from sbomify.apps.access_tokens.models import AccessToken
@@ -88,6 +89,31 @@ class TestWorkspaceListingScope:
         assert response.status_code == 200
         keys = {ws["key"] for ws in response.json()}
         assert keys == {bound.key, other.key}
+
+    def test_publish_only_token_cannot_list_workspaces(self, owner_of_two_workspaces):
+        user, bound, _ = owner_of_two_workspaces
+        token = AccessToken.objects.create(
+            user=user,
+            encoded_token=create_personal_access_token(user),
+            team=bound,
+            scopes=["artifact:publish"],
+            description="Publish-only token",
+        )
+        response = Client().get(WORKSPACES_URL, **_headers(token))
+        assert response.status_code == 403
+
+    def test_read_scoped_token_lists_bound_workspace(self, owner_of_two_workspaces):
+        user, bound, _ = owner_of_two_workspaces
+        token = AccessToken.objects.create(
+            user=user,
+            encoded_token=create_personal_access_token(user),
+            team=bound,
+            scopes=["workspace:read"],
+            description="Read-scoped token",
+        )
+        response = Client().get(WORKSPACES_URL, **_headers(token))
+        assert response.status_code == 200
+        assert [ws["key"] for ws in response.json()] == [bound.key]
 
 
 @pytest.mark.django_db
@@ -172,6 +198,31 @@ class TestWorkspaceSettingsScope:
             Client(), f"{WORKSPACES_URL}{other.key}/branding/brand_color", {"value": "#123456"}, scoped_token
         )
         assert response.status_code == 403
+
+    def test_scoped_token_cannot_put_branding_in_non_bound_workspace(self, owner_of_two_workspaces, scoped_token):
+        _, _, other = owner_of_two_workspaces
+        response = Client().put(
+            f"{WORKSPACES_URL}{other.key}/branding",
+            json.dumps({"brand_color": "#123456"}),
+            content_type="application/json",
+            **_headers(scoped_token),
+        )
+        assert response.status_code == 403
+        other.refresh_from_db()
+        assert not other.branding_info.get("brand_color")
+
+    def test_scoped_token_cannot_upload_branding_file_in_non_bound_workspace(
+        self, owner_of_two_workspaces, scoped_token
+    ):
+        _, _, other = owner_of_two_workspaces
+        response = Client().post(
+            f"{WORKSPACES_URL}{other.key}/branding/upload/icon",
+            {"file": SimpleUploadedFile("icon.png", b"not-a-real-png", content_type="image/png")},
+            **_headers(scoped_token),
+        )
+        assert response.status_code == 403
+        other.refresh_from_db()
+        assert not other.branding_info.get("icon")
 
     def test_scoped_token_can_patch_bound_workspace(self, owner_of_two_workspaces, scoped_token):
         _, bound, _ = owner_of_two_workspaces

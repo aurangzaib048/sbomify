@@ -1257,11 +1257,19 @@ def list_teams(request: HttpRequest) -> tuple[int, Any]:
     if not all_memberships.exists():
         return 200, []
 
-    memberships = (
-        all_memberships.exclude(role="guest").select_related("team").order_by("team__created_at", "team__id").all()
+    memberships = list(
+        all_memberships.exclude(role="guest").select_related("team").order_by("team__created_at", "team__id")
     )
     if not memberships:
         return 403, {"detail": "Guest members can only access public pages"}
+
+    # Route token-authenticated listings through can() so a narrow
+    # action-scoped token (e.g. publish-only) can't enumerate workspaces its
+    # scopes don't grant it to read. Sessions carry no token and skip this.
+    if getattr(request, "access_token_record", None) is not None:
+        memberships = [m for m in memberships if can(request, "workspace:read", m.team)]
+        if not memberships:
+            return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     return 200, [_build_team_response(request, membership.team) for membership in memberships]
 
