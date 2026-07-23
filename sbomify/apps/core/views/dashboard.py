@@ -52,9 +52,22 @@ class DashboardView(GuestAccessBlockedMixin, ValidateWorkspaceMixin, LoginRequir
 
         has_crud_permissions = current_team.get("role") in ["owner", "admin"]
 
+        from django.utils import timezone
+
+        from sbomify.apps.core.services.dashboard_page import build_dashboard_context
+
+        hour = timezone.localtime().hour
+        daypart = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
+        greeting = f"Good {daypart}"
+        first_name = getattr(request.user, "first_name", "")
+        if first_name:
+            greeting += f", {first_name}"
+
         context = {
             "current_team": current_team,
             "has_crud_permissions": has_crud_permissions,
+            "greeting": greeting,
+            "dashboard": build_dashboard_context(team.id) if team else {"is_first_visit": True},
         }
 
         return render(request, "core/dashboard.html.j2", context)

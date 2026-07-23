@@ -4,11 +4,132 @@
 {% block title %}sbomify Dashboard{% endblock %}
 {% block dashboard_content %}
     <div class="space-y-6">
-        {# Page Header #}
+        {# Greeting header — the security picture, not a page label #}
         <div class="mb-2">
-            <h1 class="text-2xl font-bold text-text">Dashboard</h1>
+            <h1 class="text-2xl font-bold text-text">{{ greeting }}</h1>
+            {% if dashboard.is_first_visit %}
+                <p class="text-text-muted text-sm m-0 mt-1">Let's get your first component reporting.</p>
+            {% else %}
+                <p class="text-text-muted text-sm m-0 mt-1">Here's the security picture across {{ current_team.name }}.</p>
+            {% endif %}
         </div>
-        {# Vulnerability Trends & Recent SBOM Scans #}
+        {% if dashboard.is_first_visit %}
+            {# First visit — the guided journey card owns the page until the first artifact lands. #}
+            <div class="tw-card">
+                <div class="px-6 py-4 border-b border-border">
+                    <h4 class="text-lg font-semibold text-text m-0">Finish setting up</h4>
+                </div>
+                <div class="p-6 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
+                    <div>
+                        <h5 class="text-base font-semibold text-text mt-0 mb-2">Connect CI/CD — sbomify does the rest</h5>
+                        <p class="text-sm text-text-muted mt-0 mb-4">
+                            Create a component, add one step to your pipeline, and every push generates and uploads an SBOM automatically. No files to manage.
+                        </p>
+                        <ol class="text-sm text-text space-y-3 m-0 pl-0 list-none">
+                            <li class="flex items-start gap-3">
+                                <span class="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0">1</span>
+                                <span>
+                                    <strong>Create a product and component</strong> with the New button above — the component is what your pipeline pushes to.
+                                </span>
+                            </li>
+                            <li class="flex items-start gap-3">
+                                <span class="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0">2</span>
+                                <span>
+                                    <strong>Copy the pipeline snippet</strong> from CI/CD integration in the component's menu — GitHub Actions, GitLab CI, Bitbucket, Azure, or Jenkins.
+                                </span>
+                            </li>
+                            <li class="flex items-start gap-3">
+                                <span class="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center flex-shrink-0">3</span>
+                                <span><strong>Push</strong> — the SBOM uploads, scans run, and this page fills in.</span>
+                            </li>
+                        </ol>
+                        <p class="text-sm text-text-muted mt-4 mb-0">
+                            Already have an SBOM file? Upload it manually from the component's menu — you can automate later.
+                        </p>
+                    </div>
+                    <div class="rounded-xl border border-dashed border-border p-5">
+                        <div class="text-[10px] font-bold tracking-wider text-text-muted uppercase mb-3">What happens next</div>
+                        <ol class="text-sm text-text space-y-2 m-0 pl-4">
+                            <li>
+                                <strong>Your first push</strong> lands the SBOM on your component
+                            </li>
+                            <li>
+                                <strong>We scan it</strong> for vulnerabilities within minutes
+                            </li>
+                            <li>
+                                <strong>This page fills in</strong> — trends, findings, and what to fix first
+                            </li>
+                        </ol>
+                        <div class="flex items-center gap-2 mt-5 text-xs text-text-muted">
+                            <span class="px-2 py-1 rounded border border-dashed border-border">Product</span>
+                            <i class="fas fa-arrow-right text-[10px]"></i>
+                            <span class="px-2 py-1 rounded border border-dashed border-border">Component</span>
+                            <i class="fas fa-arrow-right text-[10px]"></i>
+                            <span class="px-2 py-1 rounded border border-dashed border-border">SBOM</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            {# Needs attention — the worst non-suppressed findings across the workspace #}
+            {% if dashboard.needs_attention %}
+                <div class="tw-card">
+                    <div class="px-6 py-4 border-b border-border flex items-center justify-between gap-3">
+                        <h4 class="text-lg font-semibold text-text m-0 flex items-center gap-2">
+                            Needs attention
+                            <span class="px-2 py-0.5 text-xs font-bold rounded-full bg-danger/10 text-danger">{{ dashboard.needs_attention|length }}</span>
+                        </h4>
+                        <a href="{% url 'vulnerability_scanning:vulnerability_scans' current_team.key %}"
+                           class="text-sm text-primary hover:underline no-underline inline-flex items-center gap-1">
+                            View all scans<i class="fas fa-arrow-right text-xs"></i>
+                        </a>
+                    </div>
+                    <div class="divide-y divide-border">
+                        {% for finding in dashboard.needs_attention %}
+                            <div class="px-6 py-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+                                {% if finding.severity == 'critical' %}
+                                    <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-danger/10 text-danger border border-danger/30">Critical</span>
+                                {% elif finding.severity == 'high' %}
+                                    <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-severity-high-soft text-severity-high border border-severity-high-soft">High</span>
+                                {% elif finding.severity == 'medium' %}
+                                    <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-info/10 text-info border border-info/30">Medium</span>
+                                {% else %}
+                                    <span class="px-2 py-1 text-xs font-semibold uppercase tracking-wide rounded bg-border/40 text-text-muted border border-border">{{ finding.severity|capfirst }}</span>
+                                {% endif %}
+                                {% if finding.id|slice:":4" == "CVE-" %}
+                                    <a href="https://nvd.nist.gov/vuln/detail/{{ finding.id }}"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       class="font-mono text-sm text-primary hover:underline">{{ finding.id }}</a>
+                                {% elif finding.id|slice:":5" == "GHSA-" %}
+                                    <a href="https://github.com/advisories/{{ finding.id }}"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       class="font-mono text-sm text-primary hover:underline">{{ finding.id }}</a>
+                                {% else %}
+                                    <a href="https://osv.dev/vulnerability/{{ finding.id }}"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       class="font-mono text-sm text-primary hover:underline">{{ finding.id }}</a>
+                                {% endif %}
+                                <span class="text-sm text-text font-medium">{{ finding.package }}</span>
+                                {% if finding.version %}<span class="text-sm text-text-muted">· {{ finding.version }}</span>{% endif %}
+                                <span class="text-sm text-text-muted">
+                                    in <span class="font-medium text-text">{{ finding.component_name }}</span>
+                                    {% if finding.sbom_version %}v{{ finding.sbom_version|truncatechars:18 }}{% endif %}
+                                    {% if finding.scanned_at %}· scanned {{ finding.scanned_at|timesince }} ago{% endif %}
+                                </span>
+                                <a href="{% url 'core:component_details' finding.component_id %}"
+                                   class="ml-auto text-sm text-primary hover:underline no-underline inline-flex items-center gap-1">
+                                    Review<i class="fas fa-arrow-right text-xs"></i>
+                                </a>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endif %}
+        {% endif %}
+        {# Vulnerability Trends #}
         <div class="tw-card">
             <div hx-get="{% url 'vulnerability_scanning:vulnerability_trends' %}?show_product_filter=true"
                  hx-trigger="load"
