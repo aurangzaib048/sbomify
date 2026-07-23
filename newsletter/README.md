@@ -26,6 +26,11 @@ bunx mjml --watch newsletter/sbomify-newsletter.mjml -o /tmp/newsletter.html
 You can also paste the template into the [MJML live editor](https://mjml.io/try-it-live)
 for a quick visual preview.
 
+Alternatively, run the **Build Newsletter** workflow from the GitHub Actions tab
+(`.github/workflows/newsletter.yml`, manual trigger). It compiles the template
+and uploads the HTML as a `newsletter-html` build artifact you can download
+from the run page.
+
 ## Writing an issue
 
 1. Copy `sbomify-newsletter.mjml` (or edit in place and don't commit the issue).
