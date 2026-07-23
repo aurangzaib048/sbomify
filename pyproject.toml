@@ -66,6 +66,7 @@ dependencies = [
     # the Dockerfile's python-common-code stage.
     "weasyprint>=68.0,<70",
     "defusedxml>=0.7.1",
+    "defusedcsv>=3.0.0",
 ]
 
 [project.urls]
@@ -277,6 +278,7 @@ module = [
     "channels_redis.*",
     "widget_tweaks.*",
     "debug_toolbar.*",
+    "defusedcsv.*",
 ]
 ignore_missing_imports = true
 

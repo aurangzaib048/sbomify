@@ -14,14 +14,17 @@ buttons and links, and the brand gradient (blue → pink → peach) as an accent
 No install needed — run from the repo root:
 
 ```bash
-bunx mjml newsletter/sbomify-newsletter.mjml -o newsletter/sbomify-newsletter.html
+bunx mjml@5.4.0 newsletter/sbomify-newsletter.mjml -o newsletter/sbomify-newsletter.html
 ```
 
 Preview while editing:
 
 ```bash
-bunx mjml --watch newsletter/sbomify-newsletter.mjml -o /tmp/newsletter.html
+bunx mjml@5.4.0 --watch newsletter/sbomify-newsletter.mjml -o /tmp/newsletter.html
 ```
+
+The version is pinned to match the CI workflow so local output is identical to
+the build artifact.
 
 You can also paste the template into the [MJML live editor](https://mjml.io/try-it-live)
 for a quick visual preview.

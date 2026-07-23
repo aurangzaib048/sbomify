@@ -2,7 +2,7 @@
   sbomify newsletter template (MJML)
 
   Compile to email-safe HTML with:
-    bunx mjml newsletter/sbomify-newsletter.mjml -o newsletter/sbomify-newsletter.html
+    bunx mjml@5.4.0 newsletter/sbomify-newsletter.mjml -o newsletter/sbomify-newsletter.html
 
   Placeholders to replace per issue are marked with [[DOUBLE_BRACKETS]].
   ESP merge tags (unsubscribe, address, web version) are marked with

@@ -10,9 +10,9 @@ uploaded as-is when manually synchronizing the newsletter list.
 
 from __future__ import annotations
 
-import csv
 from typing import Any
 
+from defusedcsv import csv
 from django.core.management.base import BaseCommand
 
 from sbomify.apps.core.models import User
