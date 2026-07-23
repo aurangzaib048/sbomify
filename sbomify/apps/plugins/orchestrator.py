@@ -139,8 +139,14 @@ class PluginOrchestrator:
             return None
         # Crypto-gated plugins skip dispatch when upload determined the document
         # holds no crypto assets. None (pre-field rows) still runs — unknown is
-        # not a reason to skip.
-        if metadata.requires_crypto_assets and sbom_instance_check.has_crypto_assets is False:
+        # not a reason to skip. An artifact explicitly tagged cbom also always
+        # runs: a CBOM declaring zero crypto assets is a generator misfire the
+        # plugin must surface as a warning, not silently skip.
+        if (
+            metadata.requires_crypto_assets
+            and sbom_instance_check.has_crypto_assets is False
+            and sbom_instance_check.bom_type != "cbom"
+        ):
             logger.info(f"[PLUGIN] Skipping plugin '{metadata.name}' for SBOM {sbom_id}: document has no crypto assets")
             return None
         config_hash = compute_config_hash(plugin.config)

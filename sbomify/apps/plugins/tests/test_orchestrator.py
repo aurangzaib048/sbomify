@@ -780,6 +780,26 @@ class TestCryptoAssetGate:
 
         assert run is None
 
+    def test_explicit_cbom_runs_even_when_stamped_crypto_free(self, test_sbom, mock_sbom_data, mocker) -> None:
+        """A cbom-tagged artifact with has_crypto_assets=False is a generator
+        misfire: PQC must run and warn, not skip."""
+        mocker.patch(
+            "sbomify.apps.plugins.orchestrator.get_sbom_data_bytes",
+            return_value=(test_sbom, mock_sbom_data),
+        )
+        test_sbom.bom_type = "cbom"
+        test_sbom.has_crypto_assets = False
+        test_sbom.save(update_fields=["bom_type", "has_crypto_assets"])
+
+        run = PluginOrchestrator().run_assessment(
+            sbom_id=test_sbom.id, plugin=self._pqc_plugin(), run_reason=RunReason.ON_UPLOAD
+        )
+
+        assert run is not None
+        assert run.status == RunStatus.COMPLETED.value
+        assert run.result["findings"][0]["status"] == "warning"  # the misfire surfaces
+        assert not (run.result.get("metadata") or {}).get("skipped")
+
     def test_runs_when_crypto_flag_unknown(self, test_sbom, mock_sbom_data, mocker) -> None:
         # Rows predating the field (None) still run: unknown is not a skip reason.
         mocker.patch(
