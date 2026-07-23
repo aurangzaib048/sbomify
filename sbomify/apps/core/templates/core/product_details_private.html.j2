@@ -77,15 +77,15 @@
             </div>
             {# Visibility toggle + meatball menu #}
             {% if product.has_crud_permissions %}
-                <div class="flex-shrink-0 flex items-center gap-2"
+                <div class="flex-shrink-0 flex items-stretch gap-2"
                      x-data="{ pmenu: false, isPublic: {{ product.is_public|yesno:'true,false' }} }"
                      @public-status-changed.window="if ($event.detail.itemType === 'product' && $event.detail.itemId === '{{ product.id }}') isPublic = $event.detail.isPublic"
                      @keydown.escape.window="pmenu = false">
                     {% url 'core:product_details_public' product.id as product_public_url %}
                     {% include 'core/components/product_visibility_selector.html.j2' with item_id=product.id is_public=product.is_public %}
-                    <div class="relative">
+                    <div class="relative flex">
                         <button type="button"
-                                class="w-10 h-10 rounded-lg border border-border bg-surface text-text-muted hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center"
+                                class="w-12 min-h-10 h-full rounded-lg border border-border bg-background text-text-muted hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center"
                                 @click="pmenu = !pmenu"
                                 :aria-expanded="pmenu"
                                 aria-haspopup="true"
@@ -96,7 +96,7 @@
                              x-cloak
                              x-transition
                              @click.outside="pmenu = false"
-                             class="absolute right-0 top-12 w-64 bg-surface border border-border rounded-xl shadow-lg p-1.5 z-40"
+                             class="absolute right-0 top-full mt-2 w-64 bg-surface border border-border rounded-xl shadow-lg p-1.5 z-40"
                              role="menu">
                             <div class="px-2.5 pt-1.5 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Product</div>
                             <a href="{% url 'core:sbom_download_product' product.id %}"

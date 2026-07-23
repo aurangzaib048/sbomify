@@ -2084,6 +2084,10 @@ html.no-transitions * {
   overflow: hidden;
 }
 
+.tw-modal-content.tw-modal-wide {
+  max-width: 56rem;
+}
+
 .tw-modal-header {
   display: flex;
   align-items: center;

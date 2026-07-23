@@ -690,6 +690,15 @@ wheels = [
 ]
 
 [[package]]
+name = "defusedcsv"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/1d/0c17ea5e5f8e456515e3368aa8821fbdf094ed29ac886f0b2f0f3779ab34/defusedcsv-3.0.0.tar.gz", hash = "sha256:018678533bc375f3bf2f70f9721e48daf3800a88320dc325c1dac67ee09e2a45", size = 9083, upload-time = "2025-09-02T12:16:40.881Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/79/ab/a2b9f4a1edc0828414fa4063fabe2f456e705e548dd530e0c8bc76d017e4/defusedcsv-3.0.0-py3-none-any.whl", hash = "sha256:5e5f2e940cefb5ac60580c8009388bfb154b7853784d34a8f0ff3a52c6130e87", size = 7990, upload-time = "2025-09-02T12:16:39.818Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2712,6 +2721,7 @@ dependencies = [
     { name = "channels" },
     { name = "channels-redis" },
     { name = "compliance-trestle" },
+    { name = "defusedcsv" },
     { name = "defusedxml" },
     { name = "dj-database-url" },
     { name = "django" },
@@ -2791,6 +2801,7 @@ requires-dist = [
     { name = "channels", specifier = ">=4.0.0,<5" },
     { name = "channels-redis", specifier = ">=4.2.0,<5" },
     { name = "compliance-trestle", specifier = ">=4.0.1,<5" },
+    { name = "defusedcsv", specifier = ">=3.0.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "dj-database-url", specifier = ">=3.0.1,<4" },
     { name = "django", specifier = ">=5.2.14,<7" },
