@@ -1,15 +1,7 @@
-<div class="tw-settings-card" x-data="{ expanded: false }">
-    <div class="flex justify-between items-center cursor-pointer px-6 py-4 border-b border-border"
-         @click="expanded = !expanded"
-         :class="{ 'border-b-0': !expanded }"
-         :aria-expanded="expanded"
-         aria-controls="componentMetadataContent">
-        <h5 class="text-lg font-semibold text-text m-0">Component Metadata</h5>
-        <i class="fas fa-chevron-down text-text-muted transition-transform"
-           :class="expanded ? 'rotate-180' : ''"></i>
-    </div>
-    <div id="componentMetadataContent" x-show="expanded" x-collapse>
-        <div class="p-6">
+{# Rendered inside the metadata modal: the modal header owns the title, so this is bare content. #}
+<div>
+    <div id="componentMetadataContent">
+        <div>
             <div class="flex items-center gap-2 mb-6 p-3 rounded-lg bg-info/10">
                 <i class="fas fa-info-circle text-primary"></i>
                 <span class="text-sm text-text-muted">

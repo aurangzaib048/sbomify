@@ -31,15 +31,17 @@
                     <p class="text-text-muted text-sm m-0 mt-1">{{ component.component_type_display }} Component</p>
                 </div>
             </div>
-            {# Visibility Toggle + meatball menu #}
-            {% if component.has_crud_permissions %}
-                <div class="flex-shrink-0 flex items-center gap-2">
-                    {% url 'core:component_details_public' component.id as component_public_url %}
-                    {% include 'core/components/component_visibility_selector.html.j2' with component=component component_public_url=component_public_url company_nda_id=company_nda_id gated_visibility_allowed=gated_visibility_allowed team_key=team_key APP_BASE_URL=APP_BASE_URL %}
-                    {# Meatball menu — moves secondary actions off the page body (design review p8/p9) #}
-                    <div class="relative" @keydown.escape.window="compMenu = false">
+            {# Visibility Toggle + meatball menu. The menu renders for every member (metadata is a read surface); write actions inside stay CRUD-gated. #}
+            {% if component.has_crud_permissions or component.component_type == 'bom' %}
+                <div class="flex-shrink-0 flex items-stretch gap-2">
+                    {% if component.has_crud_permissions %}
+                        {% url 'core:component_details_public' component.id as component_public_url %}
+                        {% include 'core/components/component_visibility_selector.html.j2' with component=component component_public_url=component_public_url company_nda_id=company_nda_id gated_visibility_allowed=gated_visibility_allowed team_key=team_key APP_BASE_URL=APP_BASE_URL %}
+                    {% endif %}
+                    {# Meatball menu — moves secondary surfaces off the page body (design review p8/p9): upload, metadata, CI/CD integration, trusted publishers all open from here. #}
+                    <div class="relative flex" @keydown.escape.window="compMenu = false">
                         <button type="button"
-                                class="w-10 h-10 rounded-lg border border-border bg-surface text-text-muted hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center"
+                                class="w-12 min-h-10 h-full rounded-lg border border-border bg-background text-text-muted hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center"
                                 @click="compMenu = !compMenu"
                                 :aria-expanded="compMenu"
                                 aria-haspopup="true"
@@ -50,40 +52,60 @@
                              x-cloak
                              x-transition
                              @click.outside="compMenu = false"
-                             class="absolute right-0 top-12 w-60 bg-surface border border-border rounded-xl shadow-lg p-1.5 z-40"
+                             class="absolute right-0 top-full mt-2 w-60 bg-surface border border-border rounded-xl shadow-lg p-1.5 z-40"
                              role="menu">
-                            {% block meatball_artifacts %}
-                                <div class="px-2.5 pt-1.5 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Artifacts</div>
+                            {% if component.has_crud_permissions %}
+                                {% block meatball_artifacts %}
+                                    <div class="px-2.5 pt-1.5 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Artifacts</div>
+                                    <button type="button"
+                                            role="menuitem"
+                                            class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                            @click="compMenu = false; $dispatch('open-upload')">
+                                        <i class="fas fa-upload w-4 text-text-muted" aria-hidden="true"></i>Upload artifact…
+                                    </button>
+                                    <hr class="my-1.5 border-border">
+                                {% endblock %}
+                            {% endif %}
+                            <div class="px-2.5 pt-1 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Component</div>
+                            {% if component.component_type == 'bom' %}
                                 <button type="button"
                                         role="menuitem"
                                         class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                        @click="compMenu = false; $dispatch('open-upload')">
-                                    <i class="fas fa-upload w-4 text-text-muted" aria-hidden="true"></i>Upload artifact…
+                                        @click="compMenu = false; $dispatch('open-metadata')">
+                                    <i class="fas fa-address-card w-4 text-text-muted" aria-hidden="true"></i>Metadata…
                                 </button>
-                                <hr class="my-1.5 border-border">
-                            {% endblock %}
-                            <div class="px-2.5 pt-1 pb-1 text-[10px] font-bold tracking-wider text-text-muted uppercase">Component</div>
-                            <button type="button"
-                                    role="menuitem"
-                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                    @click="compMenu = false; $dispatch('edit-metadata'); $nextTick(() => document.getElementById('component-metadata')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))">
-                                <i class="fas fa-pen w-4 text-text-muted" aria-hidden="true"></i>Edit metadata…
-                            </button>
-                            {# Public-only actions; visibility is reactive so these appear/disappear the moment it changes, no reload. #}
-                            <button type="button"
-                                    role="menuitem"
-                                    x-show="visibility === 'public' || visibility === 'gated'"
-                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                    @click="compMenu = false; $dispatch('copy-url')">
-                                <i class="fas fa-link w-4 text-text-muted" aria-hidden="true"></i>Copy public URL
-                            </button>
-                            <button type="button"
-                                    role="menuitem"
-                                    x-show="visibility === 'public' || visibility === 'gated'"
-                                    class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
-                                    @click="compMenu = false; $dispatch('copy-badge')">
-                                <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
-                            </button>
+                            {% endif %}
+                            {% if component.has_crud_permissions %}
+                                {% if component.component_type == 'bom' %}
+                                    <button type="button"
+                                            role="menuitem"
+                                            class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                            @click="compMenu = false; $dispatch('open-cicd')">
+                                        <i class="fas fa-gears w-4 text-text-muted" aria-hidden="true"></i>CI/CD integration…
+                                    </button>
+                                {% endif %}
+                                <button type="button"
+                                        role="menuitem"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; $dispatch('open-trusted-publishers')">
+                                    <i class="fas fa-shield-halved w-4 text-text-muted" aria-hidden="true"></i>Trusted publishers…
+                                </button>
+                                {# Public-only actions; visibility is reactive so these appear/disappear the moment it changes, no reload. #}
+                                <button type="button"
+                                        role="menuitem"
+                                        x-show="visibility === 'public' || visibility === 'gated'"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; $dispatch('copy-url')">
+                                    <i class="fas fa-link w-4 text-text-muted" aria-hidden="true"></i>Copy public URL
+                                </button>
+                                <button type="button"
+                                        role="menuitem"
+                                        x-show="visibility === 'public' || visibility === 'gated'"
+                                        class="flex items-center gap-3 w-full px-2.5 py-2 rounded-lg text-sm font-semibold text-text hover:bg-background text-left"
+                                        @click="compMenu = false; $dispatch('copy-badge')">
+                                    <i class="fas fa-certificate w-4 text-text-muted" aria-hidden="true"></i>Copy badge
+                                </button>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
