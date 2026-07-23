@@ -112,7 +112,6 @@
                                 {% if finding.version %}<span class="text-sm text-text-muted">· {{ finding.version }}</span>{% endif %}
                                 <span class="text-sm text-text-muted">
                                     in <span class="font-medium text-text">{{ finding.component_name }}</span>
-                                    {% if finding.sbom_version %}v{{ finding.sbom_version|truncatechars:18 }}{% endif %}
                                     {% if finding.scanned_at %}· scanned {{ finding.scanned_at|timesince }} ago{% endif %}
                                 </span>
                                 <a href="{% url 'core:component_details' finding.component_id %}"
