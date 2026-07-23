@@ -37,7 +37,7 @@ class Command(BaseCommand):
             .values_list("email", "first_name", "last_name")
         )
 
-        writer = csv.writer(self.stdout)
+        writer = csv.writer(self.stdout)  # type: ignore[no-untyped-call]
         writer.writerow(MAILJET_HEADER)
         for email, first_name, last_name in subscribers:
             writer.writerow([email, first_name, last_name, "", "", ""])
