@@ -196,6 +196,9 @@ def update_team_branding_field(
         logger.warning(f"User {user.username} is not owner of team {team_key}")
         return 403, {"detail": "Only allowed for owners"}
 
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     branding_data = _normalize_branding_payload(team.branding_info)
     current_branding = BrandingInfo(**branding_data)
     update_data = current_branding.model_dump()
@@ -271,6 +274,9 @@ def update_team_branding(
         logger.warning(f"User {user.username} is not owner of team {team_key}")
         return 403, {"detail": "Only allowed for owners"}
 
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     # TODO: has to be a separate model
     branding_data = _normalize_branding_payload(team.branding_info)
     branding_info = BrandingInfo(**branding_data).model_dump()
@@ -343,6 +349,9 @@ def upload_branding_file(
 
     if not Member.objects.filter(user=user, team=team, role="owner").exists():
         return 403, {"detail": "Only allowed for owners"}
+
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     branding_data = _normalize_branding_payload(team.branding_info)
     current_branding = BrandingInfo(**branding_data)
@@ -741,6 +750,10 @@ def get_contact_profile(
     if error:
         return error
 
+    assert team is not None  # guaranteed when error is None
+    if not can(request, "workspace:read", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     # Allow all team members to view contact profiles (for use in component metadata)
     try:
         profile = ContactProfile.objects.prefetch_related("entities", "entities__contacts").get(
@@ -767,6 +780,10 @@ def create_contact_profile(request: HttpRequest, team_key: str, payload: Contact
         return 403, {"detail": "Only owners and admins can manage contact profiles"}
 
     assert team is not None  # guaranteed when error is None
+    # can() also enforces token workspace/action scope — the membership role
+    # check above alone would let a token scoped to another workspace write here.
+    if not can(request, "workspace:manage", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     try:
         with transaction.atomic():
@@ -861,6 +878,8 @@ def update_contact_profile(
         return 403, {"detail": "Only owners and admins can manage contact profiles"}
 
     assert team is not None  # guaranteed when error is None
+    if not can(request, "workspace:manage", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     try:
         profile = ContactProfile.objects.prefetch_related("entities", "entities__contacts").get(
@@ -973,6 +992,10 @@ def delete_contact_profile(request: HttpRequest, team_key: str, profile_id: str)
     if not _user_can_manage_profiles(role):
         return 403, {"detail": "Only owners and admins can manage contact profiles"}
 
+    assert team is not None  # guaranteed when error is None
+    if not can(request, "workspace:manage", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     try:
         profile = ContactProfile.objects.get(team=team, pk=profile_id)
     except ContactProfile.DoesNotExist:
@@ -1006,6 +1029,9 @@ def update_team(request: HttpRequest, team_key: str, payload: TeamUpdateSchema) 
     # Check if user is owner
     if not Member.objects.filter(user=user, team=team, role="owner").exists():
         return 403, {"detail": "Only owners can update team information"}
+
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     try:
         with transaction.atomic():
@@ -1052,6 +1078,9 @@ def patch_team(request: HttpRequest, team_key: str, payload: TeamPatchSchema) ->
     # Check if user is owner
     if not Member.objects.filter(user=user, team=team, role="owner").exists():
         return 403, {"detail": "Only owners can update team information"}
+
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     try:
         with transaction.atomic():
@@ -1109,6 +1138,9 @@ def update_team_domain(request: HttpRequest, team_key: str, payload: TeamDomainS
     # Check if user is owner
     if not Member.objects.filter(user=user, team=team, role="owner").exists():
         return 403, {"detail": "Only owners can update team domain"}
+
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
 
     # Feature gating: Check billing plan
     from sbomify.apps.billing.models import BillingPlan
@@ -1188,6 +1220,9 @@ def delete_team_domain(request: HttpRequest, team_key: str) -> tuple[int, Any]:
     if not Member.objects.filter(user=user, team=team, role="owner").exists():
         return 403, {"detail": "Only owners can update team domain"}
 
+    if not can(request, "workspace:administer", team):
+        return 403, {"detail": "Forbidden", "error_code": ErrorCode.FORBIDDEN}
+
     # Store domain for cache invalidation
     old_domain = team.custom_domain
 
@@ -1210,6 +1245,15 @@ def list_teams(request: HttpRequest) -> tuple[int, Any]:
     user = cast(User, request.user)
 
     all_memberships = Member.objects.filter(user=user)
+
+    # A workspace-scoped token must only see its bound workspace. Every other
+    # endpoint resolves to the token's team (via can()/_get_user_team_id), so
+    # listing all of the user's workspaces here lets scoped-token clients bind
+    # to a workspace the token can't actually act on.
+    token_team = getattr(request, "token_team", None)
+    if token_team is not None:
+        all_memberships = all_memberships.filter(team=token_team)
+
     if not all_memberships.exists():
         return 200, []
 
