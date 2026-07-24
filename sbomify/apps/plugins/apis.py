@@ -1,6 +1,8 @@
 """API endpoints for the plugins framework."""
 
+import importlib
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any
 
 from django.db.models import OuterRef, Subquery
@@ -467,6 +469,23 @@ class UpdateTeamPluginSettingsRequest(BaseModel):
     plugin_configs: dict[str, Any] | None = None
 
 
+@lru_cache(maxsize=64)
+def _plugin_supported_bom_types(plugin_class_path: str) -> tuple[str, ...]:
+    """BOM types a plugin declares in its metadata, for the artifact-type badges.
+
+    Falls back to ("sbom",) when the class cannot be loaded so a stale registry
+    row never breaks the settings page. Cached per class path — metadata is
+    static for the lifetime of the process.
+    """
+    try:
+        module_path, class_name = plugin_class_path.rsplit(".", 1)
+        plugin_class = getattr(importlib.import_module(module_path), class_name)
+        supported = plugin_class().get_metadata().supported_bom_types
+        return tuple(supported) if supported else ("sbom",)
+    except Exception:  # noqa: BLE001 - plugin code is arbitrary; never break the listing
+        return ("sbom",)
+
+
 def _get_plugin_plan_requirement(plugin_name: str) -> str | None:
     """Get the required plan feature for a plugin.
 
@@ -591,6 +610,7 @@ def get_team_plugin_settings(request: HttpRequest, team_key: str) -> tuple[int, 
                 "version": p.version,
                 "default_config": p.default_config,
                 "is_beta": p.is_beta,
+                "supported_bom_types": list(_plugin_supported_bom_types(p.plugin_class_path)),
                 "has_access": has_access,
                 "requires_upgrade": required_feature is not None and not has_access,
                 "required_plan": "Business" if required_feature else None,
