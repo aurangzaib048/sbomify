@@ -191,6 +191,20 @@ def _tokens(haystack: str) -> set[str]:
     return set(re.split(r"[^a-z0-9]+", haystack))
 
 
+def asset_identity_haystack(asset: CryptoAsset) -> str:
+    """Lowercased identity words for an asset (name, family, curve, params, OID).
+
+    Shared with other classifiers so OID resolution and field precedence stay
+    in one place.
+    """
+    return _haystack(asset)
+
+
+def identity_tokens(haystack: str) -> set[str]:
+    """Whole tokens of an identity haystack, for short names like "des" or "dh"."""
+    return _tokens(haystack)
+
+
 def _classify_symmetric_or_hash(hay: str) -> tuple[PqcStatus, str, str] | None:
     """Symmetric ciphers and hashes (Grover-weakened, not Shor-broken), or None."""
     if "md5" in hay or re.search(r"sha-?1(?![0-9])", hay):
