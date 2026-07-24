@@ -979,7 +979,9 @@ def enqueue_assessments_for_existing_sboms_task(
                 component__component_type=Component.ComponentType.BOM,
                 bom_type=SBOM.BomType.SBOM,
                 created_at__gte=cutoff_time,
-            ).select_related("component")
+            )
+            .exclude(sbom_filename="")
+            .select_related("component")
         )
         sbom_ids = [sbom.id for sbom in sboms]
 
@@ -1182,6 +1184,9 @@ def _run_scheduled_security_scans(
                 bom_type=SBOM.BomType.SBOM,
                 component__team_id__in=team_ids,
             )
+            # A row with no stored artifact can never be assessed; failed runs
+            # do not count as recent, so without this it re-fails every sweep.
+            .exclude(sbom_filename="")
             .annotate(
                 has_release_artifact=Exists(
                     ReleaseArtifact.objects.filter(
