@@ -184,10 +184,10 @@ class TestComponentCbomIssuesTable:
         component, cbom = self._cbom_with_run(
             team,
             findings=[
-                {"title": "ML-DSA-65 — Quantum-safe", "status": "pass", "severity": "info", "description": "ok"},
-                {"title": "SHA-1 — Deprecated", "status": "warning", "severity": "medium", "description": "sunset"},
+                {"title": "ML-DSA-65: Quantum-safe", "status": "pass", "severity": "info", "description": "ok"},
+                {"title": "SHA-1: Deprecated", "status": "warning", "severity": "medium", "description": "sunset"},
                 {
-                    "title": "ECDSA-P384 — Quantum-vulnerable",
+                    "title": "ECDSA-P384: Quantum-vulnerable",
                     "status": "fail",
                     "severity": "high",
                     "description": "bad",
@@ -200,7 +200,7 @@ class TestComponentCbomIssuesTable:
         assert response.status_code == 200
         issues = response.context["latest_cbom_issues"]
         assert [row["status"] for row in issues] == ["fail", "warning"]
-        assert issues[0]["title"] == "ECDSA-P384 — Quantum-vulnerable"
+        assert issues[0]["title"] == "ECDSA-P384: Quantum-vulnerable"
         assert response.context["latest_cbom_id"] == cbom.id
         assert b"CBOM issues" in response.content
 
@@ -209,7 +209,7 @@ class TestComponentCbomIssuesTable:
         component, _ = self._cbom_with_run(
             team,
             findings=[
-                {"title": "ML-KEM-768 — Quantum-safe", "status": "pass", "severity": "info", "description": "ok"}
+                {"title": "ML-KEM-768: Quantum-safe", "status": "pass", "severity": "info", "description": "ok"}
             ],
         )
 

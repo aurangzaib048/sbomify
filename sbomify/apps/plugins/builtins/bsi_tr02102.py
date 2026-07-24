@@ -174,7 +174,7 @@ class BsiTr02102Plugin(CryptoInventoryPlugin):
             kind = asset.asset_type.replace("-", " ")
             return Finding(
                 id=finding_id,
-                title=f"{name} — {kind} (not assessed)",
+                title=f"{name}: {kind} (not assessed)",
                 description=f"{kind.capitalize()} assets are not assessed against TR-02102 by this check.",
                 status="info",
                 severity="info",
@@ -183,7 +183,7 @@ class BsiTr02102Plugin(CryptoInventoryPlugin):
 
         return Finding(
             id=finding_id,
-            title=f"{name} — {verdict.label}",
+            title=f"{name}: {verdict.label}",
             description=verdict.reason,
             status=verdict.status,
             severity=_SEVERITY[verdict.status],

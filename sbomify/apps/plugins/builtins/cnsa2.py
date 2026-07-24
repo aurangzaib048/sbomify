@@ -140,7 +140,7 @@ class Cnsa2Plugin(CryptoInventoryPlugin):
             kind = asset.asset_type.replace("-", " ")
             return Finding(
                 id=finding_id,
-                title=f"{name} — {kind} (not assessed)",
+                title=f"{name}: {kind} (not assessed)",
                 description=f"{kind.capitalize()} assets are not assessed against CNSA 2.0 by this check.",
                 status="info",
                 severity="info",
@@ -154,7 +154,7 @@ class Cnsa2Plugin(CryptoInventoryPlugin):
             remediation = _REMEDIATION_TRANSITIONAL
         return Finding(
             id=finding_id,
-            title=f"{name} — {verdict.label}",
+            title=f"{name}: {verdict.label}",
             description=verdict.reason,
             status=verdict.status,
             severity=_SEVERITY[verdict.status],

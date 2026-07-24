@@ -208,19 +208,19 @@ def identity_tokens(haystack: str) -> set[str]:
 def _classify_symmetric_or_hash(hay: str) -> tuple[PqcStatus, str, str] | None:
     """Symmetric ciphers and hashes (Grover-weakened, not Shor-broken), or None."""
     if "md5" in hay or re.search(r"sha-?1(?![0-9])", hay):
-        return PqcStatus.REVIEW, "broken-hash", "Classically broken (collisions) — remediate regardless of quantum"
+        return PqcStatus.REVIEW, "broken-hash", "Classically broken (collisions); remediate regardless of quantum"
     if any(t in hay for t in ("3des", "triple-des", "tripledes", "tdea", "des-ede", "des3")):
-        return PqcStatus.REVIEW, "3DES", "Withdrawn (SP 800-67); legacy decrypt only — review usage"
+        return PqcStatus.REVIEW, "3DES", "Withdrawn (SP 800-67); legacy decrypt only, review usage"
     if "aes" in hay:
         if "256" in hay or "192" in hay:
             return PqcStatus.SAFE, "AES", "Grover-resistant at >=192-bit keys"
         if "128" in hay:
-            return PqcStatus.REVIEW, "AES-128", "~64-bit post-Grover; below the CNSA 2.0 256-bit bar — review"
-        return PqcStatus.REVIEW, "AES", "Key size unspecified — AES-128 and AES-256 differ; review"
+            return PqcStatus.REVIEW, "AES-128", "~64-bit post-Grover; below the CNSA 2.0 256-bit bar, review"
+        return PqcStatus.REVIEW, "AES", "Key size unspecified; AES-128 and AES-256 differ, review"
     if "chacha" in hay:
         return PqcStatus.SAFE, "ChaCha20", "256-bit stream cipher, Grover-resistant"
     if re.search(r"\bdes\b", hay):
-        return PqcStatus.REVIEW, "DES", "56-bit — broken; remediate"
+        return PqcStatus.REVIEW, "DES", "56-bit, broken; remediate"
     if any(t in hay for t in ("sha-512", "sha512", "sha-384", "sha384", "sha3-512", "sha3-384", "shake256")):
         return PqcStatus.SAFE, "SHA-2/3", "Grover-resistant digest (>=384-bit)"
     if any(t in hay for t in ("sha-256", "sha256", "sha3-256", "shake128", "sha-224", "sha224")):
@@ -236,7 +236,7 @@ def _classify_identity(
     if any(s in hay for s in _PQC_SAFE_SUBSTRINGS):
         return PqcStatus.SAFE, "PQC", "Standardized post-quantum algorithm (FIPS 203/204/205)", True
     if any(s in hay for s in _PQC_REVIEW_SUBSTRINGS):
-        return PqcStatus.REVIEW, "PQC-candidate", "Selected/stateful PQC, not a finalized FIPS standard — review", False
+        return PqcStatus.REVIEW, "PQC-candidate", "Selected/stateful PQC, not a finalized FIPS standard; review", False
     # Any registry-identified elliptic curve implies EC crypto, whatever the
     # asset is called — every curve in the registry is Shor-breakable.
     if any(s in hay for s in _VULNERABLE_SUBSTRINGS) or (tokens & _VULNERABLE_TOKENS) or has_registry_curve:
@@ -271,16 +271,16 @@ def classify_crypto_asset(asset: CryptoAsset) -> PqcAssessment:
         return PqcAssessment(
             status=PqcStatus.REVIEW,
             family=family,
-            reason="Declares a NIST PQC security category but the algorithm is unrecognized — review",
+            reason="Declares a NIST PQC security category but the algorithm is unrecognized; review",
         )
 
     data_quality_flag = None
     if status is PqcStatus.VULNERABLE and level is not None and level >= 1:
         data_quality_flag = (
-            f"Declares nistQuantumSecurityLevel {level} on a quantum-vulnerable algorithm — likely mislabeled"
+            f"Declares nistQuantumSecurityLevel {level} on a quantum-vulnerable algorithm; likely mislabeled"
         )
     elif status is PqcStatus.SAFE and is_pqc_safe and level == 0:
-        data_quality_flag = "PQC algorithm declares nistQuantumSecurityLevel 0 — likely mislabeled"
+        data_quality_flag = "PQC algorithm declares nistQuantumSecurityLevel 0; likely mislabeled"
 
     return PqcAssessment(status=status, family=family, reason=reason, data_quality_flag=data_quality_flag)
 

@@ -104,7 +104,7 @@ flags plus the PCI DSS 12.3.3 CSV export).
                                     <i class="fas fa-chevron-right text-xs transition-transform"
                                        :class="open ? 'rotate-90' : ''"></i>
                                 </td>
-                                <td class="py-2 pr-4 font-medium text-text">{{ asset.name|default:"—" }}</td>
+                                <td class="py-2 pr-4 font-medium text-text">{{ asset.name|default:"-" }}</td>
                                 <td class="py-2 pr-4">
                                     <span class="tw-badge tw-badge-{{ asset.pqc_status|pqc_variant }}">{{ asset.pqc_status|pqc_label }}</span>
                                     {% if asset.pqc_data_quality_flag %}
@@ -137,14 +137,14 @@ flags plus the PCI DSS 12.3.3 CSV export).
                                            title="Name not in the CycloneDX cryptography registry"></i>
                                     {% endif %}
                                     {% if not asset.algorithm_family and not asset.normalized_family and not asset.parameter_set and not asset.curve %}
-                                        —
+                                        -
                                     {% endif %}
                                 </td>
                                 <td class="py-2 pr-4 text-text-muted">
                                     {% if asset.nist_quantum_security_level is not None %}
                                         {{ asset.nist_quantum_security_level }}
                                     {% else %}
-                                        —
+                                        -
                                     {% endif %}
                                 </td>
                             </tr>
@@ -279,9 +279,9 @@ flags plus the PCI DSS 12.3.3 CSV export).
                             {% for cert in certificates %}
                                 {% with view=cert.certificate_view %}
                                     <tr>
-                                        <td class="py-2 pr-4 font-medium text-text">{{ view.subject|default:cert.name|default:"—" }}</td>
-                                        <td class="py-2 pr-4 text-text-muted">{{ view.issuer|default:"—" }}</td>
-                                        <td class="py-2 pr-4 text-text-muted">{{ view.not_after|default:"—" }}</td>
+                                        <td class="py-2 pr-4 font-medium text-text">{{ view.subject|default:cert.name|default:"-" }}</td>
+                                        <td class="py-2 pr-4 text-text-muted">{{ view.issuer|default:"-" }}</td>
+                                        <td class="py-2 pr-4 text-text-muted">{{ view.not_after|default:"-" }}</td>
                                         <td class="py-2 pr-4">
                                             {% if view.expired %}
                                                 <span class="tw-badge tw-badge-danger">Expired</span>
@@ -290,14 +290,14 @@ flags plus the PCI DSS 12.3.3 CSV export).
                                             {% elif view.days_to_expiry is not None %}
                                                 <span class="text-text-muted">{{ view.days_to_expiry }} days</span>
                                             {% else %}
-                                                <span class="text-text-muted">—</span>
+                                                <span class="text-text-muted">-</span>
                                             {% endif %}
                                         </td>
                                         <td class="py-2 pr-4">
                                             {% if view.states %}
                                                 {% for state in view.states %}<span class="tw-badge tw-badge-secondary">{{ state }}</span>{% endfor %}
                                             {% else %}
-                                                <span class="text-text-muted">—</span>
+                                                <span class="text-text-muted">-</span>
                                             {% endif %}
                                         </td>
                                     </tr>

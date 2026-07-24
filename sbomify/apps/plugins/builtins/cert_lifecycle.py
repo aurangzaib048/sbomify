@@ -59,7 +59,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
         if not_after is None:
             return Finding(
                 id=finding_id,
-                title=f"{subject} — Validity unknown",
+                title=f"{subject}: Validity unknown",
                 description="The certificate's notValidAfter date is missing or unparseable.",
                 status="info",
                 severity="info",
@@ -71,7 +71,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
         if expired:
             return Finding(
                 id=finding_id,
-                title=f"{subject} — Expired",
+                title=f"{subject}: Expired",
                 description=f"Certificate expired {abs(days or 0)} day(s) ago ({not_after.date().isoformat()}).",
                 status="fail",
                 severity="high",
@@ -81,7 +81,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
         if expiring_soon:
             return Finding(
                 id=finding_id,
-                title=f"{subject} — Expiring soon",
+                title=f"{subject}: Expiring soon",
                 description=f"Certificate expires in {days} day(s), within the {CERT_EXPIRING_SOON_DAYS}-day window.",
                 status="warning",
                 severity="medium",
@@ -95,7 +95,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
             if span > _MAX_VALIDITY_DAYS:
                 return Finding(
                     id=finding_id,
-                    title=f"{subject} — Long validity window",
+                    title=f"{subject}: Long validity window",
                     description=(
                         f"Validity window of {span} days exceeds the {_MAX_VALIDITY_DAYS}-day "
                         "CA/Browser Forum ceiling for publicly trusted TLS certificates."
@@ -108,7 +108,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
 
         return Finding(
             id=finding_id,
-            title=f"{subject} — Valid",
+            title=f"{subject}: Valid",
             description=f"Certificate is valid; expires in {days} day(s) ({not_after.date().isoformat()}).",
             status="pass",
             severity="info",

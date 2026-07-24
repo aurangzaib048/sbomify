@@ -56,14 +56,14 @@ _LABELS = {
 }
 _REMEDIATION = {
     PqcStatus.VULNERABLE: (
-        "Migrate to a NIST-standardized post-quantum algorithm — ML-KEM (FIPS 203) for key establishment, "
+        "Migrate to a NIST-standardized post-quantum algorithm: ML-KEM (FIPS 203) for key establishment, "
         "ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) for signatures."
     ),
     PqcStatus.REVIEW: (
         "Review against your cryptographic policy (e.g. NSA CNSA 2.0): confirm key size, standardization status, "
         "and intended use before relying on this algorithm."
     ),
-    PqcStatus.UNKNOWN: "Could not classify this algorithm automatically — verify its post-quantum status manually.",
+    PqcStatus.UNKNOWN: "Could not classify this algorithm automatically; verify its post-quantum status manually.",
 }
 
 
@@ -166,7 +166,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             kind = asset.asset_type.replace("-", " ")
             return Finding(
                 id=finding_id,
-                title=f"{name} — {kind} (not assessed)",
+                title=f"{name}: {kind} (not assessed)",
                 description=f"{kind.capitalize()} assets are not assessed for post-quantum readiness by this check.",
                 status="info",
                 severity="info",
@@ -179,7 +179,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             description = f"{description}. {verdict.data_quality_flag}"
         return Finding(
             id=finding_id,
-            title=f"{name} — {_LABELS.get(verdict.status, 'Unknown')}",
+            title=f"{name}: {_LABELS.get(verdict.status, 'Unknown')}",
             description=description,
             status=status,
             severity=severity,

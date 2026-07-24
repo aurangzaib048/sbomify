@@ -136,8 +136,8 @@ def test_workspace_crypto_rollup_aggregates_runs(sample_sbom: SBOM):  # noqa: F8
                 "certificates": {"count": 2, "expired": 1, "expiring_soon": 0, "soonest_not_valid_after": None},
             },
             "findings": [
-                {"title": "RSA-2048 — Quantum-vulnerable", "metadata": {"pqc_status": "quantum_vulnerable", "asset_name": "RSA-2048"}},
-                {"title": "ML-KEM-768 — Quantum-safe", "metadata": {"pqc_status": "quantum_safe", "asset_name": "ML-KEM-768"}},
+                {"title": "RSA-2048: Quantum-vulnerable", "metadata": {"pqc_status": "quantum_vulnerable", "asset_name": "RSA-2048"}},
+                {"title": "ML-KEM-768: Quantum-safe", "metadata": {"pqc_status": "quantum_safe", "asset_name": "ML-KEM-768"}},
             ],
         },
     )
@@ -286,7 +286,7 @@ def test_workspace_rollup_recomputes_cert_expiry_at_read_time(sample_sbom: SBOM)
                     "not_valid_after": [past],
                 },
             },
-            "findings": [{"title": "AES-256 — Quantum-safe", "metadata": {"pqc_status": "quantum_safe"}}],
+            "findings": [{"title": "AES-256: Quantum-safe", "metadata": {"pqc_status": "quantum_safe"}}],
         },
     )
     from django.core.cache import cache as django_cache
