@@ -138,6 +138,51 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
         # Parallel severity list so the drill-down's type/severity dropdown can filter by index.
         latest_vuln_severities = [v["severity"] for v in latest_vulns]
 
+        # CBOM issues drill-down: the newest CBOM artifact's fail/warning
+        # compliance findings, one plugin-latest run each. Pass/info rows are
+        # posture, not issues, so they stay on the CBOM detail page.
+        latest_cbom = (
+            SBOM.objects.filter(component_id=component_id, bom_type=SBOM.BomType.CBOM)
+            .order_by("-created_at")
+            .values("id", "version")
+            .first()
+        )
+        latest_cbom_issues: list[dict[str, Any]] = []
+        if latest_cbom:
+            cbom_results = list(
+                AssessmentRun.objects.filter(sbom_id=latest_cbom["id"], category="compliance", status="completed")
+                .order_by("plugin_name", "-created_at")
+                .distinct("plugin_name")
+                .values_list("plugin_name", "result")
+            )
+            if cbom_results:
+                from sbomify.apps.plugins.models import RegisteredPlugin
+
+                display_names = dict(
+                    RegisteredPlugin.objects.filter(name__in=[name for name, _ in cbom_results]).values_list(
+                        "name", "display_name"
+                    )
+                )
+                severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                for plugin_name, run_result in cbom_results:
+                    for finding in (run_result or {}).get("findings", []):
+                        if finding.get("status") not in ("fail", "warning"):
+                            continue
+                        latest_cbom_issues.append(
+                            {
+                                "status": finding["status"],
+                                "severity": finding.get("severity") or "info",
+                                "title": finding.get("title") or "Untitled finding",
+                                "description": finding.get("description") or "",
+                                "check": display_names.get(plugin_name, plugin_name),
+                            }
+                        )
+                latest_cbom_issues.sort(
+                    key=lambda row: (0 if row["status"] == "fail" else 1, severity_rank.get(row["severity"], 5))
+                )
+        latest_cbom_issue_terms = [f"{row['title']} {row['check']}".lower() for row in latest_cbom_issues]
+        latest_cbom_issue_severities = [row["severity"] for row in latest_cbom_issues]
+
         context = {
             "APP_BASE_URL": settings.APP_BASE_URL,
             "component": component,
@@ -153,6 +198,11 @@ class ComponentDetailsPrivateView(GuestAccessBlockedMixin, LoginRequiredMixin, V
             "latest_vuln_severities": latest_vuln_severities,
             "latest_vuln_version": latest_sbom["version"] if latest_sbom else None,
             "latest_vuln_sbom_id": latest_sbom_id,
+            "latest_cbom_issues": latest_cbom_issues,
+            "latest_cbom_issue_terms": latest_cbom_issue_terms,
+            "latest_cbom_issue_severities": latest_cbom_issue_severities,
+            "latest_cbom_version": latest_cbom["version"] if latest_cbom else None,
+            "latest_cbom_id": latest_cbom["id"] if latest_cbom else None,
             "document_type_subcategories": document_type_subcategories,
             "document_type_subcategories_json": json.dumps(document_type_subcategories),
         }
