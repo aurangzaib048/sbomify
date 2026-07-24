@@ -33,13 +33,22 @@ PQC_PLUGIN = "pqc-readiness"
 _VERDICT_ORDER = {"at_risk": 0, "needs_review": 1, "ready": 2, "no_crypto": 3, "not_assessed": 4}
 
 
-def _newest_by_component(component_ids: list[str], bom_type: str) -> dict[str, str]:
-    rows = (
-        SBOM.objects.filter(component_id__in=component_ids, bom_type=bom_type)
-        .order_by("component_id", "-created_at")
-        .distinct("component_id")
-        .values_list("component_id", "id")
-    )
+def _title_asset_name(title: str) -> str:
+    """Asset name from a finding title, tolerating both separator eras
+    (colon in new runs, em-dash in runs stored before the rename)."""
+    for separator in (": ", " — "):
+        if separator in title:
+            return title.split(separator)[0]
+    return title
+
+
+def _newest_by_component(
+    component_ids: list[str], bom_type: str, *, exclude_crypto_free: bool = False
+) -> dict[str, str]:
+    queryset = SBOM.objects.filter(component_id__in=component_ids, bom_type=bom_type)
+    if exclude_crypto_free:
+        queryset = queryset.exclude(has_crypto_assets=False)
+    rows = queryset.order_by("component_id", "-created_at").distinct("component_id").values_list("component_id", "id")
     return {component_id: sbom_id for component_id, sbom_id in rows}
 
 
@@ -70,11 +79,31 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
     if cached is not None:
         return cast("dict[str, Any]", cached)
 
-    components = list(Component.objects.filter(team_id=team_id).order_by("name").values("id", "name"))
+    components = list(
+        Component.objects.filter(team_id=team_id, component_type=Component.ComponentType.BOM)
+        .order_by("name")
+        .values("id", "name")
+    )
     component_ids = [c["id"] for c in components]
     newest_cbom = _newest_by_component(component_ids, SBOM.BomType.CBOM)
+    # Prefer the newest crypto-bearing SBOM so a later crypto-free upload
+    # never evicts a component's assessed crypto posture (the component-page
+    # posture card applies the same rule); fall back to any newest SBOM so
+    # the crypto-free stamp can still say "no crypto".
+    newest_crypto_sbom = _newest_by_component(component_ids, SBOM.BomType.SBOM, exclude_crypto_free=True)
     newest_sbom = _newest_by_component(component_ids, SBOM.BomType.SBOM)
-    chosen = {c["id"]: newest_cbom.get(c["id"]) or newest_sbom.get(c["id"]) for c in components}
+    chosen = {
+        c["id"]: newest_cbom.get(c["id"]) or newest_crypto_sbom.get(c["id"]) or newest_sbom.get(c["id"])
+        for c in components
+    }
+    # The dispatch gate skips crypto-gated plugins for artifacts stamped
+    # crypto-free, so no skipped run exists for them; the stamp itself is the
+    # "no crypto" verdict.
+    crypto_free_sboms = set(
+        SBOM.objects.filter(id__in=[s for s in chosen.values() if s], has_crypto_assets=False).values_list(
+            "id", flat=True
+        )
+    )
 
     # Two-step read keeps result blobs off the wire for skipped runs (the
     # common case once the plugin runs on every SBOM): fetch lightweight
@@ -111,6 +140,8 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
     for component in components:
         sbom_id = chosen[component["id"]]
         run = run_by_sbom.get(str(sbom_id)) if sbom_id else None
+        if run is None and sbom_id in crypto_free_sboms:
+            run = {"result": {"metadata": {"skipped": True}}, "created_at": None}
         row: dict[str, Any] = {
             "id": component["id"],
             "name": component["name"],
@@ -138,7 +169,7 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
                     if status in row["counts"]:
                         row["counts"][status] += 1
                     if status == "quantum_vulnerable":
-                        name = finding_meta.get("asset_name") or str(finding.get("title", "")).split(" — ")[0]
+                        name = finding_meta.get("asset_name") or _title_asset_name(str(finding.get("title", "")))
                         if name:
                             vulnerable_components.setdefault(name, set()).add(component["id"])
                 certificates = metadata.get("certificates")

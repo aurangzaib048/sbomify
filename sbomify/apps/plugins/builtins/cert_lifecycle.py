@@ -10,7 +10,6 @@ express.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 
 from sbomify.apps.plugins.sdk import Finding
@@ -24,12 +23,18 @@ from sbomify.apps.sboms.crypto_inventory import (
 
 from ._crypto_assessment import CryptoInventoryPlugin
 
-logger = logging.getLogger(__name__)
-
 _PLUGIN_NAME = "certificate-lifecycle"
 
-# CA/Browser Forum ceiling for publicly trusted TLS certificate validity.
-_MAX_VALIDITY_DAYS = 398
+# CA/Browser Forum validity ceiling for publicly trusted TLS certificates:
+# 398 days historically, 200 days for certificates issued on or after
+# 2026-03-15 (ballot SC-081; drops again in later phases).
+_SC081_CUTOVER = datetime(2026, 3, 15, tzinfo=timezone.utc)
+
+
+def _max_validity_days(not_before: datetime | None) -> int:
+    if not_before is not None and not_before >= _SC081_CUTOVER:
+        return 200
+    return 398
 
 
 class CertificateLifecyclePlugin(CryptoInventoryPlugin):
@@ -38,7 +43,7 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
     PLUGIN_NAME = _PLUGIN_NAME
     VERSION = "1.0.0"
     STANDARD_NAME = "Certificate Lifecycle"
-    STANDARD_VERSION = "CA/Browser Forum baseline (398-day ceiling)"
+    STANDARD_VERSION = "CA/Browser Forum baseline (SC-081 phased ceilings)"
     STANDARD_URL = "https://cabforum.org/baseline-requirements-documents/"
     ERROR_TITLE = "Certificate lifecycle assessment error"
     EMPTY_DESCRIPTION = "This document declares no certificate assets; nothing to assess."
@@ -92,13 +97,14 @@ class CertificateLifecyclePlugin(CryptoInventoryPlugin):
         not_before = parse_cert_datetime(certificate.get("notValidBefore"))
         if not_before is not None:
             span = (not_after - not_before).days
-            if span > _MAX_VALIDITY_DAYS:
+            ceiling = _max_validity_days(not_before)
+            if span > ceiling:
                 return Finding(
                     id=finding_id,
                     title=f"{subject}: Long validity window",
                     description=(
-                        f"Validity window of {span} days exceeds the {_MAX_VALIDITY_DAYS}-day "
-                        "CA/Browser Forum ceiling for publicly trusted TLS certificates."
+                        f"Validity window of {span} days exceeds the {ceiling}-day CA/Browser Forum "
+                        "ceiling for publicly trusted TLS certificates issued on this date."
                     ),
                     status="warning",
                     severity="low",

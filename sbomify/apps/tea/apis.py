@@ -265,7 +265,7 @@ def _build_product_release_response(
             artifact.sbom
             for artifact in release.artifacts.filter(
                 sbom__bom_type__in=(SBOM.BomType.SBOM, SBOM.BomType.CBOM, SBOM.BomType.VEX)
-            )
+            ).select_related("sbom__component")
             if artifact.sbom
             and artifact.sbom.component_id
             and artifact.sbom.component.visibility == Component.Visibility.PUBLIC

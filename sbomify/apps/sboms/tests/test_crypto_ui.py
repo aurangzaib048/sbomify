@@ -296,3 +296,78 @@ def test_workspace_rollup_recomputes_cert_expiry_at_read_time(sample_sbom: SBOM)
     rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
 
     assert rollup["certificates"]["expired"] == 1  # recomputed live, not the frozen 0
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_rollup_reads_crypto_free_stamp_without_a_run(sample_sbom: SBOM):  # noqa: F811
+    """The dispatch gate skips crypto plugins for artifacts stamped
+    has_crypto_assets=False, so no skipped run exists; the rollup must read
+    the stamp itself as the no_crypto verdict instead of not_assessed."""
+    from django.core.cache import cache
+
+    from ..services.crypto_dashboard import build_workspace_crypto_rollup
+
+    sample_sbom.has_crypto_assets = False
+    sample_sbom.save(update_fields=["has_crypto_assets"])
+    cache.clear()
+
+    rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
+
+    row = next(r for r in rollup["rows"] if r["id"] == sample_sbom.component.id)
+    assert row["verdict"] == "no_crypto"
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_rollup_excludes_document_components(sample_sbom: SBOM):  # noqa: F811
+    from django.core.cache import cache
+
+    from sbomify.apps.core.models import Component as CoreComponent
+
+    from ..services.crypto_dashboard import build_workspace_crypto_rollup
+
+    CoreComponent.objects.create(
+        name="policy-doc-container",
+        team=sample_sbom.component.team,
+        component_type="document",
+    )
+    cache.clear()
+
+    rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
+
+    assert all(r["name"] != "policy-doc-container" for r in rollup["rows"])
+
+
+@pytest.mark.django_db
+def test_workspace_crypto_rollup_splits_titles_from_both_separator_eras(sample_sbom: SBOM):  # noqa: F811
+    from django.core.cache import cache
+
+    from sbomify.apps.plugins.models import AssessmentRun
+    from sbomify.apps.plugins.sdk import RunReason
+
+    from ..services.crypto_dashboard import build_workspace_crypto_rollup
+
+    sample_sbom.bom_type = SBOM.BomType.CBOM
+    sample_sbom.save(update_fields=["bom_type"])
+    AssessmentRun.objects.create(
+        sbom=sample_sbom,
+        plugin_name="pqc-readiness",
+        plugin_version="1.0",
+        plugin_config_hash="x",
+        category="compliance",
+        status="completed",
+        run_reason=RunReason.MANUAL.value,
+        result={
+            "metadata": {"pqc_overall": "at_risk"},
+            "findings": [
+                {"title": "RSA-2048: Quantum-vulnerable", "metadata": {"pqc_status": "quantum_vulnerable"}},
+                {"title": "ECDSA-P256 — Quantum-vulnerable", "metadata": {"pqc_status": "quantum_vulnerable"}},
+            ],
+        },
+    )
+    cache.clear()
+
+    rollup = build_workspace_crypto_rollup(sample_sbom.component.team_id)
+
+    names = {entry["name"] for entry in rollup["top_vulnerable"]}
+    assert "RSA-2048" in names
+    assert "ECDSA-P256" in names

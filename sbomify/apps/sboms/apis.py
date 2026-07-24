@@ -709,6 +709,10 @@ def sbom_upload_spdx(request: HttpRequest, component_id: str, bom_type: str = "s
         sbom_dict["format"] = sbom_format
         sbom_dict["component"] = component
         sbom_dict["source"] = "api"
+        # SPDX has no CycloneDX crypto-asset lineage; stamp crypto-free so the
+        # crypto-gated plugins skip these artifacts instead of treating the
+        # unstamped NULL as "maybe crypto".
+        sbom_dict["has_crypto_assets"] = False
         sbom_dict["format_version"] = spdx_version  # Already extracted from validation
         sbom_dict["sha256_hash"] = sha256_hash
 
@@ -1258,6 +1262,10 @@ def sbom_upload_file(
             sbom_dict["format"] = sbom_format
             sbom_dict["component"] = component
             sbom_dict["source"] = "manual_upload"
+            # SPDX has no CycloneDX crypto-asset lineage; stamp crypto-free so
+            # the crypto-gated plugins skip instead of treating NULL as
+            # "maybe crypto".
+            sbom_dict["has_crypto_assets"] = False
             sbom_dict["format_version"] = spdx_version  # Already extracted from validation
             sbom_dict["sha256_hash"] = sha256_hash
 
@@ -1345,7 +1353,7 @@ def sbom_upload_file(
             sbom_version = sbom_dict.get("version", "")
             sbom_format = "cyclonedx"
 
-            # Auto-detect CBOM content (#1042): tag a crypto BOM uploaded with the
+            # Auto-detect CBOM content: tag a crypto BOM uploaded with the
             # default bom_type as cbom so the cbom-gated PQC plugin runs. Only when
             # the caller omitted bom_type — an explicit ?bom_type=sbom is honored.
             if "bom_type" not in request.GET and _is_cbom(sbom_data):

@@ -323,3 +323,33 @@ def test_download_release_cbom_version_param(sample_team_with_owner_member, mock
     assert json.loads(native.content)["specVersion"] == "1.7"
 
     assert Client().get(url + "?version=2.0").status_code == 400
+
+
+@pytest.mark.django_db
+def test_build_release_cbom_lifts_metadata_component_asset(sample_team_with_owner_member, mocker):
+    """A pure CBOM whose sole crypto asset lives in metadata.component must
+    contribute it to the merged deliverable, mirroring derive_crypto_inventory."""
+    team = sample_team_with_owner_member.team
+    _product, release, c1, _c2 = _release_with_components(team, is_public=True)
+    ReleaseArtifact.objects.create(release=release, sbom=_cbom_sbom(c1, "meta-only.cbom.json"))
+    doc = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {
+                "component": {
+                    "type": "cryptographic-asset",
+                    "bom-ref": "crypto/meta-asset",
+                    "name": "meta-asset",
+                    "cryptoProperties": {"assetType": "algorithm"},
+                }
+            },
+            "components": [],
+        }
+    ).encode()
+    _mock_s3(mocker, {"meta-only.cbom.json": doc})
+
+    merged = build_release_cbom(release)
+
+    assert merged is not None
+    assert {c["bom-ref"] for c in merged["components"]} == {"crypto/meta-asset"}

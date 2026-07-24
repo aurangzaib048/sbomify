@@ -126,25 +126,16 @@ def test_metadata_block_includes_standard_reference(tmp_path: Path):
     assert result.metadata["pqc_overall"] == "at_risk"
 
 
-@pytest.mark.django_db
-def test_assess_crypto_free_explicit_cbom_warns_not_skips(tmp_path: Path, sample_component):  # noqa: F811
+def test_assess_crypto_free_explicit_cbom_warns_not_skips(tmp_path: Path):
     """An artifact deliberately tagged cbom with zero crypto assets is a
-    generator misfire: it keeps a visible warning instead of a filtered skip."""
-    from sbomify.apps.sboms.models import SBOM
+    generator misfire: it keeps a visible warning instead of a filtered skip.
+    The bom_type arrives via the orchestrator-provided SBOMContext."""
+    from sbomify.apps.plugins.sdk.base import SBOMContext
 
-    row = SBOM.objects.create(
-        name="empty-cbom",
-        version="1",
-        component=sample_component,
-        format="cyclonedx",
-        format_version="1.6",
-        sbom_filename="empty.json",
-        bom_type=SBOM.BomType.CBOM,
-    )
     path = tmp_path / "empty.json"
     path.write_text(json.dumps(_cbom()), encoding="utf-8")
 
-    result = PqcReadinessPlugin().assess(row.id, path)
+    result = PqcReadinessPlugin().assess("test-sbom-id", path, context=SBOMContext(bom_type="cbom"))
 
     assert result.findings[0].status == "warning"
     assert not (result.metadata or {}).get("skipped")

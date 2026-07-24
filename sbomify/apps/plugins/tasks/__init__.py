@@ -977,7 +977,11 @@ def enqueue_assessments_for_existing_sboms_task(
             SBOM.objects.filter(
                 component__team=team,
                 component__component_type=Component.ComponentType.BOM,
-                bom_type=SBOM.BomType.SBOM,
+                # CBOMs are first-class assessment targets (the crypto plugins
+                # declare supported_bom_types=["cbom", "sbom"]); enabling a
+                # plugin must backfill them too. Plugins that don't support a
+                # bom_type skip at dispatch.
+                bom_type__in=[SBOM.BomType.SBOM, SBOM.BomType.CBOM],
                 created_at__gte=cutoff_time,
             )
             .exclude(sbom_filename="")

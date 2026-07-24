@@ -22,6 +22,8 @@ import uuid
 from functools import cache
 from typing import Any
 
+from sbomify.apps.sboms.crypto_inventory import is_crypto_asset
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,7 +174,15 @@ def build_release_cbom(release: Any, spec_version: str = "1.6") -> dict[str, Any
         if document is None:
             continue
         found = True
-        for comp in document.get("components") or []:
+        # Mirror derive_crypto_inventory: a pure CBOM may carry its sole
+        # crypto asset in metadata.component, and the merged deliverable must
+        # not drop it.
+        source_components = list(document.get("components") or [])
+        document_metadata = document.get("metadata")
+        meta_component = document_metadata.get("component") if isinstance(document_metadata, dict) else None
+        if is_crypto_asset(meta_component):
+            source_components.append(meta_component)
+        for comp in source_components:
             if not isinstance(comp, dict):
                 continue
             ref = comp.get("bom-ref")

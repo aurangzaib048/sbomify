@@ -55,6 +55,19 @@ class DependencyStatus(TypedDict, total=False):
     requires_all: DependencyCheckResult
 
 
+def load_plugin_class(plugin_class_path: str) -> type[AssessmentPlugin]:
+    """Resolve a dotted plugin class path to its class.
+
+    The one import path both the orchestrator and the settings API use, so
+    the two can never disagree about how a registry row resolves. Raises
+    ImportError/AttributeError on a broken path; callers pick their policy.
+    """
+    module_path, class_name = plugin_class_path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    plugin_class: type[AssessmentPlugin] = getattr(module, class_name)
+    return plugin_class
+
+
 class PluginOrchestratorError(Exception):
     """Exception raised for orchestrator-specific errors."""
 
@@ -778,10 +791,7 @@ class PluginOrchestrator:
 
         # Import and instantiate the plugin class
         try:
-            module_path, class_name = registered.plugin_class_path.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            plugin_class = getattr(module, class_name)
-            instance: AssessmentPlugin = plugin_class(config=merged_config)
+            instance: AssessmentPlugin = load_plugin_class(registered.plugin_class_path)(config=merged_config)
             return instance
         except (ImportError, AttributeError) as e:
             raise PluginOrchestratorError(

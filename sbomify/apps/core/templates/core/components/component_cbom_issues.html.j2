@@ -95,7 +95,7 @@
                         Showing <span x-text="startIdx"></span> to <span x-text="endIdx"></span> of <span x-text="total"></span>
                     </span>
                     {% if latest_cbom_id %}
-                        <a href="{% url 'core:component_item' component_id=component.id item_type='cbom' item_id=latest_cbom_id %}"
+                        <a href="{% url 'core:component_item' component_id=component.id item_type=latest_cbom_item_type|default:'cbom' item_id=latest_cbom_id %}"
                            class="text-sm text-primary hover:underline no-underline inline-flex items-center gap-1">
                             View CBOM details<i class="fas fa-arrow-right text-xs"></i>
                         </a>

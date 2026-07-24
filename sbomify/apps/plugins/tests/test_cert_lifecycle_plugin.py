@@ -76,14 +76,25 @@ def test_expiring_soon_certificate_warns(tmp_path: Path):
     assert "10" in finding.description
 
 
-def test_long_validity_window_warns(tmp_path: Path):
+def test_long_validity_window_warns_with_sc081_ceiling(tmp_path: Path):
+    # Issued after the SC-081 cutover, so the 200-day ceiling applies.
     finding = _one(_cert("CN=long.example.com", _NOW - timedelta(days=30), _NOW + timedelta(days=700)), tmp_path)
     assert finding.status == "warning"
-    assert "398" in finding.description
+    assert "200" in finding.description
+
+
+def test_pre_sc081_certificates_keep_the_398_day_ceiling(tmp_path: Path):
+    from datetime import datetime, timezone as tz
+
+    issued = datetime(2026, 1, 1, tzinfo=tz.utc)
+    finding = _one(_cert("CN=grandfathered.example.com", issued, issued + timedelta(days=350)), tmp_path)
+    assert finding.status in ("pass", "warning")
+    if finding.status == "warning":
+        assert "Expiring" in finding.title
 
 
 def test_healthy_certificate_passes(tmp_path: Path):
-    finding = _one(_cert("CN=ok.example.com", _NOW - timedelta(days=30), _NOW + timedelta(days=200)), tmp_path)
+    finding = _one(_cert("CN=ok.example.com", _NOW - timedelta(days=30), _NOW + timedelta(days=150)), tmp_path)
     assert finding.status == "pass"
 
 

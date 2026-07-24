@@ -1,8 +1,6 @@
 """API endpoints for the plugins framework."""
 
-import importlib
 from collections.abc import Callable
-from functools import lru_cache
 from typing import Any
 
 from django.db.models import OuterRef, Subquery
@@ -469,21 +467,30 @@ class UpdateTeamPluginSettingsRequest(BaseModel):
     plugin_configs: dict[str, Any] | None = None
 
 
-@lru_cache(maxsize=64)
+_supported_bom_types_cache: dict[str, tuple[str, ...]] = {}
+
+
 def _plugin_supported_bom_types(plugin_class_path: str) -> tuple[str, ...]:
     """BOM types a plugin declares in its metadata, for the artifact-type badges.
 
-    Falls back to ("sbom",) when the class cannot be loaded so a stale registry
-    row never breaks the settings page. Cached per class path — metadata is
-    static for the lifetime of the process.
+    Resolves through the orchestrator's loader so the badge and dispatch can
+    never disagree. Falls back to ("sbom",) when the class cannot be loaded so
+    a stale registry row never breaks the settings page — but only successful
+    resolutions are cached, so a transient import failure does not pin the
+    fallback for the process lifetime.
     """
+    cached = _supported_bom_types_cache.get(plugin_class_path)
+    if cached is not None:
+        return cached
+    from .orchestrator import load_plugin_class
+
     try:
-        module_path, class_name = plugin_class_path.rsplit(".", 1)
-        plugin_class = getattr(importlib.import_module(module_path), class_name)
-        supported = plugin_class().get_metadata().supported_bom_types
-        return tuple(supported) if supported else ("sbom",)
-    except Exception:  # noqa: BLE001 - plugin code is arbitrary; never break the listing
+        supported = load_plugin_class(plugin_class_path)().get_metadata().supported_bom_types
+        result = tuple(supported) if supported else ("sbom",)
+    except Exception:
         return ("sbom",)
+    _supported_bom_types_cache[plugin_class_path] = result
+    return result
 
 
 def _get_plugin_plan_requirement(plugin_name: str) -> str | None:

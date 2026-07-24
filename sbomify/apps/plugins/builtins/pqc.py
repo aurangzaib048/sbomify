@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sbomify.apps.plugins.builtins._crypto_assessment import summarize
 from sbomify.apps.plugins.sdk import (
     AssessmentCategory,
     AssessmentPlugin,
@@ -118,11 +119,10 @@ class PqcReadinessPlugin(AssessmentPlugin):
             # A crypto-free ordinary SBOM is "nothing to assess" (most SBOMs
             # carry no crypto), so it skips quietly. An artifact explicitly
             # tagged cbom that declares zero crypto assets is a generator
-            # misfire and must stay visible as a warning.
-            from sbomify.apps.sboms.models import SBOM as SBOMModel
-
-            bom_type = SBOMModel.objects.filter(pk=sbom_id).values_list("bom_type", flat=True).first()
-            if bom_type == SBOMModel.BomType.CBOM:
+            # misfire and must stay visible as a warning. The bom_type comes
+            # from the orchestrator-provided context; plugins do not query
+            # the database.
+            if context is not None and context.bom_type == "cbom":
                 findings = [
                     Finding(
                         id=f"{_PLUGIN_NAME}:no-assets",
@@ -149,7 +149,7 @@ class PqcReadinessPlugin(AssessmentPlugin):
             plugin_version=self.VERSION,
             category=AssessmentCategory.COMPLIANCE.value,
             assessed_at=datetime.now(timezone.utc).isoformat(),
-            summary=self._summary(findings),
+            summary=summarize(findings),
             findings=findings,
             metadata=metadata,
         )
@@ -185,16 +185,6 @@ class PqcReadinessPlugin(AssessmentPlugin):
             severity=severity,
             remediation=_REMEDIATION.get(verdict.status),
             metadata={"pqc_status": verdict.status.value, "asset_type": asset.asset_type, "asset_name": asset.name},
-        )
-
-    def _summary(self, findings: list[Finding]) -> AssessmentSummary:
-        return AssessmentSummary(
-            total_findings=len(findings),
-            pass_count=sum(1 for f in findings if f.status == "pass"),
-            fail_count=sum(1 for f in findings if f.status == "fail"),
-            warning_count=sum(1 for f in findings if f.status == "warning"),
-            error_count=sum(1 for f in findings if f.status == "error"),
-            info_count=sum(1 for f in findings if f.status == "info"),
         )
 
     def _error_result(self, message: str) -> AssessmentResult:

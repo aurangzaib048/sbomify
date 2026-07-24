@@ -45,3 +45,9 @@ class Command(BaseCommand):
                 f"{sum(len(f.get('curves') or []) for f in data['ellipticCurves'])} curves)"
             )
         )
+        self.stdout.write(
+            self.style.WARNING(
+                "The in-memory tables cleared here belong to this process only; "
+                "restart web and worker processes to pick up the new registry."
+            )
+        )
