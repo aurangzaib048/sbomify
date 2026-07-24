@@ -814,3 +814,34 @@ class TestCryptoAssetGate:
 
         assert run is not None
         assert run.status == RunStatus.COMPLETED.value
+
+
+@pytest.mark.django_db
+class TestSkippedPluginPendingCleanup:
+    """A delayed enqueue materialises a PENDING row before the worker runs;
+    when the orchestrator then skips (unsupported bom_type), the task must
+    remove that orphan instead of leaving it Pending forever."""
+
+    def test_skip_deletes_eager_pending_row(self, test_sbom, registered_checksum_plugin) -> None:
+        from sbomify.apps.plugins.tasks import _create_pending_assessment_run, run_assessment_task
+
+        test_sbom.bom_type = "cbom"
+        test_sbom.save(update_fields=["bom_type"])
+        run_id = _create_pending_assessment_run(
+            sbom_id=str(test_sbom.id),
+            plugin_name="checksum",  # pins supported_bom_types=["sbom"]
+            run_reason=RunReason.ON_UPLOAD,
+            triggered_by_user=None,
+            triggered_by_token=None,
+        )
+        assert run_id is not None
+
+        result = run_assessment_task(
+            sbom_id=str(test_sbom.id),
+            plugin_name="checksum",
+            run_reason=RunReason.ON_UPLOAD.value,
+            _existing_run_id=run_id,
+        )
+
+        assert result["status"] == "skipped"
+        assert not AssessmentRun.objects.filter(id=run_id).exists()

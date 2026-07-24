@@ -269,8 +269,24 @@ def run_assessment_task(
                     response["assessment_run_id"] = run_id
                 return response
 
-        # If the plugin skipped this artifact (unsupported bom_type), return early
+        # If the plugin skipped this artifact (unsupported bom_type), return early.
+        # A delayed enqueue materialised a PENDING row before the worker ran
+        # (see _create_pending_assessment_run); without cleanup that orphan
+        # reads "Pending" forever on the artifact page. Guard on status so a
+        # row a concurrent retry already progressed is never deleted.
         if assessment_run is None:
+            if _existing_run_id:
+                from .. import models as plugin_models
+                from ..sdk.enums import RunStatus
+
+                deleted, _ = plugin_models.AssessmentRun.objects.filter(
+                    id=_existing_run_id, status=RunStatus.PENDING.value
+                ).delete()
+                if deleted:
+                    logger.info(
+                        f"[TASK_run_assessment] Removed eager pending run {_existing_run_id} "
+                        f"for skipped plugin '{plugin_name}' on SBOM {sbom_id}"
+                    )
             return {
                 "status": "skipped",
                 "plugin_name": plugin_name,
