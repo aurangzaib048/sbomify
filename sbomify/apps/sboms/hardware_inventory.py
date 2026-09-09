@@ -38,7 +38,11 @@ from sbomify.apps.sboms.models import SBOM
 # The same set that decides a document is an HBOM. Detection and projection must
 # never diverge: a stricter set here renders an HBOM page with an empty parts
 # table, a looser one lists parts on a document nothing calls hardware.
+# _component_type comes with it: detection compares through it, so a projection
+# comparing the raw value diverges on any document whose generator capitalised
+# the type.
 from sbomify.apps.sboms.utils import _HBOM_COMPONENT_TYPES as HBOM_COMPONENT_TYPES
+from sbomify.apps.sboms.utils import _component_type
 
 log = logging.getLogger(__name__)
 
@@ -333,7 +337,7 @@ def _hardware_parts(components: list[dict[str, Any]]) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for component in components:
-        if component.get("type") not in HBOM_COMPONENT_TYPES:
+        if _component_type(component) not in HBOM_COMPONENT_TYPES:
             continue
         ref = component.get("bom-ref")
         if isinstance(ref, str) and ref:
@@ -393,7 +397,7 @@ def derive_hardware_inventory(document: object, *, include_root: bool = False) -
         root = metadata.get("component") if isinstance(metadata, dict) else None
         # Any hardware root, not only ``device`` — the same predicate the merge
         # applies, so a board rooted at a ``platform`` is lifted by both.
-        if isinstance(root, dict) and root.get("type") in HBOM_COMPONENT_TYPES:
+        if isinstance(root, dict) and _component_type(root) in HBOM_COMPONENT_TYPES:
             components.append(root)
     parts = _hardware_parts(components)
     if not parts:

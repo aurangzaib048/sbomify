@@ -318,6 +318,22 @@ def test_the_board_itself_is_a_part_only_on_a_display_read():
     assert lifted.parts[-1].bom_ref == "pcie-sata-adaptor-board"
 
 
+@pytest.mark.parametrize("device_type", ["Device", "DEVICE", " device "])
+def test_a_capitalised_type_still_projects(device_type: str):
+    """Detection compares through _component_type, so a document whose generator
+    capitalised the type is filed as an HBOM. A projection comparing the raw
+    value would then render that page with an empty parts table."""
+    inventory = derive_hardware_inventory(
+        _document(
+            {"type": device_type, "name": "board"},
+            metadata={"component": {"type": device_type, "name": "assembly"}},
+        ),
+        include_root=True,
+    )
+
+    assert [p.name for p in inventory.parts] == ["board", "assembly"]
+
+
 @pytest.mark.parametrize(
     "document",
     [

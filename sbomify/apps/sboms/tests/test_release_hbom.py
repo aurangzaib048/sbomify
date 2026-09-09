@@ -92,6 +92,23 @@ def test_build_release_hbom_lifts_metadata_device(sample_team_with_owner_member,
 
 
 @pytest.mark.django_db
+def test_a_capitalised_metadata_device_is_still_lifted(sample_team_with_owner_member, mocker):
+    """The lift compares through _component_type for the same reason detection
+    does: skipping a capitalised root leaves its edges naming a component the
+    merged document does not contain."""
+    team = sample_team_with_owner_member.team
+    _, release, c1, _ = _release_with_components(team, is_public=False)
+    document = json.loads(_doc("part/a", board="board-1"))
+    document["metadata"]["component"]["type"] = "Device"
+    _mock_s3(mocker, {"a.json": json.dumps(document).encode()})
+    ReleaseArtifact.objects.create(release=release, sbom=_hbom_sbom(c1, "a.json"))
+
+    merged = build_release_hbom(release)
+
+    assert {c["bom-ref"] for c in merged["components"]} == {"board-1", "part/a"}
+
+
+@pytest.mark.django_db
 def test_two_boards_reusing_a_ref_keep_both_parts(sample_team_with_owner_member, mocker):
     """bom-ref is scoped to its document, so the same string in two members names
     two different physical parts.

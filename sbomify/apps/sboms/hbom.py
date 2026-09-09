@@ -83,7 +83,7 @@ def build_release_hbom(release: Any, spec_version: str = "1.6") -> dict[str, Any
 
     from sbomify.apps.core.models import ReleaseArtifact
     from sbomify.apps.sboms.models import SBOM
-    from sbomify.apps.sboms.utils import _HBOM_COMPONENT_TYPES
+    from sbomify.apps.sboms.utils import _HBOM_COMPONENT_TYPES, _component_type
 
     # Only when down-levelling; emitting 1.7 keeps every key the member carried.
     downlevel_keys = _fields_added_after_1_6() if spec_version == "1.6" else frozenset()
@@ -123,7 +123,7 @@ def build_release_hbom(release: Any, spec_version: str = "1.6") -> dict[str, Any
         # and its edges hang off that root; skipping the lift would leave those
         # edges naming a component the merged document does not contain, and a
         # consumer resolving them synthesises a phantom node.
-        if isinstance(meta_component, dict) and meta_component.get("type") in _HBOM_COMPONENT_TYPES:
+        if isinstance(meta_component, dict) and _component_type(meta_component) in _HBOM_COMPONENT_TYPES:
             source_components.append(meta_component)
 
         # bom-ref is unique within a BOM, not across BOMs — CycloneDX scopes it
