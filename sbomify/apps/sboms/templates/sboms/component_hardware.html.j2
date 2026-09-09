@@ -5,9 +5,9 @@
     {% url 'core:component_details' component.id as component_url %}
     <div class="space-y-6">
         <div class="flex items-start gap-4">
-            <div class="tw-avatar tw-avatar-lg">
-                <i class="fas fa-microchip"></i>
-            </div>
+            <c-avatar size="lg">
+            <i class="fas fa-microchip" aria-hidden="true"></i>
+            </c-avatar>
             <div class="flex-1 min-w-0">
                 <h1 class="text-2xl font-bold text-text">
                     {{ component.name }} <span class="font-normal text-text-muted">hardware</span>
@@ -36,35 +36,20 @@
                     </p>
                 {% endif %}
             </div>
-            <a href="{{ component_url }}"
-               class="tw-btn-secondary inline-flex items-center gap-2 no-underline flex-shrink-0">
-                <i class="fas fa-arrow-left" aria-hidden="true"></i>Back to component
-            </a>
+            <c-buttons.secondary href="{{ component_url }}" class="shrink-0">
+            <i class="fas fa-arrow-left" aria-hidden="true"></i>Back to component
+            </c-buttons.secondary>
         </div>
         {% if hardware_inventory %}
             {% include "sboms/components/hardware_inventory_card.html.j2" %}
         {% else %}
-            <div class="tw-card">
-                <div class="p-12 text-center">
-                    <div class="w-12 h-12 mx-auto rounded-lg bg-border/40 flex items-center justify-center mb-4">
-                        <i class="fas fa-microchip text-text-muted text-lg"></i>
-                    </div>
-                    {% if artifact %}
-                        <h3 class="text-lg font-semibold text-text mb-2">No parts to show</h3>
-                        <p class="text-text-muted text-sm mb-0 max-w-md mx-auto">
-                            The newest hardware artifact for this component lists no device components, or its
-                            document could not be read from storage right now.
-                        </p>
-                    {% else %}
-                        <h3 class="text-lg font-semibold text-text mb-2">No hardware components yet</h3>
-                        <p class="text-text-muted text-sm mb-0 max-w-md mx-auto">
-                            Upload an HBOM — or an SBOM containing <code>device</code>, <code>firmware</code>,
-                            <code>device-driver</code> or <code>platform</code> components — and its parts
-                            inventory appears here.
-                        </p>
-                    {% endif %}
-                </div>
-            </div>
+            <c-cards.card flush>
+            {% if artifact %}
+                <c-feedback.empty-state icon="fas fa-microchip" icon_variant="neutral" title="No parts to show" message="The newest hardware artifact for this component lists no device components, or its document could not be read from storage right now." />
+            {% else %}
+                <c-feedback.empty-state icon="fas fa-microchip" icon_variant="neutral" title="No hardware components yet" message="Upload an HBOM, or an SBOM containing device, firmware, device-driver or platform components. Its parts inventory appears here." />
+            {% endif %}
+            </c-cards.card>
         {% endif %}
     </div>
 {% endblock %}
