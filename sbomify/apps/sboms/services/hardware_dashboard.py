@@ -26,24 +26,12 @@ from sbomify.apps.core.models import Component
 from sbomify.apps.core.object_store import S3Client
 from sbomify.apps.sboms.hardware_inventory import HardwareInventory, derive_hardware_inventory
 from sbomify.apps.sboms.models import SBOM
-from sbomify.apps.sboms.services.crypto_dashboard import _newest_by_component
+from sbomify.apps.sboms.services.selection import newest_by_component
 from sbomify.logging import getLogger
 
 log = getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 300
-
-
-def _newest_hardware_stamped(component_ids: list[str]) -> dict[str, str]:
-    """Newest ``bom_type=sbom`` artifact per component that upload stamped
-    hardware-bearing — the fallback when a component has no HBOM."""
-    rows = (
-        SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.SBOM, has_hardware_components=True)
-        .order_by("component_id", "-created_at")
-        .distinct("component_id")
-        .values_list("component_id", "id")
-    )
-    return {component_id: sbom_id for component_id, sbom_id in rows}
 
 
 def _load_inventory(sbom_id: str, filename: str | None) -> HardwareInventory:
@@ -75,7 +63,7 @@ def _load_inventory(sbom_id: str, filename: str | None) -> HardwareInventory:
 
 
 def build_workspace_hardware_rollup(team_id: int) -> dict[str, Any]:
-    cache_key = f"workspace-hardware-rollup:{team_id}"
+    cache_key = f"workspace-hardware-rollup:v1:{team_id}"
     cached = django_cache.get(cache_key)
     if cached is not None:
         return cast("dict[str, Any]", cached)
@@ -91,8 +79,13 @@ def build_workspace_hardware_rollup(team_id: int) -> dict[str, Any]:
     # Newest HBOM wins; without one, the newest SBOM stamped hardware-bearing —
     # the same selection rule the component hardware page applies, so the
     # rollup and the page it links to can never disagree about the artifact.
-    newest_hbom = _newest_by_component(component_ids, SBOM.BomType.HBOM)
-    newest_stamped = _newest_hardware_stamped(component_ids)
+    newest_hbom = newest_by_component(SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.HBOM))
+    # Only rows upload stamped True: None means the document predates the
+    # field, and reading every one from S3 to find out is what the stamp exists
+    # to avoid.
+    newest_stamped = newest_by_component(
+        SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.SBOM, has_hardware_components=True)
+    )
     chosen: dict[str, str] = {}
     for component_id in component_ids:
         sbom_id = newest_hbom.get(component_id) or newest_stamped.get(component_id)

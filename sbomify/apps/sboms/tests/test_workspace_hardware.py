@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -20,6 +21,12 @@ def _hbom(parts: list[dict[str, Any]]) -> dict[str, Any]:
         "metadata": {"component": {"type": "device", "name": "board"}},
         "components": [{"type": "device", **part} for part in parts],
     }
+
+
+def _rows_by_part(html: str) -> dict[str, str]:
+    """Each rendered table row, keyed by the part name it names."""
+    rows = re.findall(r"<tr\b.*?</tr>", html, re.DOTALL)
+    return {part: row for row in rows for part in ("STM32F407", "RTL8211") if part in row}
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +99,6 @@ class TestRollup:
         assert single["shared"] is False
 
     def test_query_count_stays_flat_as_components_grow(self, hardware_workspace, django_assert_max_num_queries):
-        from sbomify.apps.sboms.services import hardware_dashboard
 
         product = Product.objects.get(name="Router", team=hardware_workspace)
         for index in range(5):
@@ -122,7 +128,26 @@ class TestView:
         assert response.status_code == 200
         body = response.content.decode()
         assert "STM32F407" in body
-        assert "shared" in body
+        # The badge is the whole point of the page, so assert it row by row: a
+        # bare `"shared" in body` passes on any stray occurrence, including the
+        # word appearing in a heading or in the other row.
+        rows = _rows_by_part(body)
+        assert "shared" in rows["STM32F407"]  # both products carry it
+        assert "shared" not in rows["RTL8211"]  # only one does
+
+    def test_the_shared_card_carries_the_warning_accent(
+        self, hardware_workspace, authenticated_web_client, sample_user
+    ):
+        """A conditional prop on a cotton tag has two ways to render nothing and
+        raise nothing: between the attributes it is emitted as text, and split
+        across lines it arrives padded and matches no branch."""
+        from sbomify.apps.core.tests.shared_fixtures import setup_authenticated_client_session
+
+        setup_authenticated_client_session(authenticated_web_client, hardware_workspace, sample_user)
+        body = authenticated_web_client.get(f"/workspaces/{hardware_workspace.key}/hardware/").content.decode()
+
+        assert "[--stat-accent:var(--color-warning)]" in body
+        assert "{%" not in body
 
     def test_non_member_is_refused(self, hardware_workspace, guest_user, client):
         client.force_login(guest_user)

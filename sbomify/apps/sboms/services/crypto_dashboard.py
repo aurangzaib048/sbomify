@@ -20,6 +20,7 @@ from sbomify.apps.core.models import Component
 from sbomify.apps.plugins.models import AssessmentRun
 from sbomify.apps.sboms.crypto_inventory import cert_expiry_state
 from sbomify.apps.sboms.models import SBOM
+from sbomify.apps.sboms.services.selection import newest_by_component
 
 # The rollup reads persisted runs only, so short caching just deduplicates
 # repeated page loads; certificate countdowns recompute from stored dates on
@@ -40,16 +41,6 @@ def _title_asset_name(title: str) -> str:
         if separator in title:
             return title.split(separator)[0]
     return title
-
-
-def _newest_by_component(
-    component_ids: list[str], bom_type: str, *, exclude_crypto_free: bool = False
-) -> dict[str, str]:
-    queryset = SBOM.objects.filter(component_id__in=component_ids, bom_type=bom_type)
-    if exclude_crypto_free:
-        queryset = queryset.exclude(has_crypto_assets=False)
-    rows = queryset.order_by("component_id", "-created_at").distinct("component_id").values_list("component_id", "id")
-    return {component_id: sbom_id for component_id, sbom_id in rows}
 
 
 def _live_cert_counts(certificates: dict[str, Any]) -> dict[str, Any]:
@@ -74,7 +65,7 @@ def _live_cert_counts(certificates: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
-    cache_key = f"workspace-crypto-rollup:{team_id}"
+    cache_key = f"workspace-crypto-rollup:v1:{team_id}"
     cached = django_cache.get(cache_key)
     if cached is not None:
         return cast("dict[str, Any]", cached)
@@ -85,13 +76,15 @@ def build_workspace_crypto_rollup(team_id: int) -> dict[str, Any]:
         .values("id", "name")
     )
     component_ids = [c["id"] for c in components]
-    newest_cbom = _newest_by_component(component_ids, SBOM.BomType.CBOM)
+    newest_cbom = newest_by_component(SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.CBOM))
     # Prefer the newest crypto-bearing SBOM so a later crypto-free upload
     # never evicts a component's assessed crypto posture (the component-page
     # posture card applies the same rule); fall back to any newest SBOM so
     # the crypto-free stamp can still say "no crypto".
-    newest_crypto_sbom = _newest_by_component(component_ids, SBOM.BomType.SBOM, exclude_crypto_free=True)
-    newest_sbom = _newest_by_component(component_ids, SBOM.BomType.SBOM)
+    newest_crypto_sbom = newest_by_component(
+        SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.SBOM).exclude(has_crypto_assets=False)
+    )
+    newest_sbom = newest_by_component(SBOM.objects.filter(component_id__in=component_ids, bom_type=SBOM.BomType.SBOM))
     chosen = {
         c["id"]: newest_cbom.get(c["id"]) or newest_crypto_sbom.get(c["id"]) or newest_sbom.get(c["id"])
         for c in components

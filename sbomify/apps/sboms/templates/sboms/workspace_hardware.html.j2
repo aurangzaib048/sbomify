@@ -3,9 +3,9 @@
 {% block dashboard_content %}
     <div class="mb-6">
         <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                <i class="fas fa-microchip text-primary text-lg"></i>
-            </div>
+            <c-chips.icon-chip>
+            <i class="fas fa-microchip text-lg" aria-hidden="true"></i>
+            </c-chips.icon-chip>
             <div>
                 <h1 class="text-2xl font-bold text-text">Hardware</h1>
                 <p class="text-text-muted text-sm">
@@ -24,9 +24,8 @@
             <c-layout.stat.value>{{ rollup.distinct_parts }}</c-layout.stat.value>
             <c-layout.stat.label>Distinct parts</c-layout.stat.label>
             </c-layout.stat-card>
-            <c-layout.stat-card compact
-            {% if rollup.shared_parts %}accent="warning"{% endif %}
-            >
+            {% comment %}The conditional belongs inside the value. Cotton parses the attribute list itself, so an {% if %} sitting between the attributes renders into the page as literal text and the accent never applies; a djlint reformat then wraps a multi-line value in whitespace the component's == comparison does not match.{% endcomment %}
+            <c-layout.stat-card compact accent="{{ rollup.shared_parts|yesno:'warning,' }}">
             <c-layout.stat.value>{{ rollup.shared_parts }}</c-layout.stat.value>
             <c-layout.stat.label>Shared across products</c-layout.stat.label>
             </c-layout.stat-card>
@@ -57,11 +56,11 @@
         <c-tables.shell nested>
         <c-tables.table>
         <c-tables.head>
-        <c-tables.header-cell>Manufacturer</c-tables.header-cell>
-        <c-tables.header-cell>Part</c-tables.header-cell>
-        <c-tables.header-cell>Type</c-tables.header-cell>
-        <c-tables.header-cell>Products</c-tables.header-cell>
-        <c-tables.header-cell>Components</c-tables.header-cell>
+        <c-tables.header-cell scope="col">Manufacturer</c-tables.header-cell>
+        <c-tables.header-cell scope="col">Part</c-tables.header-cell>
+        <c-tables.header-cell scope="col">Type</c-tables.header-cell>
+        <c-tables.header-cell scope="col">Products</c-tables.header-cell>
+        <c-tables.header-cell scope="col">Components</c-tables.header-cell>
         </c-tables.head>
         <tbody>
             {% for row in rollup.rows %}
